@@ -11,7 +11,7 @@ from google.oauth2.credentials import Credentials
 from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration, working_hours
 
 # --- 設定 ---
-TIME_TABLE_ID = "1g6REpegOHEXsY30edTCqie-h873FOKAF"
+TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
 CSV_FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
