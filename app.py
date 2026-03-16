@@ -28,10 +28,16 @@ st.title("📅 シフトカレンダー一括登録")
 
 # --- 認証処理 (Streamlit Secretsを利用) ---
 def get_gapi_service(service_name, version):
-    # Secretsからサービスアカウント情報を取得して認証
-    creds = Credentials.from_authorized_user_info(st.secrets["gcp_service_account"])
+    # 修正ポイント：サービスアカウント用の関数「from_service_account_info」を使用
+    from google.oauth2 import service_account
+    
+    info = st.secrets["gcp_service_account"]
+    creds = service_account.Credentials.from_service_account_info(
+        info, 
+        scopes=['https://www.googleapis.com/auth/calendar']
+    )
     return build(service_name, version, credentials=creds)
-
+    
 # --- シフト詳細計算ロジック (utils_0.pyから移植) ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     if (time_schedule.iloc[:, 1] == shift_info).any():
