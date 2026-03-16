@@ -32,17 +32,17 @@ def get_gapi_service(service_name, version):
     
     info = dict(st.secrets["gcp_service_account"])
     
-    # 修正ポイント：カレンダーだけでなく、ドライブの権限も追加します
+    # カレンダーとドライブ両方の権限をリストで指定します
     scopes = [
         'https://www.googleapis.com/auth/calendar',
-        'https://www.googleapis.com/auth/drive.readonly'  # ドライブの読み取り権限
+        'https://www.googleapis.com/auth/drive.readonly'
     ]
     
     creds = service_account.Credentials.from_service_account_info(
         info, 
         scopes=scopes
     )
-    return build(service_name, version, credentials=creds)
+    return build(service_name, version, credentials=creds) 
     
 # --- シフト詳細計算ロジック (utils_0.pyから移植) ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
