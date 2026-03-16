@@ -28,13 +28,19 @@ st.title("📅 シフトカレンダー一括登録")
 
 # --- 認証処理 (Streamlit Secretsを利用) ---
 def get_gapi_service(service_name, version):
-    # 修正ポイント：サービスアカウント用の関数「from_service_account_info」を使用
     from google.oauth2 import service_account
     
     info = dict(st.secrets["gcp_service_account"])
+    
+    # 修正ポイント：カレンダーだけでなく、ドライブの権限も追加します
+    scopes = [
+        'https://www.googleapis.com/auth/calendar',
+        'https://www.googleapis.com/auth/drive.readonly'  # ドライブの読み取り権限
+    ]
+    
     creds = service_account.Credentials.from_service_account_info(
         info, 
-        scopes=['https://www.googleapis.com/auth/calendar']
+        scopes=scopes
     )
     return build(service_name, version, credentials=creds)
     
