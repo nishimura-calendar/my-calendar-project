@@ -31,7 +31,7 @@ def get_gapi_service(service_name, version):
     # 修正ポイント：サービスアカウント用の関数「from_service_account_info」を使用
     from google.oauth2 import service_account
     
-    info = st.secrets["gcp_service_account"]
+    info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
         info, 
         scopes=['https://www.googleapis.com/auth/calendar']
