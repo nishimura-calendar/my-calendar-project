@@ -61,29 +61,32 @@ def time_schedule_from_drive(service, file_id):
     """
     【クラウド版】Google Drive上の時程表Excelを読み込み、場所ごとの辞書を返す
     """
-    # 修正ポイント1: get_media を使って確実にバイナリとして取得
+    import io
+    from googleapiclient.http import MediaIoBaseDownload
+    import pandas as pd
+
+    # 1. ダウンロードリクエスト
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
+    
+    # 2. 確実に最後までダウンロードする
     done = False
     while done is False:
         status, done = downloader.next_chunk()
-    
-    # 修正ポイント2: 読み込み位置を先頭に戻す
+
+    # 3. 読み込み位置をファイルの先頭に戻す（これが抜けると空と判定されます）
     fh.seek(0)
     
-    # 修正ポイント3: engine='openpyxl' を指定してExcelとして確実に読み込む
+    # 4. Excelとして読み込み（engineを指定して確実に開く）
     try:
         full_df = pd.read_excel(fh, header=None, engine='openpyxl')
     except Exception as e:
-        # ここでエラーが出る場合はファイル形式が違う可能性がある
-        print(f"Excel読み込みエラー: {e}")
-        return {}
+        raise Exception(f"Excelの読み取りに失敗しました。ファイル形式を確認してください: {e}")
 
     location_data_dic = {}
     
-    # 場所名の入ったセルを特定するロジック
-    # 正規表現を使って「ターミナル」または「本町」を含む行を探す
+    # 場所名の入ったセルを特定
     location_rows = full_df[full_df.iloc[:, 0].astype(str).str.contains(r'第[一二三四五]ターミナル|本町', na=False, regex=True)].index
 
     for row_idx in location_rows:
@@ -106,7 +109,8 @@ def time_schedule_from_drive(service, file_id):
         location_data_dic[location_name] = [data_range]
         
     return location_data_dic
-def data_integration(pdf_dic, time_schedule_dic):
+    
+    def data_integration(pdf_dic, time_schedule_dic):
     """シフト内容と時程表を統合する"""
     for key, value in time_schedule_dic.items():
         if key in pdf_dic:
