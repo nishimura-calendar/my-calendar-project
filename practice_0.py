@@ -5,11 +5,11 @@ import re
 import io
 
 def convert_excel_time(val):
-    """Excelのシリアル値を24時間形式のHH:MMに正しく変換"""
+    """Excelのシリアル値をHH:MMに変換（誤差に強い整数計算）"""
     if pd.isna(val) or val == "": return ""
     try:
         if isinstance(val, (int, float)):
-            # 1日=1440分として計算し、誤差を防ぐ
+            # 24倍ではなく、直接「分」に直して四捨五入する
             total_minutes = int(round(val * 1440))
             h = total_minutes // 60
             m = total_minutes % 60
@@ -22,11 +22,8 @@ def pdf_reader(pdf_stream, target_staff):
     clean_target = str(target_staff).replace(' ', '').replace('　', '')
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
-    
-    # 罫線ありの表を読み取り
     tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
     table_dictionary = {}
-    
     for table in tables:
         df = table.df
         if not df.empty:
@@ -34,14 +31,11 @@ def pdf_reader(pdf_stream, target_staff):
             lines = text.splitlines()
             target_idx = text.count('\n') // 2
             work_place = lines[target_idx] if target_idx < len(lines) else (lines[-1] if lines else "Unknown")
-            
             df = df.fillna('')
             search_col = df.iloc[:, 0].astype(str).str.replace(r'[\s　]', '', regex=True)
             matched_indices = df.index[search_col == clean_target].tolist()
-            
             if matched_indices:
                 idx = matched_indices[0]
-                # 自分の2行分と、自分以外のスタッフの行を分離
                 table_dictionary[work_place] = [df.iloc[idx : idx + 2, :].copy(), df.drop([0, idx, idx+1]).copy()]
     return table_dictionary
 
@@ -59,21 +53,16 @@ def time_schedule_from_drive(service, file_id):
     done = False
     while not done: _, done = downloader.next_chunk()
     fh.seek(0)
-    
     full_df = pd.read_excel(fh, header=None, engine='openpyxl')
     location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
     location_data_dic = {}
-    
     for i, start_row in enumerate(location_rows):
         end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
         location_name = str(full_df.iloc[start_row, 0]).replace(' ', '').replace('　', '')
-        # 時間軸が含まれる範囲を抽出
         data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
-        
-        # 0行目（時間軸）のシリアル値を変換
+        # 0行目(時間)の変換
         for col in range(2, data_range.shape[1]):
             data_range.iloc[0, col] = convert_excel_time(data_range.iloc[0, col])
-            
         location_data_dic[location_name] = [data_range.fillna('')]
     return location_data_dic
 
