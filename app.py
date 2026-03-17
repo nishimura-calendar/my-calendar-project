@@ -8,8 +8,10 @@ from googleapiclient.http import MediaIoBaseDownload
 try:
     from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
 except Exception as e:
-    st.error(f"❌ インポートエラー: {e}"); st.stop()
+    st.error(f"❌ ファイル読み込みエラー: {e}")
+    st.stop()
 
+# 各種設定
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
@@ -25,7 +27,8 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """予定を結合して追加するロジック"""
+    """連続する同じ担当区分を1つの予定に結合するロジック"""
+    # 終日予定を追加
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
     shift_code = str(my_daily_shift.iloc[1, col]).strip()
@@ -40,7 +43,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 prev_label = None
                 continue
             
-            # --- ラベル作成 (前・後・横など) ---
+            # --- ラベル判定 ---
             mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
             handing_text = "(交代)" if mask_handing.any() else ""
             
@@ -51,25 +54,25 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             
             full_label = f"{handing_text}{label_to}=>{label_from}"
             
-            # --- 予定の結合判定 ---
-            if full_label == prev_label:
-                # 前と同じ内容なら、終了時間だけを更新
+            # --- 予定の結合処理 ---
+            if full_label == prev_label and final_rows:
+                # 前のセルと同じ担当なら、終了時間だけを次のセルの時刻に更新
                 final_rows[-1][4] = time_schedule.iloc[0, t_col+1] if t_col+1 < time_schedule.shape[1] else time_schedule.iloc[0, t_col]
             else:
-                # 新しい内容なら新規行を追加
+                # 違う担当に変わったら、新規行として追加
                 start_t = time_schedule.iloc[0, t_col]
                 end_t = time_schedule.iloc[0, t_col+1] if t_col+1 < time_schedule.shape[1] else start_t
                 final_rows.append([full_label, target_date, start_t, target_date, end_t, "False", "", key])
                 prev_label = full_label
 
-# --- 実行UI ---
+# UI部分
 if st.button("① ファイル確認"):
     try:
         drive_service = get_gapi_service('drive', 'v3')
         items = drive_service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute().get('files', [])
         if items:
             st.session_state['pdf_files'] = items
-            st.success(f"{len(items)}件のPDFを認識しました。")
+            st.success(f"{len(items)}件見つかりました。")
     except Exception as e: st.error(f"接続エラー: {e}")
 
 if 'pdf_files' in st.session_state:
@@ -81,12 +84,12 @@ if 'pdf_files' in st.session_state:
             try:
                 drive_service = get_gapi_service('drive', 'v3')
                 time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
+                
                 pdf_req = drive_service.files().get_media(fileId=selected_id)
                 pdf_stream = io.BytesIO(); MediaIoBaseDownload(pdf_stream, pdf_req).next_chunk()
-                pdf_stream.seek(0)
-                pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
-                pdf_stream.seek(0)
-                y, m = extract_year_month(pdf_stream)
+                pdf_stream.seek(0); pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
+                pdf_stream.seek(0); y, m = extract_year_month(pdf_stream)
+                
                 integrated = data_integration(pdf_dic, time_sched_dic)
                 
                 for key, data_list in integrated.items():
@@ -95,8 +98,9 @@ if 'pdf_files' in st.session_state:
                     for col in range(1, my_shift.shape[1]):
                         shift_info = str(my_shift.iloc[0, col]).strip()
                         if not shift_info or shift_info.lower() == "nan": continue
+                        
                         target_date = f"{y}/{m}/{col}"
-                        if any(h in shift_info for h in ["休", "有給"]):
+                        if any(h in shift_info for h in ["休", "有給", "公休"]):
                             rows_final.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
                         else:
                             shift_cal(key, target_date, col, shift_info, my_shift, other_shift, t_sched, rows_final)
@@ -104,5 +108,5 @@ if 'pdf_files' in st.session_state:
                     if rows_final:
                         st.subheader(f"📍 {key} の解析結果")
                         st.dataframe(pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]))
-                st.success("解析が完了しました。")
+                st.success("解析完了！表示を確認してください。")
             except Exception as e: st.error(f"解析エラー: {e}")
