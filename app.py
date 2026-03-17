@@ -4,7 +4,8 @@ import io
 import re
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration, working_hours
+# practice_0 から関数を読み込む
+from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
 
 # --- 設定 ---
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
@@ -22,7 +23,7 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """時間連動型の詳細スケジュール計算"""
+    """通常シフトの詳細計算（終了時間を連動させる）"""
     shift_code = str(my_daily_shift.iloc[0, col]).strip()
     sched_clean = time_schedule.fillna("").astype(str)
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
@@ -33,22 +34,20 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             current_val = my_time_shift.iloc[0, t_col]
             
             if current_val != prev_val:
-                # 前の予定の終了時間をセット（前の行が存在する場合）
+                # 前の予定の終了時間を「今の開始時間」で上書き
                 if prev_val != "" and final_rows:
                     final_rows[-1][4] = time_schedule.iloc[0, t_col] 
 
                 if current_val != "": 
-                    # 交代相手の特定ロジック
+                    # 交代相手の特定
                     mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
                     handing_dept = "(交代)" if mask_handing.any() else ""
-                    
                     if prev_val != "":
                         handing_dept = f"({prev_val})"
                         mask_handing = (time_schedule.iloc[:, t_col] == prev_val)
                     
                     mask_taking = (time_schedule.iloc[:, t_col-1] == current_val)
                     
-                    # to/from の名前抽出
                     search_to = time_schedule.loc[mask_handing, time_schedule.columns[1]]
                     names_to = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_to)].iloc[:, 0].unique()
                     
@@ -59,22 +58,15 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     label_from = f"【{current_val}】from {'・'.join(names_from)}" if len(names_from) > 0 else f"【{current_val}】"
                     
                     final_rows.append([
-                        f"{handing_dept}{label_to}=>{label_from}", 
-                        target_date, 
-                        time_schedule.iloc[0, t_col], 
-                        target_date, 
-                        "", # 終了時間は次のループか最後の処理でセット
-                        "False", 
-                        "", 
-                        key
+                        f"{handing_dept}{label_to}=>{label_from}", target_date, time_schedule.iloc[0, t_col], target_date, "", "False", "", key
                     ])
                 prev_val = current_val
         
-        # 勤務の最後の終了時間をセット
+        # 最後の終了時間をセット
         if final_rows and final_rows[-1][4] == "":
              final_rows[-1][4] = time_schedule.iloc[0, t_col]
 
-# --- メイン処理 ---
+# --- メイン画面 ---
 if st.button("① ファイル確認"):
     try:
         drive_service = get_gapi_service('drive', 'v3')
@@ -114,28 +106,21 @@ if 'pdf_files' in st.session_state:
                     rows_final = []
                     my_shift, other_shift, t_sched = data_list[0], data_list[1], data_list[2]
 
-                    # 1日から末日までループ
                     for col in range(1, my_shift.shape[1]):
-                        info = str(my_shift.iloc[1, col]).strip() # 2行目のシフトコードを取得
+                        info = str(my_shift.iloc[1, col]).strip()
                         if not info or info.lower() == "nan" or info == "": continue
                         
                         target_date = f"{y}/{m}/{col}"
-                        
-                        # 休日判定（有休などが重ならないよう整理）
                         if any(h in info for h in ["休", "公休", "有給", "特休"]):
-                            # 表示をシンプルにするため、最初の1文字（「休」など）だけを抽出
                             main_info = "有給" if "有給" in info else "休日"
                             rows_final.append([f"{key}_{main_info}", target_date, "", target_date, "", "True", "", key])
-                            st.write(f"📅 {target_date}: {main_info}")
                         else:
-                            # 通常シフトの計算
                             shift_cal(key, target_date, col, info, my_shift, other_shift, t_sched, rows_final)
                     
                     if rows_final:
                         st.subheader(f"📍 {key} の解析結果")
                         df_res = pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"])
                         st.dataframe(df_res)
-
                 st.success("解析完了！")
             except Exception as e:
-                st.error(f"エラー: {e}")
+                st.error(f"解析エラー: {e}")
