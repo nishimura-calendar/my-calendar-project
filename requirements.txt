@@ -5,6 +5,6 @@ google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
 pdfplumber
-camelot-py
-opencv-python
+camelot-py[cv]
+opencv-python-headless
 numpy
