@@ -4,9 +4,9 @@ import io
 import re
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
+from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration, working_hours
 
-# --- 基本設定 ---
+# --- 設定 ---
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
@@ -22,14 +22,10 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
-    # 1. 終日イベントの追加（シフトコードそのものの予定）
-    if (time_schedule.iloc[:, 1] == shift_info).any():
-        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
-        
-    shift_code = my_daily_shift.iloc[0, col]
+    """時間連動型の詳細スケジュール計算"""
+    shift_code = str(my_daily_shift.iloc[0, col]).strip()
     sched_clean = time_schedule.fillna("").astype(str)
-    my_time_shift = sched_clean[sched_clean.iloc[:, 1] == str(shift_code)]
+    my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
                     
     if not my_time_shift.empty:
         prev_val = ""
@@ -37,57 +33,49 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             current_val = my_time_shift.iloc[0, t_col]
             
             if current_val != prev_val:
-                if current_val != "": 
-                    handing_over_department = "" 
-                    mask_handing_over = pd.Series([False] * len(time_schedule)) 
-                    
-                    if prev_val == "": 
-                        mask_handing_over = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
-                        handing_over_department = "(交代)" if mask_handing_over.any() else ""
-                    else:
-                        handing_over_department = f"({prev_val})" 
-                        mask_handing_over = (time_schedule.iloc[:, t_col] == prev_val)
-                        # 前の予定の終了時間をセット
-                        if final_rows:
-                            final_rows[-1][4] = time_schedule.iloc[0, t_col] 
-                    
-                    mask_taking_over = (time_schedule.iloc[:, t_col-1] == current_val)   
-                    
-                    handing_over = ""
-                    taking_over = ""
+                # 前の予定の終了時間をセット（前の行が存在する場合）
+                if prev_val != "" and final_rows:
+                    final_rows[-1][4] = time_schedule.iloc[0, t_col] 
 
-                    for i in range(0, 2):
-                        mask = mask_handing_over if i == 0 else mask_taking_over
-                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]]
-                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
-                        names_series = target_rows.iloc[:, 0]
-                        
-                        if i == 0:
-                            staff_names = f"to {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
-                            handing_over = f"{handing_over_department}{staff_names}"
-                        else:
-                            staff_names = f"from {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
-                            taking_over = f"【{current_val}】{staff_names}"    
+                if current_val != "": 
+                    # 交代相手の特定ロジック
+                    mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
+                    handing_dept = "(交代)" if mask_handing.any() else ""
                     
-                    # 詳細スケジュールの追加
+                    if prev_val != "":
+                        handing_dept = f"({prev_val})"
+                        mask_handing = (time_schedule.iloc[:, t_col] == prev_val)
+                    
+                    mask_taking = (time_schedule.iloc[:, t_col-1] == current_val)
+                    
+                    # to/from の名前抽出
+                    search_to = time_schedule.loc[mask_handing, time_schedule.columns[1]]
+                    names_to = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_to)].iloc[:, 0].unique()
+                    
+                    search_from = time_schedule.loc[mask_taking, time_schedule.columns[1]]
+                    names_from = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_from)].iloc[:, 0].unique()
+
+                    label_to = f"to {'・'.join(names_to)}" if len(names_to) > 0 else ""
+                    label_from = f"【{current_val}】from {'・'.join(names_from)}" if len(names_from) > 0 else f"【{current_val}】"
+                    
                     final_rows.append([
-                        f"{handing_over}=>{taking_over}", 
+                        f"{handing_dept}{label_to}=>{label_from}", 
                         target_date, 
                         time_schedule.iloc[0, t_col], 
                         target_date, 
-                        "", 
+                        "", # 終了時間は次のループか最後の処理でセット
                         "False", 
                         "", 
                         key
                     ])
-                else:
-                    # 勤務終了時間をセット
-                    if final_rows:
-                        final_rows[-1][4] = time_schedule.iloc[0, t_col]    
-            prev_val = current_val
-            
-# --- メイン UI ---
-if st.button("① Googleドライブ接続・ファイル確認"):
+                prev_val = current_val
+        
+        # 勤務の最後の終了時間をセット
+        if final_rows and final_rows[-1][4] == "":
+             final_rows[-1][4] = time_schedule.iloc[0, t_col]
+
+# --- メイン処理 ---
+if st.button("① ファイル確認"):
     try:
         drive_service = get_gapi_service('drive', 'v3')
         results = drive_service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute()
@@ -95,15 +83,15 @@ if st.button("① Googleドライブ接続・ファイル確認"):
         if items:
             st.session_state['pdf_files'] = items
             st.success(f"{len(items)}件のPDFが見つかりました。")
-        else: st.warning("PDFが見つかりません。")
-    except Exception as e: st.error(f"接続エラー: {e}")
+    except Exception as e:
+        st.error(f"エラー: {e}")
 
 if 'pdf_files' in st.session_state:
-    selected_name = st.selectbox("処理するPDFを選択してください", [f['name'] for f in st.session_state['pdf_files']])
+    selected_name = st.selectbox("PDFを選択", [f['name'] for f in st.session_state['pdf_files']])
     selected_id = next(f['id'] for f in st.session_state['pdf_files'] if f['name'] == selected_name)
 
-    if st.button("② 解析実行"):
-        with st.spinner("PDFを解析中..."):
+    if st.button("② 実行（解析開始）"):
+        with st.spinner("解析中..."):
             try:
                 drive_service = get_gapi_service('drive', 'v3')
                 time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
@@ -121,46 +109,33 @@ if 'pdf_files' in st.session_state:
                 
                 integrated = data_integration(pdf_dic, time_sched_dic)
                 
-                if not integrated:
-                    st.error("❌ 場所名が一致しません。")
-                    st.write("PDFから検出:", list(pdf_dic.keys()))
-                    st.write("Excelから検出:", list(time_sched_dic.keys()))
-                else:
-                    for key, data_list in integrated.items():
-                        rows_shift = []
-                        my_shift, other_shift, t_sched = data_list[0], data_list[1], data_list[2]
+                for key, data_list in integrated.items():
+                    if len(data_list) < 3: continue
+                    rows_final = []
+                    my_shift, other_shift, t_sched = data_list[0], data_list[1], data_list[2]
 
-                        for col in range(1, my_shift.shape[1]):
-                            info_top = str(my_shift.iloc[0, col]).strip()
-                            info_bottom = str(my_shift.iloc[1, col]).strip() if len(my_shift) > 1 else ""
-                            target_date = f"{y}/{m}/{col}"
-                            
-                            # 1. 事務所ルール (2行目に＠)
-                            if "@" in info_bottom or "＠" in info_bottom:
-                                rows_shift.append([f"【{info_top}】勤務", target_date, "", target_date, "", "True", f"時間: {info_bottom}", info_top])
-                                st.write(f"🏢 {target_date}: {info_top} (事務所: {info_bottom})")
-                                continue
-
-                            # 2. 現場ルール (シフトコード)
-                            if not info_top or info_top.lower() == "nan" or info_top == "": continue
-                            
-                            if any(h in info_top for h in ["休", "公休", "有給"]):
-                                st.write(f"📅 {target_date}: お休み ({info_top})")
-                            else:
-                                shift_cal(key, target_date, col, info_top, my_shift, other_shift, t_sched, rows_shift)
+                    # 1日から末日までループ
+                    for col in range(1, my_shift.shape[1]):
+                        info = str(my_shift.iloc[1, col]).strip() # 2行目のシフトコードを取得
+                        if not info or info.lower() == "nan" or info == "": continue
                         
-                        if rows_shift:
-                            st.subheader(f"📍 {key} の解析結果")
-                            df_res = pd.DataFrame(rows_shift, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"])
-                            st.dataframe(df_res)
-                            st.session_state['final_df'] = df_res
+                        target_date = f"{y}/{m}/{col}"
+                        
+                        # 休日判定（有休などが重ならないよう整理）
+                        if any(h in info for h in ["休", "公休", "有給", "特休"]):
+                            # 表示をシンプルにするため、最初の1文字（「休」など）だけを抽出
+                            main_info = "有給" if "有給" in info else "休日"
+                            rows_final.append([f"{key}_{main_info}", target_date, "", target_date, "", "True", "", key])
+                            st.write(f"📅 {target_date}: {main_info}")
+                        else:
+                            # 通常シフトの計算
+                            shift_cal(key, target_date, col, info, my_shift, other_shift, t_sched, rows_final)
+                    
+                    if rows_final:
+                        st.subheader(f"📍 {key} の解析結果")
+                        df_res = pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"])
+                        st.dataframe(df_res)
 
-                st.success("解析が完了しました！")
+                st.success("解析完了！")
             except Exception as e:
-                st.error(f"解析エラー: {e}")
-
-# --- カレンダー登録機能の準備 ---
-if 'final_df' in st.session_state:
-    if st.button("③ Googleカレンダーに登録する"):
-        st.info("カレンダー登録機能を実行します...（API書き込み処理へ）")
-        # ここにカレンダー登録のAPI実行コードを追記可能です
+                st.error(f"エラー: {e}")
