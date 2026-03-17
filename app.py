@@ -10,7 +10,6 @@ try:
     from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
 except Exception as e:
     st.error(f"❌ 内部ファイルの読み込みに失敗しました。原因: {e}")
-    st.info("practice_0.py がGitHubの同じフォルダにあるか、ファイル名が正しいか確認してください。")
     st.stop()
 
 # --- 基本設定 ---
@@ -28,10 +27,14 @@ def get_gapi_service(service_name, version):
     creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
     return build(service_name, version, credentials=creds)
 
-def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """詳細スケジュール計算ロジック"""
-    shift_code = str(my_daily_shift.iloc[1, col]).strip() 
+def shift_cal(key, target_date, col, shift_name, shift_code, other_staff_shift, time_schedule, final_rows):
+    """詳細スケジュール計算。まず概要行(T2_C等)を追加し、次に詳細時間を追加"""
+    # 1. 概要行（例：T2_C）を終日予定として追加
+    final_rows.append([f"{key}_{shift_name}", target_date, "", target_date, "", "True", "", key])
+    
+    # 2. 詳細スケジュール（時程表）
     sched_clean = time_schedule.fillna("").astype(str)
+    # ExcelのB列(1番目の列)にあるコードと一致する行を探す
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
                     
     if not my_time_shift.empty:
@@ -99,21 +102,29 @@ if 'pdf_files' in st.session_state:
                 integrated = data_integration(pdf_dic, time_sched_dic)
                 
                 if not integrated:
-                    st.error("場所名が一致しません。上の📊と📄が同じ名前か確認してください。")
+                    st.error("場所名が一致しません。")
                 
                 for key, data_list in integrated.items():
                     rows_final = []
                     my_shift, other_shift, t_sched = data_list[0], data_list[1], data_list[2]
 
                     for col in range(1, my_shift.shape[1]):
-                        info = str(my_shift.iloc[1, col]).strip()
-                        if not info or info.lower() == "nan" or info == "": continue
+                        # 1. 名前の行(0行目)からシフト名(C, 休など)を取得
+                        shift_name = str(my_shift.iloc[0, col]).strip()
+                        if not shift_name or shift_name.lower() == "nan": continue
+                        
+                        # 2. その下の行(1行目)から数値コードを取得(あれば)
+                        shift_code = str(my_shift.iloc[1, col]).strip() if my_shift.shape[0] > 1 else shift_name
+                        
                         target_date = f"{y}/{m}/{col}"
-                        if any(h in info for h in ["休", "公休", "有給", "特休"]):
-                            main_info = "有給" if "有給" in info else "休日"
+                        
+                        # 休日判定
+                        if any(h in shift_name for h in ["休", "公休", "有給", "特休"]):
+                            main_info = "有給" if "有給" in shift_name else "休日"
                             rows_final.append([f"{key}_{main_info}", target_date, "", target_date, "", "True", "", key])
                         else:
-                            shift_cal(key, target_date, col, info, my_shift, other_shift, t_sched, rows_final)
+                            # 通常勤務
+                            shift_cal(key, target_date, col, shift_name, shift_code, other_shift, t_sched, rows_final)
                     
                     if rows_final:
                         st.subheader(f"📍 {key} の解析結果")
