@@ -3,28 +3,45 @@ import pandas as pd
 import pdfplumber
 import re
 import io
+import datetime
 
 def convert_excel_time(val):
-    """Excelのシリアル値をHH:MMに変換（小数点誤差を排除）"""
-    if pd.isna(val) or val == "": return ""
-    try:
-        # 数値の場合のみ変換
-        if isinstance(val, (int, float)):
-            # 1日=1440分として整数で計算
-            total_minutes = int(round(val * 1440))
-            h = total_minutes // 60
-            m = total_minutes % 60
-            return f"{h}:{m:02d}"
-    except:
-        pass
+    """Excelの値を確実に HH:MM 形式の文字列に変換する"""
+    if pd.isna(val) or val == "":
+        return ""
+    
+    # すでに時刻型の場合
+    if isinstance(val, datetime.time):
+        return val.strftime("%H:%M")
+    
+    # シリアル値（float）や数値の場合
+    if isinstance(val, (int, float)):
+        try:
+            # 1.0以上の場合はそのままの時間（15.0など）と判断されるのを防ぎ、シリアル値として計算
+            if val < 1.0:
+                total_seconds = int(round(val * 86400))
+                h = total_seconds // 3600
+                m = (total_seconds % 3600) // 60
+                return f"{h}:{m:02d}"
+            else:
+                # 整数で時間が入力されている場合
+                h = int(val)
+                m = int(round((val - h) * 60))
+                return f"{h}:{m:02d}"
+        except:
+            pass
     return str(val).strip()
 
 def pdf_reader(pdf_stream, target_staff):
     clean_target = str(target_staff).replace(' ', '').replace('　', '')
+    
+    # camelot用に一時ファイル保存
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
+    
     tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
     table_dictionary = {}
+    
     for table in tables:
         df = table.df
         if not df.empty:
@@ -32,11 +49,14 @@ def pdf_reader(pdf_stream, target_staff):
             lines = text.splitlines()
             target_idx = text.count('\n') // 2
             work_place = lines[target_idx] if target_idx < len(lines) else (lines[-1] if lines else "Unknown")
+            
             df = df.fillna('')
             search_col = df.iloc[:, 0].astype(str).str.replace(r'[\s　]', '', regex=True)
             matched_indices = df.index[search_col == clean_target].tolist()
+            
             if matched_indices:
                 idx = matched_indices[0]
+                # [自分の行(2行分), 自分以外の全スタッフ行]
                 table_dictionary[work_place] = [df.iloc[idx : idx + 2, :].copy(), df.drop([0, idx, idx+1]).copy()]
     return table_dictionary
 
@@ -52,18 +72,24 @@ def time_schedule_from_drive(service, file_id):
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-    while not done: _, done = downloader.next_chunk()
+    while not done:
+        _, done = downloader.next_chunk()
     fh.seek(0)
+    
+    # Excelの読み込み
     full_df = pd.read_excel(fh, header=None, engine='openpyxl')
     location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
     location_data_dic = {}
+    
     for i, start_row in enumerate(location_rows):
         end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
         location_name = str(full_df.iloc[start_row, 0]).replace(' ', '').replace('　', '')
         data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
-        # 時間ラベルを文字列に固定
+        
+        # 0行目の時刻軸をHH:MMにクレンジング
         for col in range(2, data_range.shape[1]):
             data_range.iloc[0, col] = convert_excel_time(data_range.iloc[0, col])
+            
         location_data_dic[location_name] = [data_range.fillna('')]
     return location_data_dic
 
