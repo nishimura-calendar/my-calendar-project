@@ -22,22 +22,70 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """現場シフト用の詳細解析"""
-    shift_code = str(shift_info).strip()
-    my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == shift_code]
+    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
+    # 1. 終日イベントの追加（シフトコードそのものの予定）
+    if (time_schedule.iloc[:, 1] == shift_info).any():
+        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
+        
+    shift_code = my_daily_shift.iloc[0, col]
+    sched_clean = time_schedule.fillna("").astype(str)
+    my_time_shift = sched_clean[sched_clean.iloc[:, 1] == str(shift_code)]
                     
     if not my_time_shift.empty:
         prev_val = ""
         for t_col in range(2, time_schedule.shape[1]):
             current_val = my_time_shift.iloc[0, t_col]
+            
             if current_val != prev_val:
                 if current_val != "": 
-                    # 交代相手の特定(簡易版)
-                    final_rows.append([f"【{current_val}】勤務", target_date, time_schedule.iloc[0, t_col], target_date, "", "False", f"シフトコード:{shift_code}", key])
-                else:
-                    if final_rows: final_rows[-1][4] = time_schedule.iloc[0, t_col]
-            prev_val = current_val
+                    handing_over_department = "" 
+                    mask_handing_over = pd.Series([False] * len(time_schedule)) 
+                    
+                    if prev_val == "": 
+                        mask_handing_over = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
+                        handing_over_department = "(交代)" if mask_handing_over.any() else ""
+                    else:
+                        handing_over_department = f"({prev_val})" 
+                        mask_handing_over = (time_schedule.iloc[:, t_col] == prev_val)
+                        # 前の予定の終了時間をセット
+                        if final_rows:
+                            final_rows[-1][4] = time_schedule.iloc[0, t_col] 
+                    
+                    mask_taking_over = (time_schedule.iloc[:, t_col-1] == current_val)   
+                    
+                    handing_over = ""
+                    taking_over = ""
 
+                    for i in range(0, 2):
+                        mask = mask_handing_over if i == 0 else mask_taking_over
+                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]]
+                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
+                        names_series = target_rows.iloc[:, 0]
+                        
+                        if i == 0:
+                            staff_names = f"to {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
+                            handing_over = f"{handing_over_department}{staff_names}"
+                        else:
+                            staff_names = f"from {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
+                            taking_over = f"【{current_val}】{staff_names}"    
+                    
+                    # 詳細スケジュールの追加
+                    final_rows.append([
+                        f"{handing_over}=>{taking_over}", 
+                        target_date, 
+                        time_schedule.iloc[0, t_col], 
+                        target_date, 
+                        "", 
+                        "False", 
+                        "", 
+                        key
+                    ])
+                else:
+                    # 勤務終了時間をセット
+                    if final_rows:
+                        final_rows[-1][4] = time_schedule.iloc[0, t_col]    
+            prev_val = current_val
+            
 # --- メイン UI ---
 if st.button("① Googleドライブ接続・ファイル確認"):
     try:
