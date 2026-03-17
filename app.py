@@ -1,12 +1,17 @@
 import streamlit as st
 import pandas as pd
 import io
-import re  # これを必ず上に配置します
+import re
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-# 自作モジュールからの読み込み
-from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
+# --- インポートのデバッグ ---
+try:
+    from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
+except Exception as e:
+    st.error(f"❌ 内部ファイルの読み込みに失敗しました。原因: {e}")
+    st.info("practice_0.py がGitHubの同じフォルダにあるか、ファイル名が正しいか確認してください。")
+    st.stop()
 
 # --- 基本設定 ---
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
@@ -17,7 +22,6 @@ st.set_page_config(page_title="シフト管理システム", layout="wide")
 st.title("📅 シフトカレンダー一括登録")
 
 def get_gapi_service(service_name, version):
-    """Google API 認証サービス取得"""
     from google.oauth2 import service_account
     info = dict(st.secrets["gcp_service_account"])
     scopes = ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.readonly']
@@ -25,11 +29,7 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    通常シフトの詳細スケジュール計算
-    開始・終了時間を連動させ、交代相手(to/from)を抽出
-    """
-    # my_daily_shiftの2行目がシフトコードであることを想定
+    """詳細スケジュール計算ロジック"""
     shift_code = str(my_daily_shift.iloc[1, col]).strip() 
     sched_clean = time_schedule.fillna("").astype(str)
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
@@ -38,14 +38,11 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         prev_val = ""
         for t_col in range(2, time_schedule.shape[1]):
             current_val = my_time_shift.iloc[0, t_col]
-            
             if current_val != prev_val:
-                # 終了時間の連動
                 if prev_val != "" and final_rows:
                     final_rows[-1][4] = time_schedule.iloc[0, t_col] 
 
                 if current_val != "": 
-                    # 交代相手特定ロジック
                     mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
                     handing_dept = "(交代)" if mask_handing.any() else ""
                     if prev_val != "":
@@ -60,28 +57,21 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
 
                     label_to = f"to {'・'.join(names_to)}" if len(names_to) > 0 else ""
                     label_from = f"【{current_val}】from {'・'.join(names_from)}" if len(names_from) > 0 else f"【{current_val}】"
-                    
-                    final_rows.append([
-                        f"{handing_dept}{label_to}=>{label_from}", target_date, time_schedule.iloc[0, t_col], target_date, "", "False", "", key
-                    ])
+                    final_rows.append([f"{handing_dept}{label_to}=>{label_from}", target_date, time_schedule.iloc[0, t_col], target_date, "", "False", "", key])
                 prev_val = current_val
-        
         if final_rows and final_rows[-1][4] == "":
              final_rows[-1][4] = time_schedule.iloc[0, t_col]
 
-# --- メイン画面 ---
-
+# --- メイン処理 ---
 if st.button("① ファイル確認"):
     try:
         drive_service = get_gapi_service('drive', 'v3')
-        query = f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'"
-        results = drive_service.files().list(q=query).execute()
+        results = drive_service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute()
         items = results.get('files', [])
         if items:
             st.session_state['pdf_files'] = items
             st.success(f"{len(items)}件のPDFが見つかりました。")
-    except Exception as e:
-        st.error(f"ファイル確認エラー: {e}")
+    except Exception as e: st.error(f"エラー: {e}")
 
 if 'pdf_files' in st.session_state:
     selected_name = st.selectbox("PDFを選択", [f['name'] for f in st.session_state['pdf_files']])
@@ -92,8 +82,6 @@ if 'pdf_files' in st.session_state:
             try:
                 drive_service = get_gapi_service('drive', 'v3')
                 time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
-                
-                # Excelの場所名デバッグ表示
                 st.write(f"📊 Excel(時程表)の場所名: {list(time_sched_dic.keys())}")
                 
                 pdf_req = drive_service.files().get_media(fileId=selected_id)
@@ -104,29 +92,23 @@ if 'pdf_files' in st.session_state:
                 
                 pdf_stream.seek(0)
                 pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
-                
-                # PDFの場所名デバッグ表示
-                st.write(f"📄 PDFから読み取った場所名: {list(pdf_dic.keys())}")
+                st.write(f"📄 PDFから取得した場所名: {list(pdf_dic.keys())}")
                 
                 pdf_stream.seek(0)
                 y, m = extract_year_month(pdf_stream)
                 integrated = data_integration(pdf_dic, time_sched_dic)
                 
                 if not integrated:
-                    st.error("場所名が一致しません。上の📊と📄の名前が合っているか確認してください。")
+                    st.error("場所名が一致しません。上の📊と📄が同じ名前か確認してください。")
                 
                 for key, data_list in integrated.items():
                     rows_final = []
                     my_shift, other_shift, t_sched = data_list[0], data_list[1], data_list[2]
 
                     for col in range(1, my_shift.shape[1]):
-                        # 名前列のすぐ下(2行目)のシフトコードを参照
                         info = str(my_shift.iloc[1, col]).strip()
                         if not info or info.lower() == "nan" or info == "": continue
-                        
                         target_date = f"{y}/{m}/{col}"
-                        
-                        # 休日・有給の統合処理
                         if any(h in info for h in ["休", "公休", "有給", "特休"]):
                             main_info = "有給" if "有給" in info else "休日"
                             rows_final.append([f"{key}_{main_info}", target_date, "", target_date, "", "True", "", key])
@@ -136,7 +118,5 @@ if 'pdf_files' in st.session_state:
                     if rows_final:
                         st.subheader(f"📍 {key} の解析結果")
                         st.dataframe(pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]))
-
                 st.success("解析完了！")
-            except Exception as e:
-                st.error(f"解析エラー: {e}")
+            except Exception as e: st.error(f"解析エラー: {e}")
