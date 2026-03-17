@@ -61,19 +61,30 @@ def time_schedule_from_drive(service, file_id):
     """
     【クラウド版】Google Drive上の時程表Excelを読み込み、場所ごとの辞書を返す
     """
+    # 修正ポイント1: get_media を使って確実にバイナリとして取得
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
     while done is False:
         status, done = downloader.next_chunk()
+    
+    # 修正ポイント2: 読み込み位置を先頭に戻す
     fh.seek(0)
     
-    full_df = pd.read_excel(fh, header=None)
+    # 修正ポイント3: engine='openpyxl' を指定してExcelとして確実に読み込む
+    try:
+        full_df = pd.read_excel(fh, header=None, engine='openpyxl')
+    except Exception as e:
+        # ここでエラーが出る場合はファイル形式が違う可能性がある
+        print(f"Excel読み込みエラー: {e}")
+        return {}
+
     location_data_dic = {}
     
-    # 場所名の入ったセル（例：A1, A10, A19...）を特定するロジック
-    location_rows = full_df[full_df.iloc[:, 0].astype(str).str.contains('第[一二三四五]ターミナル|本町', na=False)].index
+    # 場所名の入ったセルを特定するロジック
+    # 正規表現を使って「ターミナル」または「本町」を含む行を探す
+    location_rows = full_df[full_df.iloc[:, 0].astype(str).str.contains(r'第[一二三四五]ターミナル|本町', na=False, regex=True)].index
 
     for row_idx in location_rows:
         location_name = str(full_df.iloc[row_idx, 0]).strip()
@@ -90,12 +101,11 @@ def time_schedule_from_drive(service, file_id):
                     data_range.iloc[0, col] = f"{hours}:{minutes:02d}"
                 except:
                     continue
-                    
+                        
         data_range = data_range.fillna('')
         location_data_dic[location_name] = [data_range]
         
     return location_data_dic
-
 def data_integration(pdf_dic, time_schedule_dic):
     """シフト内容と時程表を統合する"""
     for key, value in time_schedule_dic.items():
