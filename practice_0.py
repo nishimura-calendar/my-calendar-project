@@ -5,11 +5,11 @@ import re
 import io
 
 def convert_excel_time(val):
-    """Excelのシリアル値を正しい時刻形式(HH:MM)に変換"""
+    """Excelのシリアル値を24時間形式のHH:MMに正しく変換"""
     if pd.isna(val) or val == "": return ""
     try:
         if isinstance(val, (int, float)):
-            # 24時間表示のズレを防ぐため、分単位で計算してから戻す
+            # 1日=1440分として計算し、誤差を防ぐ
             total_minutes = int(round(val * 1440))
             h = total_minutes // 60
             m = total_minutes % 60
@@ -23,7 +23,7 @@ def pdf_reader(pdf_stream, target_staff):
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     
-    # camelotでテーブル読み込み
+    # 罫線ありの表を読み取り
     tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
     table_dictionary = {}
     
@@ -41,7 +41,7 @@ def pdf_reader(pdf_stream, target_staff):
             
             if matched_indices:
                 idx = matched_indices[0]
-                # [自分の行(2行分), 自分以外のスタッフの行]
+                # 自分の2行分と、自分以外のスタッフの行を分離
                 table_dictionary[work_place] = [df.iloc[idx : idx + 2, :].copy(), df.drop([0, idx, idx+1]).copy()]
     return table_dictionary
 
@@ -60,7 +60,6 @@ def time_schedule_from_drive(service, file_id):
     while not done: _, done = downloader.next_chunk()
     fh.seek(0)
     
-    # 時間割Excelの読み込み
     full_df = pd.read_excel(fh, header=None, engine='openpyxl')
     location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
     location_data_dic = {}
@@ -68,9 +67,10 @@ def time_schedule_from_drive(service, file_id):
     for i, start_row in enumerate(location_rows):
         end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
         location_name = str(full_df.iloc[start_row, 0]).replace(' ', '').replace('　', '')
-        data_range = full_df.iloc[start_row:end_row, :70].copy().reset_index(drop=True)
+        # 時間軸が含まれる範囲を抽出
+        data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
         
-        # 0行目（時刻ラベル）をHH:MMに変換
+        # 0行目（時間軸）のシリアル値を変換
         for col in range(2, data_range.shape[1]):
             data_range.iloc[0, col] = convert_excel_time(data_range.iloc[0, col])
             
