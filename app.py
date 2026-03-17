@@ -26,13 +26,15 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """デスクトップ版(utils_0.py)で成功したロジックを移植"""
-    # 1. 終日予定(概要)の追加
+    """デスクトップ版 utils_0.py のロジックを忠実に再現"""
+    # 終日予定
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
-    # シフトコード（数値など）を取得
+    # 2行目のシフトコード（12など）を取得
     shift_code = str(my_daily_shift.iloc[1, col]).strip()
     sched_clean = time_schedule.fillna("").astype(str)
+    
+    # 時間割表から自分のコードに一致する行を探す
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
     
     if not my_time_shift.empty:
@@ -45,13 +47,12 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     final_rows[-1][4] = time_schedule.iloc[0, t_col]
 
                 if current_val != "":
-                    # 交代相手の特定
+                    # デスクトップ版の交代・引き継ぎロジック
                     mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
                     handing_dept = f"({prev_val})" if prev_val != "" else ("(交代)" if mask_handing.any() else "")
                     
                     mask_taking = (time_schedule.iloc[:, t_col-1] == current_val)
                     
-                    # 他のスタッフの名前を取得
                     other_codes = other_staff_shift.iloc[:, col].astype(str).str.replace(r'[\s　]', '', regex=True)
                     names_to = other_staff_shift[other_codes.isin(time_schedule.loc[mask_handing, 1].astype(str))].iloc[:, 0].unique()
                     names_from = other_staff_shift[other_codes.isin(time_schedule.loc[mask_taking, 1].astype(str))].iloc[:, 0].unique()
@@ -64,7 +65,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         if final_rows and final_rows[-1][4] == "":
              final_rows[-1][4] = time_schedule.iloc[0, t_col]
 
-# --- UIメイン ---
+# --- メイン処理 ---
 if st.button("① ファイル確認"):
     try:
         drive_service = get_gapi_service('drive', 'v3')
@@ -106,14 +107,12 @@ if 'pdf_files' in st.session_state:
                         target_date = f"{y}/{m}/{col}"
                         
                         if any(h in shift_info for h in ["休", "公休", "有給", "特休"]):
-                            main_info = "有給" if "有給" in shift_info else "休日"
-                            rows_final.append([f"{key}_{main_info}", target_date, "", target_date, "", "True", "", key])
+                            rows_final.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
                         else:
                             shift_cal(key, target_date, col, shift_info, my_shift, other_shift, t_sched, rows_final)
                     
                     if rows_final:
                         st.subheader(f"📍 {key} の解析結果")
-                        df_res = pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"])
-                        st.dataframe(df_res)
-                st.success("解析完了！期待通りの表示になっているか確認してください。")
+                        st.dataframe(pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]))
+                st.success("解析完了。表示を確認してください。")
             except Exception as e: st.error(f"解析エラー: {e}")
