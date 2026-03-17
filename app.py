@@ -22,7 +22,6 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    # シフトコードに合致する時間を時程表から検索
     shift_code = my_daily_shift.iloc[0, col]
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == str(shift_code)]
                     
@@ -32,7 +31,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             current_val = my_time_shift.iloc[0, t_col]
             if current_val != prev_val:
                 if current_val != "": 
-                    # 交代相手の特定
                     mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
                     mask_taking = (time_schedule.iloc[:, t_col-1] == current_val)
                     
@@ -60,7 +58,7 @@ if st.button("① ファイル確認"):
             st.session_state['pdf_files'] = items
             st.success(f"{len(items)}件のPDFが見つかりました。")
         else:
-            st.warning("PDFが見つかりません。共有設定を確認してください。")
+            st.warning("PDFが見つかりません。")
     except Exception as e:
         st.error(f"エラー: {e}")
 
@@ -74,6 +72,9 @@ if 'pdf_files' in st.session_state:
                 drive_service = get_gapi_service('drive', 'v3')
                 time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
                 
+                # --- デバッグ用表示 (Excel側) ---
+                st.write("🔍 Excel(時程表)から見つけた場所名:", list(time_sched_dic.keys()))
+                
                 pdf_req = drive_service.files().get_media(fileId=selected_id)
                 pdf_stream = io.BytesIO()
                 downloader = MediaIoBaseDownload(pdf_stream, pdf_req)
@@ -82,13 +83,20 @@ if 'pdf_files' in st.session_state:
                 
                 pdf_stream.seek(0)
                 pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
+                
+                # --- デバッグ用表示 (PDF側) ---
+                st.write("🔍 PDFから見つけた場所名:", list(pdf_dic.keys()))
+                
                 pdf_stream.seek(0)
                 y, m = extract_year_month(pdf_stream)
                 
                 integrated = data_integration(pdf_dic, time_sched_dic)
                 
+                if not integrated:
+                    st.error("❌ PDFとExcelの場所名が一致しなかったため、統合できませんでした。")
+                    st.info("上の『🔍』で表示された名前が完全に一致しているか確認してください。")
+
                 for key, data_list in integrated.items():
-                    if len(data_list) < 3: continue
                     rows_shift = []
                     my_shift, other_shift, t_sched = data_list[0], data_list[1], data_list[2]
 
@@ -98,7 +106,7 @@ if 'pdf_files' in st.session_state:
                         
                         target_date = f"{y}/{m}/{col}"
                         if any(h in info for h in ["休", "公休", "有給"]):
-                            st.write(f"📅 {target_date}: お休み")
+                            st.write(f"📅 {target_date}: お休み ({info})")
                         else:
                             shift_cal(key, target_date, col, info, my_shift, other_shift, t_sched, rows_shift)
                     
@@ -107,6 +115,5 @@ if 'pdf_files' in st.session_state:
                         st.dataframe(pd.DataFrame(rows_shift, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]))
 
                 st.success("解析完了！")
-                st.balloons()
             except Exception as e:
                 st.error(f"エラー: {e}")
