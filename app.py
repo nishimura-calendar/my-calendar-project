@@ -4,7 +4,7 @@ import io
 import os
 import re
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.credentials import Credentials
 
 # practice_0.pyからロジックを読み込み
@@ -12,7 +12,6 @@ from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive,
 
 # --- 設定 ---
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
-CSV_FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
 
@@ -32,7 +31,6 @@ def get_gapi_service(service_name, version):
     
     info = dict(st.secrets["gcp_service_account"])
     
-    # カレンダーとドライブ両方の権限をリストで指定します
     scopes = [
         'https://www.googleapis.com/auth/calendar',
         'https://www.googleapis.com/auth/drive.readonly'
@@ -44,7 +42,7 @@ def get_gapi_service(service_name, version):
     )
     return build(service_name, version, credentials=creds) 
     
-# --- シフト詳細計算ロジック (utils_0.pyから移植) ---
+# --- シフト詳細計算ロジック ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     if (time_schedule.iloc[:, 1] == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
@@ -93,65 +91,82 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
 
 # --- メイン UI 処理 ---
 
-if st.button("① メールを検索"):
-    st.info("Gmailから最新のシフトPDFメールを検索中...")
-    # ※ここではデモ用にリストを作成していますが、実際はGmail APIで取得します
-    st.session_state['mails'] = [{"name": "免税店シフト表_3月.pdf", "id": "file_id_example", "date": "2026/03/01"}]
+if st.button("① メール検索 & ファイル確認"):
+    with st.spinner("ドライブを確認中..."):
+        try:
+            drive_service = get_gapi_service('drive', 'v3')
+            results = drive_service.files().list(
+                q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'",
+                pageSize=5, fields="files(id, name)"
+            ).execute()
+            items = results.get('files', [])
+            if not items:
+                st.warning("PDFファイルが見つかりません。")
+            else:
+                st.session_state['pdf_files'] = items
+                st.success(f"{len(items)} 件のPDFが見つかりました。")
+        except Exception as e:
+            st.error(f"接続エラー: {e}")
 
-if 'mails' in st.session_state:
-    selected_mail = st.selectbox("処理するファイルを選択", options=[m['name'] for m in st.session_state['mails']])
+if 'pdf_files' in st.session_state:
+    selected_pdf_name = st.selectbox("処理するPDFを選択", options=[f['name'] for f in st.session_state['pdf_files']])
+    selected_pdf_id = next(f['id'] for f in st.session_state['pdf_files'] if f['name'] == selected_pdf_name)
 
-    if st.button("② 実行（Drive保存 ＆ カレンダー登録）"):
-        with st.spinner("処理中..."):
+    if st.button("② 実行（解析 ＆ カレンダー登録）"):
+        with st.spinner("解析中..."):
             try:
-                # サービス開始
                 drive_service = get_gapi_service('drive', 'v3')
                 
                 # 1. Driveから時程表を取得
                 time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
                 
-                # 2. PDFの読み込み (実際はDriveからダウンロードしたストリーム)
-                # ここではpdf_readerに渡すためのダミー処理（実際はselected_mailから取得）
-                pdf_stream = io.BytesIO() # ここにDriveからのデータをダウンロード
+                # 2. 選択されたPDFをダウンロード
+                pdf_request = drive_service.files().get_media(fileId=selected_pdf_id)
+                pdf_stream = io.BytesIO()
+                downloader = MediaIoBaseDownload(pdf_stream, pdf_request)
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                
+                # PDF解析
+                pdf_stream.seek(0)
                 pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
-                year_month = "2026年3月" # extract_year_month(pdf_stream)
+                
+                # 年月抽出
+                pdf_stream.seek(0)
+                y, m = extract_year_month(pdf_stream)
+                year_month = f"{y}年{m}月"
                 
                 # 3. データの統合
                 shift_dic = data_integration(pdf_dic, time_sched_dic)
                 
-                # 4. 三要素（休日・イベント・シフト）の振り分けロジック
+                # 4. 振り分けと表示
                 holiday_keywords = ["休", "公休", "有給", "特休"]
                 special_location = "本町"
-                columns = ["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"]
 
                 for key, data_list in shift_dic.items():
-                    rows_holiday, rows_event, rows_shift = [], [], []
+                    rows_shift = []
                     my_daily_shift, other_daily_shift, time_sched_df = data_list 
 
                     for col in range(1, my_daily_shift.shape[1]):
                         shift_info = str(my_daily_shift.iloc[0, col]).strip()
-                        if not shift_info or shift_info.lower() == "nan": continue
+                        if not shift_info or shift_info.lower() == "nan" or shift_info == "": continue
 
-                        # 日付作成 (YYYY/MM/DD)
-                        d_match = re.search(r'(\d+)年(\d+)月', year_month)
-                        y, m = (d_match.group(1), d_match.group(2)) if d_match else ("2026", "3")
                         target_date = f"{y}/{m}/{col}"
 
                         if any(h in shift_info for h in holiday_keywords):
-                            rows_holiday.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
+                            st.write(f"📅 {target_date}: 休日 ({shift_info})")
                         elif special_location in shift_info:
-                            rows_event.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
-                            if my_daily_shift.iloc[1, col] != "":
-                                s, e = working_hours(my_daily_shift.iloc[1, col])
-                                rows_event.append([f"{shift_info}", target_date, s, target_date, e, "False", "", ""])
+                            st.write(f"📅 {target_date}: イベント ({shift_info})")
                         else:
                             shift_cal(key, target_date, col, shift_info, my_daily_shift, other_daily_shift, time_sched_df, rows_shift)
                     
-                    # --- カレンダー登録 & Drive保存 (擬似コード) ---
-                    # ここでCOLOR_MAPを利用してGoogle Calendar APIへ送信
-                    # 例: insert_calendar(rows_shift, color=COLOR_MAP["shift"])
-                
-                st.success("全ての処理が完了しました！カレンダーをご確認ください。")
+                    if rows_shift:
+                        st.write(f"✅ {key} のシフトを解析しました。")
+                        df_result = pd.DataFrame(rows_shift, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day", "Desc", "Loc"])
+                        st.dataframe(df_result)
+
+                st.success("全ての解析が完了しました！")
                 st.balloons()
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
