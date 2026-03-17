@@ -5,7 +5,7 @@ import re
 import io
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDFから自分と他人のシフトを抽出"""
+    """PDFから場所名を抽出し、余分な空白や改行を除去して一致率を高める"""
     clean_target = str(target_staff).replace(' ', '').replace('　', '')
     
     with open("temp.pdf", "wb") as f:
@@ -17,33 +17,43 @@ def pdf_reader(pdf_stream, target_staff):
     for table in tables:
         df = table.df
         if not df.empty:
+            # 1. セル内のテキストを取得
             text = str(df.iloc[0, 0])
-            lines = text.splitlines()
-            target_index = text.count('\n') // 2
-            work_place = lines[target_index] if target_index < len(lines) else (lines[-1] if lines else "Unknown")
             
-            work_place = work_place.strip()
-            # 場所名の名寄せ
-            if work_place == "1" or "第2ターミナル" in work_place: work_place = "T2"
-            elif work_place == "2" or "第1ターミナル" in work_place: work_place = "T1"
+            # 2. 改行で分割し、空行を除去したリストを作る
+            lines = [line.strip() for line in text.splitlines() if line.strip()]
             
+            if lines:
+                # 西村さんのロジック：中央付近の行に場所名があると想定
+                target_idx = len(lines) // 2
+                raw_place = lines[target_idx]
+                
+                # 3. 【重要】比較用に、全角・半角スペースと改行をすべて除去
+                work_place = re.sub(r'[\s　]', '', raw_place)
+            else:
+                work_place = "Unknown"
+            
+            # --- デバッグ用：実際に読み取った加工後の名前を確認したい場合 ---
+            # print(f"DEBUG: 読み取った場所名 -> {work_place}")
+
             df = df.fillna('')
+            # 名前列（0列目）もスペースを除去して判定
             search_col = df.iloc[:, 0].astype(str).str.replace(r'[\s　]', '', regex=True)
             matched_indices = df.index[search_col == clean_target].tolist()
         
             if matched_indices:
                 idx = matched_indices[0]
-                # 0行目（ヘッダー）を除いて抽出
                 my_daily_shift = df.iloc[idx : idx + 2, :].copy()
                 other_daily_shift = df[(search_col != clean_target) & (df.index != 0)].copy()
 
+                # 加工後の名前で辞書に格納
                 table_dictionary[work_place] = [
                     my_daily_shift.reset_index(drop=True), 
                     other_daily_shift.reset_index(drop=True)
                 ]
                 
     return table_dictionary
-
+    
 def extract_year_month(pdf_stream):
     """PDFから年月を抽出"""
     with pdfplumber.open(pdf_stream) as pdf:
