@@ -3,10 +3,20 @@ import pandas as pd
 import pdfplumber
 import re
 import io
-import datetime
+import numpy as np
+
+def extract_year_month(pdf_stream):
+    """PDFから年月を抽出（ポインタを戻す処理を追加）"""
+    pdf_stream.seek(0)
+    with pdfplumber.open(pdf_stream) as pdf:
+        text = "".join([page.extract_text() or "" for page in pdf.pages[:2]]) # 最初の2ページで十分
+    match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', text)
+    pdf_stream.seek(0) # 次のcamelot処理のために戻す
+    if match: return match.group(1), match.group(2)
+    return "2026", "3"
 
 def pdf_reader(pdf_stream, target_staff):
-    clean_target = str(target_staff).replace(' ', '').replace('　', '')
+    clean_target = re.sub(r'[\s　]', '', str(target_staff))
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     
@@ -26,18 +36,11 @@ def pdf_reader(pdf_stream, target_staff):
             matched_indices = df.index[search_col == clean_target].tolist()
             if matched_indices:
                 idx = matched_indices[0]
-                # idx: シフトコード(C等), idx+1: 勤務記号(○等)
+                # 名前行と、そのすぐ下の記号行をセットにする
                 table_dictionary[work_place] = [df.iloc[idx : idx + 2, :].copy(), df.drop([0, idx, idx+1]).copy()]
     return table_dictionary
 
-def extract_year_month(pdf_stream):
-    with pdfplumber.open(pdf_stream) as pdf:
-        text = "".join([page.extract_text() or "" for page in pdf.pages])
-    match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', text)
-    return (match.group(1), match.group(2)) if match else ("2026", "3")
-
 def time_schedule_from_drive(service, file_id):
-    from googleapiclient.http import MediaIoBaseDownload
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -51,18 +54,20 @@ def time_schedule_from_drive(service, file_id):
     
     for i, start_row in enumerate(location_rows):
         end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
-        location_name = str(full_df.iloc[start_row, 0]).replace(' ', '').replace('　', '')
-        data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+        location_name = str(full_df.iloc[start_row, 0]).strip()
         
-        # 0行目（時刻）のシリアル値を文字列に変換
+        # 時程表の列数（時刻が入っている範囲）を自動判定
+        data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+        data_range = data_range.astype(object)
+
         for col in range(2, data_range.shape[1]):
             val = data_range.iloc[0, col]
-            if isinstance(val, (int, float)) and val < 1.0:
-                hours = int(val * 24)
-                minutes = int(round((val * 24 - hours) * 60))
+            if pd.notna(val) and isinstance(val, (int, float)) and val < 1.0:
+                # Excelシリアル値 (0.5 = 12:00) を HH:MM に変換
+                total_seconds = int(round(val * 86400))
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
                 data_range.iloc[0, col] = f"{hours}:{minutes:02d}"
-            elif isinstance(val, datetime.time):
-                data_range.iloc[0, col] = val.strftime("%H:%M")
         
         location_data_dic[location_name] = [data_range.fillna('')]
     return location_data_dic
