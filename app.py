@@ -4,7 +4,7 @@ import io
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
-from web_practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
+from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
 
 # 固定設定
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
