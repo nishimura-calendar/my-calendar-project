@@ -5,29 +5,6 @@ import re
 import io
 import datetime
 
-def convert_excel_time(val):
-    """Excelのシリアル値や数値を、HH:MM形式の文字列に変換する。異常値(150:00等)を防ぐ"""
-    if pd.isna(val) or val == "":
-        return ""
-    if isinstance(val, datetime.time):
-        return val.strftime("%H:%M")
-    if isinstance(val, (int, float)):
-        try:
-            # シリアル値(0.0-1.0)の場合
-            if 0 <= val < 1.0:
-                total_seconds = int(round(val * 86400))
-                h = total_seconds // 3600
-                m = (total_seconds % 3600) // 60
-                return f"{h}:{m:02d}"
-            else:
-                # 整数で時間が入力されている場合（15.0など）
-                h = int(val)
-                m = int(round((val - h) * 60))
-                return f"{h % 24}:{m:02d}"
-        except:
-            pass
-    return str(val).strip()
-
 def pdf_reader(pdf_stream, target_staff):
     """PDFからスタッフの勤務行とそれ以外のスタッフ行を抽出する"""
     clean_target = str(target_staff).replace(' ', '').replace('　', '')
@@ -72,19 +49,61 @@ def time_schedule_from_drive(service, file_id):
     fh.seek(0)
     
     full_df = pd.read_excel(fh, header=None, engine='openpyxl')
+    # --- 【新規追加】列の境界（文字列が現れる列）を自動判定 ---
+    # 3列目以降をループし、数値に変換できない文字列が出たらそこを境界とする
+    col_limit = len(full_df.columns)
+    for i in range(3, len(full_df.columns)):
+        val = full_df.iloc[0, i]
+        try:
+            # 数値（時刻）として解釈できるか試行
+            float(val)
+        except (ValueError, TypeError):
+            # 数値に変換できない＝「出勤」などの文字列に到達したと判断
+            col_limit = i
+            break
+            
+    # 2. 勤務地名の行を特定する
+    # 0列目 (インデックス0) でNaNではない行が勤務地（ブロックの開始）行
     location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
+    
     location_data_dic = {}
     
+    # 3. 各勤務地行を反復処理し、データを抽出する
     for i, start_row in enumerate(location_rows):
-        end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
-        location_name = str(full_df.iloc[start_row, 0]).replace(' ', '').replace('　', '')
-        data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
         
-        # インデックス2（3列目）以降の時間軸ヘッダーをHH:MMに変換
-        for col in range(2, data_range.shape[1]):
-            data_range.iloc[0, col] = convert_excel_time(data_range.iloc[0, col])
+        # 次の勤務地行のインデックスを取得 (最後の勤務地の場合はファイルの最後まで)
+        end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+        
+        # 勤務地名を取得
+        location_name = full_df.iloc[start_row, 0]
+        
+        # --- 【修正箇所】判定された col_limit を使用して範囲を抽出 ---
+        data_range = full_df.iloc[start_row:end_row, 0:col_limit].copy()
+        
+        # インデックスを0から振り直す
+        data_range = data_range.reset_index(drop=True)
+
+        # あらかじめ全データを object 型にキャスト（警告防止）
+        data_range = data_range.astype(object)
+
+        # --- 時間表記の変換処理 ---
+        for col in range(1, data_range.shape[1]):
+            val = data_range.iloc[0, col]
             
-        location_data_dic[location_name] = [data_range.fillna('')]
+            if pd.notna(val) and isinstance(val, (int, float)):
+                try:
+                    hours = int(val)
+                    minutes = int(round((val - hours) * 60))
+                    data_range.iloc[0, col] = f"{hours}:{minutes:02d}"
+                except (ValueError, TypeError):
+                    continue
+                
+        # 欠損値を空白に変換
+        data_range = data_range.fillna('')
+        
+        # 辞書に追加
+        location_data_dic[location_name] = [data_range]
+        
     return location_data_dic
 
 def data_integration(pdf_dic, time_schedule_dic):
