@@ -6,6 +6,7 @@ import io
 import numpy as np
 
 def pdf_reader(pdf_stream, target_staff):
+    # Pythonの正規表現ライブラリ re を使用して、変数 target_staff に含まれる すべての空白文字（半角スペース、全角スペース、タブ、改行など）を完全に削除 する処理
     clean_target = re.sub(r'[\s　]', '', str(target_staff))
     
     with open("temp.pdf", "wb") as f:
