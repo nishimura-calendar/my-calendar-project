@@ -4,6 +4,7 @@ import pdfplumber
 import re
 import io
 import numpy as np
+from googleapiclient.http import MediaIoBaseDownload
 
 def extract_year_month(pdf_stream):
     """PDFから年月を抽出（ポインタを戻す処理を追加）"""
