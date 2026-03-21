@@ -6,6 +6,7 @@ import io
 import datetime
 
 def pdf_reader(pdf_stream, target_staff):
+    """PDFから指定スタッフのデータを抽出"""
     clean_target = str(target_staff).replace(' ', '').replace('　', '')
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
@@ -26,17 +27,19 @@ def pdf_reader(pdf_stream, target_staff):
             matched_indices = df.index[search_col == clean_target].tolist()
             if matched_indices:
                 idx = matched_indices[0]
-                # 名前行(idx)とその下の行(idx+1)の2行を抽出
+                # 名前行(idx)をシフトコード用、その下の行(idx+1)を勤務記号用として保持
                 table_dictionary[work_place] = [df.iloc[idx : idx + 2, :].copy(), df.drop([0, idx, idx+1]).copy()]
     return table_dictionary
 
 def extract_year_month(pdf_stream):
+    """PDFから年月を抽出"""
     with pdfplumber.open(pdf_stream) as pdf:
         text = "".join([page.extract_text() or "" for page in pdf.pages])
     match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', text)
     return (match.group(1), match.group(2)) if match else ("2026", "3")
 
 def time_schedule_from_drive(service, file_id):
+    """時程表を読み込み、0行目のシリアル値を時刻文字列に変換"""
     from googleapiclient.http import MediaIoBaseDownload
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
@@ -54,6 +57,7 @@ def time_schedule_from_drive(service, file_id):
         location_name = str(full_df.iloc[start_row, 0]).replace(' ', '').replace('　', '')
         data_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
         
+        # 0行目（時刻）の変換
         for col in range(2, data_range.shape[1]):
             val = data_range.iloc[0, col]
             if isinstance(val, (int, float)) and val < 1.0:
@@ -62,10 +66,13 @@ def time_schedule_from_drive(service, file_id):
                 data_range.iloc[0, col] = f"{hours}:{minutes:02d}"
             elif isinstance(val, datetime.time):
                 data_range.iloc[0, col] = val.strftime("%H:%M")
+        
         location_data_dic[location_name] = [data_range.fillna('')]
     return location_data_dic
 
 def data_integration(pdf_dic, time_schedule_dic):
+    """勤務地名でデータを紐付け"""
     for key, value in time_schedule_dic.items():
-        if key in pdf_dic: pdf_dic[key].extend(value)
+        if key in pdf_dic:
+            pdf_dic[key].extend(value)
     return pdf_dic
