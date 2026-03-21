@@ -10,7 +10,7 @@ TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
 
-st.set_page_config(page_title="シフト管理システム", layout="wide")
+st.set_page_config(page_title="シフト変換", layout="wide")
 st.title("📅 シフトカレンダー一括変換")
 
 def get_gapi_service(service_name, version):
@@ -19,43 +19,48 @@ def get_gapi_service(service_name, version):
     return build(service_name, version, credentials=creds)
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, time_schedule, final_rows):
-    # 終日予定
+    """セルの内容が変化したときだけ行を生成するロジック"""
+    # 終日予定を追加
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
-    # 0行目からシフトコード(C, B, 12等)を取得
+    # 0行目（スタッフ名のすぐ下の行）からシフトコードを取得
     shift_code = str(my_daily_shift.iloc[0, col]).strip()
     sched_clean = time_schedule.fillna("").astype(str)
     
-    # 時程表のB列（インデックス1）とコードを照合
+    # 時程表から該当するコードの行を特定
     my_time_shift = sched_clean.iloc[1:][sched_clean.iloc[1:, 1] == shift_code]
     
     if not my_time_shift.empty:
         prev_role = None
-        last_added_idx = -1
+        last_row_idx = -1
+        
+        # 時刻列（2列目以降）をスキャン
         for t_col in range(2, time_schedule.shape[1]):
             current_role = my_time_shift.iloc[0, t_col].strip()
+            
             if not current_role:
-                prev_role = None
+                prev_role = None # 空白（休憩等）で役割が途切れた
                 continue
             
-            if current_role == prev_role and last_added_idx != -1:
-                # 役割が同じなら終了時間のみ更新
+            # 15分刻みに関わらず、「役割が前と同じ」なら終了時間を延ばすだけ
+            if current_role == prev_role and last_row_idx != -1:
                 next_t = str(time_schedule.iloc[0, t_col+1]).strip() if t_col+1 < time_schedule.shape[1] else str(time_schedule.iloc[0, t_col]).strip()
-                final_rows[last_added_idx][4] = next_t
+                final_rows[last_row_idx][4] = next_t
             else:
-                # 役割が変わったら新規追加
+                # 役割が新しくなった（または途切れから再開した）ので新規行作成
                 start_t = str(time_schedule.iloc[0, t_col]).strip()
                 end_t = str(time_schedule.iloc[0, t_col+1]).strip() if t_col+1 < time_schedule.shape[1] else start_t
+                
                 final_rows.append([f"【{current_role}】", target_date, start_t, target_date, end_t, "False", "", key])
-                last_added_idx = len(final_rows) - 1
+                last_row_idx = len(final_rows) - 1
                 prev_role = current_role
 
 # UI
-if st.button("① Google DriveからPDFを取得"):
-    drive_service = get_gapi_service('drive', 'v3')
-    files = drive_service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute().get('files', [])
+if st.button("① Google DriveからPDF取得"):
+    service = get_gapi_service('drive', 'v3')
+    files = service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute().get('files', [])
     st.session_state['pdf_files'] = files
-    st.success(f"{len(files)}件取得")
+    st.success("取得完了")
 
 if 'pdf_files' in st.session_state:
     selected_name = st.selectbox("PDF選択", [f['name'] for f in st.session_state['pdf_files']])
@@ -78,16 +83,8 @@ if 'pdf_files' in st.session_state:
         
         integrated = data_integration(pdf_dic, time_sched_dic)
         
-        # --- デバッグ表示 ---
-        if not integrated:
-            st.error("データの統合に失敗しました。PDFと時程表の勤務地名（T2など）が一致しているか確認してください。")
-        
         for key, data in integrated.items():
-            st.info(f"📍 {key} のデータを処理中...")
-            if len(data) < 3:
-                st.warning(f"  -> {key} に対応する時程表データが見つかりません。")
-                continue
-            
+            if len(data) < 3: continue
             rows_res = []
             my_s, t_s = data[0], data[2]
             
@@ -96,13 +93,12 @@ if 'pdf_files' in st.session_state:
                 if not shift_info or shift_info.lower() == "nan": continue
                 
                 target_date = f"{y}/{m}/{col}"
+                # 休日判定
                 if any(h in shift_info for h in ["休", "有給", "公休"]):
                     rows_res.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
                 else:
                     shift_cal(key, target_date, col, shift_info, my_s, t_s, rows_res)
             
             if rows_res:
-                st.subheader(f"📍 勤務地: {key}")
+                st.subheader(f"📍 {key}")
                 st.dataframe(pd.DataFrame(rows_res, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]))
-            else:
-                st.warning(f"  -> {key} の解析結果が0件です。シフト記号の読み取りに失敗している可能性があります。")
