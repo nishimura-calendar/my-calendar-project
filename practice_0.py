@@ -3,6 +3,7 @@ import pandas as pd
 import pdfplumber
 import re
 import io
+import unicodedata
 
 def pdf_reader(pdf_stream, target_staff):
     """PDFから2段構造（上段：記号、下段：時間）を考慮して自分と他人のシフトを抽出"""
@@ -62,7 +63,7 @@ def extract_year_month(pdf_stream):
     return "2026", "3"
 
 def time_schedule_from_drive(service, file_id):
-    """時程表Excelから時刻列の境界を判定して抽出"""
+    """Excel内を検索して『記号』列を基準に表を正確に切り出す"""
     from googleapiclient.http import MediaIoBaseDownload
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
@@ -77,42 +78,57 @@ def time_schedule_from_drive(service, file_id):
     for sheet_name, full_df in excel_data.items():
         if full_df.empty: continue
 
-        # 時刻（数値）が終わる列（col_limit）を判定
-        col_limit = len(full_df.columns)
-        for i in range(2, len(full_df.columns)):
-            val = full_df.iloc[0, i]
-            if pd.isna(val) or val == "":
-                col_limit = i
-                break
-            try: float(val)
-            except:
-                col_limit = i
-                break
+        # 全データを正規化（全角→半角、空白除去）して検索しやすくする
+        df_clean = full_df.astype(str).applymap(
+            lambda x: unicodedata.normalize('NFKC', x).strip() if x != 'nan' else ""
+        )
 
-        location_rows = full_df[full_df.iloc[:, 0].astype(str).str.strip() != ""].index.tolist()
-        for i, start_row in enumerate(location_rows):
-            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
-            location_name = str(full_df.iloc[start_row, 0]).strip()
+        # B列(index 1)に「記号」という文字がある行をヘッダーとして特定
+        header_indices = df_clean[df_clean.iloc[:, 1] == "記号"].index.tolist()
+
+        for i, header_idx in enumerate(header_indices):
+            # 場所名はヘッダーの1行上にあると仮定
+            location_name = "unknown"
+            if header_idx > 0:
+                name_val = df_clean.iloc[header_idx - 1, 0] or df_clean.iloc[header_idx - 1, 1]
+                if name_val:
+                    location_name = name_val
+
+            # 次のヘッダーがあるか、シートの末尾までを範囲とする
+            end_idx = header_indices[i+1] if i+1 < len(header_indices) else len(full_df)
             
-            data_range = full_df.iloc[start_row:end_row, 0:col_limit].copy()
-            data_range = data_range.reset_index(drop=True) # 0から振り直し             
-            data_range = data_range.reset_index(drop=True).astype(object)
+            # 列の終わりを判定（時刻が並んでいる右端を探す）
+            col_limit = full_df.shape[1]
+            for c in range(2, full_df.shape[1]):
+                if pd.isna(full_df.iloc[header_idx, c]) or str(full_df.iloc[header_idx, c]).strip() == "":
+                    col_limit = c
+                    break
 
-            # 時間表記の変換
+            # --- ここで範囲を切り出し、インデックスを振り直す ---
+            data_range = full_df.iloc[header_idx : end_idx, 0 : col_limit].copy()
+            data_range = data_range.reset_index(drop=True) # 0から振り直し
+            data_range = data_range.astype(object)
+
+            # B列(記号)の正規化（照合ミスを防ぐ）
+            data_range.iloc[:, 1] = data_range.iloc[:, 1].apply(
+                lambda x: unicodedata.normalize('NFKC', str(x)).strip() if pd.notna(x) else ""
+            )
+
+            # 時刻表記の変換 (0.375 -> 9:00)
             for col in range(2, data_range.shape[1]):
                 val = data_range.iloc[0, col]
                 if pd.notna(val) and isinstance(val, (int, float)):
                     try:
-                        hours = int(val * 24) if val < 1 else int(val)
-                        minutes = int(round((val * 24 - hours) * 60)) if val < 1 else 0
-                        data_range.iloc[0, col] = f"{hours}:{minutes:02d}"
+                        h = int(val * 24) if val < 1 else int(val)
+                        m = int(round((val * 24 - h) * 60)) if val < 1 else 0
+                        data_range.iloc[0, col] = f"{h}:{m:02d}"
                     except: continue
-                
+            
             data_range = data_range.fillna('')
             location_data_dic[location_name] = [data_range]
             
     return location_data_dic
-
+    
 def data_integration(pdf_dic, time_sched_dic):
     """場所名でPDFと時程表を統合"""
     integrated = {}
