@@ -1,38 +1,38 @@
 import streamlit as st
 import pandas as pd
 import io
-import os
-import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-from google.oauth2.credentials import Credentials
-from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration, working_hours
+from googleapiclient.http import MediaIoBaseDownload
+from google.oauth2 import service_account
+from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
 
-# --- 設定 ---
-TIME_TABLE_ID = "1g6REpegOHEXsY30edTCqie-h873FOKAF"
-CSV_FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
+# 固定設定
+TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
 
-# カレンダーの色設定 (Google API Color ID)
-COLOR_MAP = {
-    "shift": "10",   # 緑 (Basil)
-    "event": "9",    # 青 (Blueberry)
-    "holiday": "11"  # 赤 (Tomato)
-}
+st.set_page_config(page_title="シフト変換", layout="wide")
+st.title("📅 シフトカレンダー一括変換 (引き継ぎ＆結合ロジック搭載版)")
 
-st.set_page_config(page_title="シフト管理システム", layout="centered")
-st.title("📅 シフトカレンダー一括登録")
+# --- Google API認証 ---
+def get_gapi_service():
+    try:
+        if "gcp_service_account" not in st.secrets:
+            st.error("Secretsに 'gcp_service_account' が設定されていません。")
+            return None
+        info = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        st.error(f"認証エラー: {e}")
+        return None
 
-# --- 認証処理 (Streamlit Secretsを利用) ---
-def get_gapi_service(service_name, version):
-    # 本番運用時は st.secrets から認証情報を取得する設定が必要
-    # 今回は簡略化のため、既存のtoken.json等がある前提
-    creds = Credentials.from_authorized_user_info(st.secrets["gcp_service_account"])
-    return build(service_name, version, credentials=creds)
-
-# --- シフト詳細計算ロジック (ご提示のロジック) ---
+# --- コアロジック: 引き継ぎ相手の特定と予定の結合 ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
+    # 終日イベントの追加（シフトコードそのものの予定）
     if (time_schedule.iloc[:, 1] == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
         
@@ -44,78 +44,117 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         prev_val = ""
         for t_col in range(2, time_schedule.shape[1]):
             current_val = my_time_shift.iloc[0, t_col]
+            
             if current_val != prev_val:
                 if current_val != "": 
-                    handing_over_department = ""
-                    mask_handing_over = pd.Series([False] * len(time_schedule))
+                    # prev_val(渡す部署〈何でもok〉)・current_val
+                    handing_over_department = "" # 渡す部署（私の部署）=""、初期化
+                    # 渡す人=（false*行）で、初期化
+                    mask_handing_over = pd.Series([False] * len(time_schedule)) # 渡すの人（初期化）
                     
                     if prev_val == "": 
                         mask_handing_over = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
-                        handing_over_department = "(交代)" if mask_handing_over.any() else ""
+                        
+                        # 条件に合う行が1つでもあれば "(交代)" をセット
+                        if mask_handing_over.any():
+                            handing_over_department = "(交代)"
+                        else:
+                            handing_over_department = ""
                     else:
+                        # prev_val(空白以外)・current_val
                         handing_over_department = f"({prev_val})" 
                         mask_handing_over = (time_schedule.iloc[:, t_col] == prev_val)
-                        if final_rows: final_rows[-1][4] = time_schedule.iloc[0, t_col]
+                        final_rows[-1][4] = time_schedule.iloc[0, t_col] # 前の予定の終了時間をセット
                     
+                    mask_taking_over =pd.Series([False] * len(time_schedule))
                     mask_taking_over = (time_schedule.iloc[:, t_col-1] == current_val)   
-                    handing_over, taking_over = "", ""
+                    
+                    handing_over = ""
+                    taking_over = ""
 
-                    for i in range(0, 2):
+                    for i in range(0, 2): # 0～1で2は循環範囲に入らない
+
                         mask = mask_handing_over if i == 0 else mask_taking_over
-                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]]
-                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
-                        names_series = target_rows.iloc[:, 0]
+                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]] # time_scheduleの１列目を検索してmaskのかかったシフトコードを抽出
+                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)] # other_staff_shiftのcol列目の行を検索してsearch_keysのある行を抽出
+                        names_series = target_rows.iloc[:, 0] # other_staff_shiftのtarget_rowsの０列目のstaff名を抽出
                         
                         if i == 0:
-                            staff_names = f"to {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
+                            staff_names =f"to {"・".join(names_series.unique().astype(str))}" if not names_series.empty else ""
                             handing_over = f"{handing_over_department}{staff_names}"
                         else:
-                            staff_names = f"from {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
+                            staff_names =f"from {"・".join(names_series.unique().astype(str))}" if not names_series.empty else ""
                             taking_over = f"【{current_val}】{staff_names}"    
                     
-                    final_rows.append([f"{handing_over}=>{taking_over}", target_date, time_schedule.iloc[0, t_col], target_date, "", "False", "", ""])
+                    final_rows.append([
+                        f"{handing_over}=>{taking_over}", 
+                        target_date, 
+                        time_schedule.iloc[0, t_col], 
+                        target_date, 
+                        "", 
+                        "False", 
+                        "", 
+                        ""
+                    ])
                 else:
-                    if final_rows: final_rows[-1][4] = time_schedule.iloc[0, t_col]    
+                    final_rows[-1][4] = time_schedule.iloc[0, t_col]    
             prev_val = current_val
 
-# --- メイン UI 処理 ---
+# --- メイン画面 ---
+service = get_gapi_service()
 
-# 手順1・2: Gmail検索ボタン
-if st.button("① メールを検索"):
-    st.info("Gmailから『細谷一男』様、過去30日以内のPDFメールを検索中...")
-    # Gmail API呼び出し (service.users().messages().list)
-    # 検索結果を st.session_state.mails に格納
-    st.session_state['mails'] = [
-        {"name": "免税店シフト表_1月.pdf", "id": "msg_123", "date": "2026/03/01"}
-    ]
+if service:
+    # PDFリスト取得
+    if st.button("① Google DriveからPDFを取得"):
+        results = service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute()
+        st.session_state['pdf_files'] = results.get('files', [])
+        st.success(f"{len(st.session_state['pdf_files'])}件のPDFを取得しました")
 
-# 手順3: 該当メール表示
-if 'mails' in st.session_state:
-    mail_options = {f"{m['name']} ({m['date']})": m['id'] for m in st.session_state['mails']}
-    selected_mail_id = st.selectbox("処理するファイルを選択", options=list(mail_options.keys()))
+    # 解析実行
+    if 'pdf_files' in st.session_state and st.session_state['pdf_files']:
+        selected_name = st.selectbox("PDFを選択", [f['name'] for f in st.session_state['pdf_files']])
+        selected_id = next(f['id'] for f in st.session_state['pdf_files'] if f['name'] == selected_name)
 
-    # 手順4: 実行ボタン
-    if st.button("② 実行（Drive保存 ＆ カレンダー登録）"):
-        with st.spinner("データ解析中..."):
-            # 1. Driveから時程表を取得
-            # time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
-            
-            # 2. PDF解析ロジックの実行
-            # (ここでは中略。practice_0の各関数を呼び出し)
-            
-            # 3. カレンダー登録 (色指定付き)
-            for key, data_list in shift_dic.items():
-                my_daily_shift, other_daily_shift, time_sched_df = data_list 
+        if st.button("② 解析を実行"):
+            with st.spinner("解析中..."):
+                # データの読み込み
+                time_sched_dic = time_schedule_from_drive(service, TIME_TABLE_ID)
                 
-                rows_holiday, rows_event, rows_shift = [], [], []
-
-                for col in range(1, my_daily_shift.shape[1]):
-                    # ... (ここにutils_0.pyの振り分けロジックを記述) ...
-
-                    # カレンダー登録時に色を指定
-                    # 休日なら COLOR_MAP["holiday"] (赤)
-                    # イベントなら COLOR_MAP["event"] (青)
-                    # 通常シフトなら COLOR_MAP["shift"] (緑)
-            
-                    st.success("完了しました！カレンダーをご確認ください。")
+                pdf_req = service.files().get_media(fileId=selected_id)
+                pdf_stream = io.BytesIO()
+                downloader = MediaIoBaseDownload(pdf_stream, pdf_req)
+                done = False
+                while not done: _, done = downloader.next_chunk()
+                
+                pdf_stream.seek(0)
+                pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
+                pdf_stream.seek(0)
+                y, m = extract_year_month(pdf_stream)
+                
+                # 統合データの作成
+                shift_dic = data_integration(pdf_dic, time_sched_dic)
+                
+                for key, data_list in shift_dic.items():
+                    if len(data_list) < 3: continue
                     
+                    rows_res = []
+                    my_s = data_list[0]     # 自分のシフト
+                    other_s = data_list[1]  # 自分以外のスタッフのシフト
+                    t_s = data_list[2]      # 時程表
+                    
+                    for col in range(1, my_s.shape[1]):
+                        shift_info = str(my_s.iloc[1, col]).strip()
+                        if not shift_info or shift_info.lower() == "nan": continue
+                        
+                        target_date = f"{y}/{m}/{col}"
+                        # 休日/休暇の判定
+                        if any(h in shift_info for h in ["休", "有給", "公休", "有休"]):
+                            rows_res.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
+                        else:
+                            # 通常勤務時の詳細スケジュール作成（引き継ぎ相手も特定）
+                            shift_cal(key, target_date, col, shift_info, my_s, other_s, t_s, rows_res)
+                    
+                    if rows_res:
+                        st.subheader(f"📍 勤務地: {key}")
+                        df_final = pd.DataFrame(rows_res, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"])
+                        st.dataframe(df_final)
