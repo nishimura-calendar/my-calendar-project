@@ -114,47 +114,82 @@ if service:
     if 'pdf_files' in st.session_state and st.session_state['pdf_files']:
         selected_name = st.selectbox("PDFを選択", [f['name'] for f in st.session_state['pdf_files']])
         selected_id = next(f['id'] for f in st.session_state['pdf_files'] if f['name'] == selected_name)
-
         if st.button("② 解析を実行"):
             with st.spinner("解析中..."):
-                # データの読み込み
+                # 1. Google Driveから時程表（Excel）を取得
                 time_sched_dic = time_schedule_from_drive(service, TIME_TABLE_ID)
                 
+                # 2. 選択されたPDFをダウンロードして読み込み
                 pdf_req = service.files().get_media(fileId=selected_id)
                 pdf_stream = io.BytesIO()
                 downloader = MediaIoBaseDownload(pdf_stream, pdf_req)
                 done = False
-                while not done: _, done = downloader.next_chunk()
+                while not done:
+                    _, done = downloader.next_chunk()
                 
                 pdf_stream.seek(0)
+                # PDFから自分と他人のシフトを抽出
                 pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
+                
+                # デバッグ表示：場所名が一致しているか確認するためのヒント
+                st.write(f"🔍 PDFから抽出された場所名: {list(pdf_dic.keys())}")
+                st.write(f"🔍 時程表(Excel)の場所名: {list(time_sched_dic.keys())}")
+
+                # 3. PDFから対象年月を取得
                 pdf_stream.seek(0)
                 y, m = extract_year_month(pdf_stream)
                 
-                # 統合データの作成
+                # 4. PDFデータと時程表データを場所名（Key）で紐付け
+                # integrated[key] = [my_daily_shift, other_staff_shift, time_sched_df]
                 shift_dic = data_integration(pdf_dic, time_sched_dic)
                 
-                for key, data_list in shift_dic.items():
-                    if len(data_list) < 3: continue
-                    
-                    rows_res = []
-                    my_s = data_list[0]     # 自分のシフト
-                    other_s = data_list[1]  # 自分以外のスタッフのシフト
-                    t_s = data_list[2]      # 時程表
-                    
-                    for col in range(1, my_s.shape[1]):
-                        shift_info = str(my_s.iloc[1, col]).strip()
-                        if not shift_info or shift_info.lower() == "nan": continue
+                # 5. 解析結果の出力
+                if not shift_dic:
+                    st.warning("場所名が一致しなかったため、データが統合されませんでした。PDFとExcelの場所名（スペースの有無など）を確認してください。")
+                else:
+                    for key, data_list in shift_dic.items():
+                        # データの整合性チェック
+                        if len(data_list) < 3:
+                            st.error(f"❌ {key} のデータが不足しています。")
+                            continue
                         
-                        target_date = f"{y}/{m}/{col}"
-                        # 休日/休暇の判定
-                        if any(h in shift_info for h in ["休", "有給", "公休", "有休"]):
-                            rows_res.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
+                        st.info(f"✅ {key} の解析を開始します")
+                        
+                        rows_res = [] # この場所の全日程の予定を格納するリスト
+                        my_s = data_list[0]     # 自分の1ヶ月分のシフト
+                        other_s = data_list[1]  # 他人の1ヶ月分のシフト
+                        t_s = data_list[2]      # この場所の時程表設定
+                        
+                        # 日付列（1列目〜最終列まで）をループ
+                        for col in range(1, my_s.shape[1]):
+                            # シフト記号（A, B, 休 など）を取得
+                            shift_info = str(my_s.iloc[1, col]).strip()
+                            
+                            # 空白やNaNはスキップ
+                            if not shift_info or shift_info.lower() == "nan":
+                                continue
+                            
+                            target_date = f"{y}/{m}/{col}"
+                            
+                            # 休日・休暇の判定
+                            if any(h in shift_info for h in ["休", "有給", "公休", "有休"]):
+                                # 終日予定として「休日」を追加
+                                rows_res.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
+                            else:
+                                # 通常勤務の場合：時程表と照らし合わせて詳細スケジュールを作成
+                                # 引き継ぎ相手の特定ロジックを含む
+                                shift_cal(key, target_date, col, shift_info, my_s, other_s, t_s, rows_res)
+                        
+                        # ループ終了後、この場所の予定があれば表として表示
+                        if rows_res:
+                            st.subheader(f"📍 勤務地: {key}")
+                            df_final = pd.DataFrame(
+                                rows_res, 
+                                columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]
+                            )
+                            # インデックスを1からにして見やすく表示
+                            df_final.index = df_final.index + 1
+                            st.dataframe(df_final, use_container_width=True)
                         else:
-                            # 通常勤務時の詳細スケジュール作成（引き継ぎ相手も特定）
-                            shift_cal(key, target_date, col, shift_info, my_s, other_s, t_s, rows_res)
-                    
-                    if rows_res:
-                        st.subheader(f"📍 勤務地: {key}")
-                        df_final = pd.DataFrame(rows_res, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"])
-                        st.dataframe(df_final)
+                            st.write(f"⚠️ {key} に表示できる予定が見つかりませんでした。")
+
