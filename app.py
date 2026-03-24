@@ -25,7 +25,8 @@ def get_gapi_service():
     except Exception as e:
         st.error(f"認証エラー: {e}")
         return None
-
+        
+import unicodedata
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     # PDFから来た記号を正規化（全角→半角、空白除去）
     clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
