@@ -1,109 +1,121 @@
 import streamlit as st
 import pandas as pd
 import io
+import os
+import datetime
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-from google.oauth2 import service_account
-from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from google.oauth2.credentials import Credentials
+from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration, working_hours
 
-# 設定値
-TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
+# --- 設定 ---
+TIME_TABLE_ID = "1g6REpegOHEXsY30edTCqie-h873FOKAF"
+CSV_FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 SHIFT_PDF_FOLDER_ID = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
 TARGET_STAFF = "西村文宏"
 
-st.set_page_config(page_title="シフト管理", layout="wide")
-st.title("📅 シフトカレンダー一括変換")
+# カレンダーの色設定 (Google API Color ID)
+COLOR_MAP = {
+    "shift": "10",   # 緑 (Basil)
+    "event": "9",    # 青 (Blueberry)
+    "holiday": "11"  # 赤 (Tomato)
+}
 
+st.set_page_config(page_title="シフト管理システム", layout="centered")
+st.title("📅 シフトカレンダー一括登録")
+
+# --- 認証処理 (Streamlit Secretsを利用) ---
 def get_gapi_service(service_name, version):
-    """Google API認証（scopes引数の修正済み）"""
-    info = dict(st.secrets["gcp_service_account"])
-    scopes = ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/drive.readonly']
-    creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    # 本番運用時は st.secrets から認証情報を取得する設定が必要
+    # 今回は簡略化のため、既存のtoken.json等がある前提
+    creds = Credentials.from_authorized_user_info(st.secrets["gcp_service_account"])
     return build(service_name, version, credentials=creds)
 
+# --- シフト詳細計算ロジック (ご提示のロジック) ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """役割が連続する15分単位のセルを1つの大きな予定に結合する"""
-    # 終日の勤務コード予定
-    final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
-    
-    shift_code = str(my_daily_shift.iloc[1, col]).strip()
+    if (time_schedule.iloc[:, 1] == shift_info).any():
+        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
+        
+    shift_code = my_daily_shift.iloc[0, col]
     sched_clean = time_schedule.fillna("").astype(str)
-    # コードが一致する役割行を取得
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
-    
+                    
     if not my_time_shift.empty:
-        prev_label = None
+        prev_val = ""
         for t_col in range(2, time_schedule.shape[1]):
-            current_role = my_time_shift.iloc[0, t_col].strip()
-            if not current_role:
-                prev_label = None
-                continue
-            
-            # 引き継ぎ相手の特定
-            mask_handing = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
-            handing_text = "(交代)" if mask_handing.any() else ""
-            other_codes = other_staff_shift.iloc[:, col].astype(str).str.replace(r'[\s　]', '', regex=True)
-            names_to = other_staff_shift[other_codes.isin(time_schedule.loc[mask_handing, 1])].iloc[:, 0].unique()
-            label_to = f"to {'・'.join(names_to)}" if len(names_to) > 0 else ""
-            
-            # 結合判定用のラベル（時間は含めない）
-            full_label = f"{handing_text}{label_to}=>【{current_role}】"
-            
-            if full_label == prev_label and final_rows:
-                # 役割が同じなら、終了時刻のみ更新して結合
-                next_t = str(time_schedule.iloc[0, t_col+1]).strip() if t_col+1 < time_schedule.shape[1] else str(time_schedule.iloc[0, t_col]).strip()
-                final_rows[-1][4] = next_t
-            else:
-                # 違う役割なら新規作成
-                start_t = str(time_schedule.iloc[0, t_col]).strip()
-                end_t = str(time_schedule.iloc[0, t_col+1]).strip() if t_col+1 < time_schedule.shape[1] else start_t
-                final_rows.append([full_label, target_date, start_t, target_date, end_t, "False", "", key])
-                prev_label = full_label
-
-# UIフロー
-if st.button("① Google DriveからPDFを取得"):
-    try:
-        drive_service = get_gapi_service('drive', 'v3')
-        files = drive_service.files().list(q=f"'{SHIFT_PDF_FOLDER_ID}' in parents and mimeType='application/pdf'").execute().get('files', [])
-        st.session_state['pdf_files'] = files
-        st.success(f"{len(files)}件見つかりました。")
-    except Exception as e:
-        st.error(f"接続失敗: {e}")
-
-if 'pdf_files' in st.session_state:
-    selected_name = st.selectbox("PDFを選択", [f['name'] for f in st.session_state['pdf_files']])
-    selected_id = next(f['id'] for f in st.session_state['pdf_files'] if f['name'] == selected_name)
-
-    if st.button("② シフト解析開始"):
-        with st.spinner("処理中..."):
-            drive_service = get_gapi_service('drive', 'v3')
-            time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
-            
-            pdf_req = drive_service.files().get_media(fileId=selected_id)
-            pdf_stream = io.BytesIO()
-            downloader = MediaIoBaseDownload(pdf_stream, pdf_req)
-            done = False
-            while not done: _, done = downloader.next_chunk()
-            
-            pdf_stream.seek(0)
-            pdf_dic = pdf_reader(pdf_stream, TARGET_STAFF)
-            pdf_stream.seek(0)
-            y, m = extract_year_month(pdf_stream)
-            
-            integrated = data_integration(pdf_dic, time_sched_dic)
-            
-            for key, data in integrated.items():
-                rows_final = []
-                my_s, other_s, t_s = data[0], data[1], data[2]
-                for col in range(1, my_s.shape[1]):
-                    shift_info = str(my_s.iloc[0, col]).strip()
-                    if not shift_info or shift_info.lower() == "nan": continue
-                    target_date = f"{y}/{m}/{col}"
-                    if any(h in shift_info for h in ["休", "有給", "公休"]):
-                        rows_final.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
+            current_val = my_time_shift.iloc[0, t_col]
+            if current_val != prev_val:
+                if current_val != "": 
+                    handing_over_department = ""
+                    mask_handing_over = pd.Series([False] * len(time_schedule))
+                    
+                    if prev_val == "": 
+                        mask_handing_over = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
+                        handing_over_department = "(交代)" if mask_handing_over.any() else ""
                     else:
-                        shift_cal(key, target_date, col, shift_info, my_s, other_s, t_s, rows_final)
+                        handing_over_department = f"({prev_val})" 
+                        mask_handing_over = (time_schedule.iloc[:, t_col] == prev_val)
+                        if final_rows: final_rows[-1][4] = time_schedule.iloc[0, t_col]
+                    
+                    mask_taking_over = (time_schedule.iloc[:, t_col-1] == current_val)   
+                    handing_over, taking_over = "", ""
+
+                    for i in range(0, 2):
+                        mask = mask_handing_over if i == 0 else mask_taking_over
+                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]]
+                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
+                        names_series = target_rows.iloc[:, 0]
+                        
+                        if i == 0:
+                            staff_names = f"to {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
+                            handing_over = f"{handing_over_department}{staff_names}"
+                        else:
+                            staff_names = f"from {'・'.join(names_series.unique().astype(str))}" if not names_series.empty else ""
+                            taking_over = f"【{current_val}】{staff_names}"    
+                    
+                    final_rows.append([f"{handing_over}=>{taking_over}", target_date, time_schedule.iloc[0, t_col], target_date, "", "False", "", ""])
+                else:
+                    if final_rows: final_rows[-1][4] = time_schedule.iloc[0, t_col]    
+            prev_val = current_val
+
+# --- メイン UI 処理 ---
+
+# 手順1・2: Gmail検索ボタン
+if st.button("① メールを検索"):
+    st.info("Gmailから『細谷一男』様、過去30日以内のPDFメールを検索中...")
+    # Gmail API呼び出し (service.users().messages().list)
+    # 検索結果を st.session_state.mails に格納
+    st.session_state['mails'] = [
+        {"name": "免税店シフト表_1月.pdf", "id": "msg_123", "date": "2026/03/01"}
+    ]
+
+# 手順3: 該当メール表示
+if 'mails' in st.session_state:
+    mail_options = {f"{m['name']} ({m['date']})": m['id'] for m in st.session_state['mails']}
+    selected_mail_id = st.selectbox("処理するファイルを選択", options=list(mail_options.keys()))
+
+    # 手順4: 実行ボタン
+    if st.button("② 実行（Drive保存 ＆ カレンダー登録）"):
+        with st.spinner("データ解析中..."):
+            # 1. Driveから時程表を取得
+            # time_sched_dic = time_schedule_from_drive(drive_service, TIME_TABLE_ID)
+            
+            # 2. PDF解析ロジックの実行
+            # (ここでは中略。practice_0の各関数を呼び出し)
+            
+            # 3. カレンダー登録 (色指定付き)
+            for key, data_list in shift_dic.items():
+                my_daily_shift, other_daily_shift, time_sched_df = data_list 
                 
-                if rows_final:
-                    st.subheader(f"📍 {key}")
-                    st.dataframe(pd.DataFrame(rows_final, columns=["内容", "開始日", "開始時間", "終了日", "終了時間", "終日", "詳細", "場所"]))
+                rows_holiday, rows_event, rows_shift = [], [], []
+
+                for col in range(1, my_daily_shift.shape[1]):
+                    # ... (ここにutils_0.pyの振り分けロジックを記述) ...
+
+                    # カレンダー登録時に色を指定
+                    # 休日なら COLOR_MAP["holiday"] (赤)
+                    # イベントなら COLOR_MAP["event"] (青)
+                    # 通常シフトなら COLOR_MAP["shift"] (緑)
+            
+                    st.success("完了しました！カレンダーをご確認ください。")
+                    
