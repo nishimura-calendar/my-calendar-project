@@ -125,12 +125,19 @@ def time_schedule_from_drive(service, file_id):
     return location_data_dic
 
 def data_integration(pdf_dic, time_schedule_dic):
-    # time_schdule_dicの各要素について処理
-    for key,value in time_schedule_dic.items():
+    """PDFと時程表を、空白を無視した場所名で紐付け"""
+    integrated_dic = {}
+    
+    # 比較用に時程表のキーから空白を除去した辞書を作成
+    clean_time_sched = {re.sub(r'[\s　]', '', k): (k, v) for k, v in time_schedule_dic.items()}
+    
+    for pdf_key, pdf_data in pdf_dic.items():
+        # PDF側のキーからも空白を除去
+        clean_pdf_key = re.sub(r'[\s　]', '', pdf_key)
         
-        # もし同じkeyがshifi_dicにあればtime_schedule_dicの要素をpdf_dicに登録する。
-        if key in pdf_dic:
-            pdf_dic[key].extend(value)
-                     
-    return pdf_dic
-
+        if clean_pdf_key in clean_time_sched:
+            original_key, time_data = clean_time_sched[clean_pdf_key]
+            # [自分のシフト, 他人のシフト, Excelのデータ]
+            integrated_dic[pdf_key] = pdf_data + time_data
+            
+    return integrated_dic
