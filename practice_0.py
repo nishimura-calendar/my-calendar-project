@@ -95,6 +95,7 @@ def time_schedule_from_drive(service, file_id):
             location_name = str(full_df.iloc[start_row, 0]).strip()
             
             data_range = full_df.iloc[start_row:end_row, 0:col_limit].copy()
+            data_range = data_range.reset_index(drop=True) # 0から振り直し             
             data_range = data_range.reset_index(drop=True).astype(object)
 
             # 時間表記の変換
