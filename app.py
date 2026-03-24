@@ -27,20 +27,20 @@ def get_gapi_service():
         return None
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する。
-    PDFから抽出された shift_info(記号) をもとに、時程表(time_schedule)をスキャンします。
-    """
-    # 1. 徹底的な空白除去（ミスマッチ防止）
-    clean_info = str(shift_info).strip()
+    # PDFから来た記号を正規化（全角→半角、空白除去）
+    clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
     
-    # 時程表(Excel)のB列(index 1)を文字列化・空白除去
+    # 時程表(Excel)のB列を文字列化・正規化
     sched_clean = time_schedule.fillna("").astype(str)
-    sched_clean.iloc[:, 1] = sched_clean.iloc[:, 1].str.strip()
+    sched_clean.iloc[:, 1] = sched_clean.iloc[:, 1].apply(
+        lambda x: unicodedata.normalize('NFKC', x).strip()
+    )
     
-    # 2. 終日イベントの追加（例：T2_A）
-    # 時程表にその記号が存在する場合のみ、ベースとなる予定を作成
+    # 判定
     if (sched_clean.iloc[:, 1] == clean_info).any():
+        # 一致した場合の処理（既存通り）
+        # 2. 終日イベントの追加（例：T2_A）
+        # 時程表にその記号が存在する場合のみ、ベースとなる予定を作成
         final_rows.append([f"{key}_{clean_info}", target_date, "", target_date, "", "True", "", key])
     else:
         # 時程表に記号が見つからない場合は、解析不能として記号のみ残して終了
