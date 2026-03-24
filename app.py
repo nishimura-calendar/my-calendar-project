@@ -109,7 +109,7 @@ if service:
                         if not shift_code or shift_code.lower() == "nan": continue
                         target_date = f"{y}/{m}/{col}"
                         
-                        if any(h in shift_code for h in ["休", "有給", "公休"]):
+                        if any(h in shift_code for h in ["休", "有給", "有休", "公休"]):
                             rows_res.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
                         elif "@" in lower_val:
                             parts = lower_val.split("@")
