@@ -6,7 +6,7 @@ import unicodedata
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
-from practice_0 import pdf_reader, extract_year_month, time_schedule_from_drive, data_integration
+from practice_0 import pdf_reader, extract_year_month, time_schedule, data_integration
 
 # 各種ID設定
 TIME_TABLE_ID = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG"
@@ -102,7 +102,7 @@ if service:
 
         if st.button("② 解析実行"):
             with st.spinner("処理中..."):
-                time_sched_dic = time_schedule_from_drive(service, TIME_TABLE_ID)
+                time_sched_dic = time_schedule(service, TIME_TABLE_ID)
                 pdf_req = service.files().get_media(fileId=selected_id)
                 pdf_stream = io.BytesIO()
                 downloader = MediaIoBaseDownload(pdf_stream, pdf_req)
