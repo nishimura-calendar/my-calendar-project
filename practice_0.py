@@ -88,17 +88,17 @@ def time_schedule(service, file_id):
             # データの終わり（次の場所名まで、またはシート末尾まで）
             end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
             
-            # --- 列境界の判定 (場所名の行の右側に時刻が並んでいると仮定) ---
-            # --- 列境界の判定を修正（より寛容に） ---
-            # 時刻が記載されている行の最後まで確実に取得する
-            valid_columns = [c for c in range(2, full_df.shape[1]) if pd.notna(full_df.iloc[start_row, c]) and str(full_df.iloc[start_row, c]).strip() != ""]
-            col_limit = max(valid_columns) + 1 if valid_columns else full_df.shape[1]
+            # --- 列境界の判定を修正（より確実に最後まで読み込む） ---
+            # 2列目以降で、何かしらデータが入っている最後の列を探す
+            last_col = 2
+            for c in range(2, full_df.shape[1]):
+                if pd.notna(full_df.iloc[start_row, c]) and str(full_df.iloc[start_row, c]).strip() != "":
+                    last_col = c
+            col_limit = last_col + 1
 
-            # 表の切り出し
+            # 表の切り出しとインデックス振り直し
             data_range = full_df.iloc[start_row : end_row, 0 : col_limit].copy()
-            data_range = data_range.reset_index(drop=True)
-            col_limit = full_df.shape[1]
-            
+            data_range = data_range.reset_index(drop=True)            
             for c in range(2, full_df.shape[1]):
                 val = full_df.iloc[start_row, c]
                 if pd.isna(val) or str(val).strip() == "":
