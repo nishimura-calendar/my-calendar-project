@@ -62,7 +62,7 @@ def extract_year_month(pdf_stream):
         if match: return match.group(1), match.group(2)
     return "2026", "3"
 
-def time_schedule_from_drive(service, file_id):
+def time_schedule(service, file_id):
     """場所名（A列）を起点に、表を切り出す（『記号』という文字がなくても動作）"""
     from googleapiclient.http import MediaIoBaseDownload
     request = service.files().get_media(fileId=file_id)
