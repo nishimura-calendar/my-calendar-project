@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 import re
+import unicodedata
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -25,101 +26,70 @@ def get_gapi_service():
     except Exception as e:
         st.error(f"認証エラー: {e}")
         return None
-        
-import unicodedata
+
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    # PDFから来た記号を正規化（全角→半角、空白除去）
+    """
+    通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する。
+    """
+    # 1. PDFから来た記号を正規化
     clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
     
-    # 時程表(Excel)のB列を文字列化・正規化
-    sched_clean = time_schedule.fillna("").astype(str)
-    sched_clean.iloc[:, 1] = sched_clean.iloc[:, 1].apply(
+    # 2. 時程表(Excel)のコピーと記号列(index 1)の正規化
+    t_s = time_schedule.copy()
+    t_s.iloc[:, 1] = t_s.iloc[:, 1].astype(str).apply(
         lambda x: unicodedata.normalize('NFKC', x).strip()
     )
     
-    # 判定
-    if (sched_clean.iloc[:, 1] == clean_info).any():
-        # 一致した場合の処理（既存通り）
-        # 2. 終日イベントの追加（例：T2_A）
-        # 時程表にその記号が存在する場合のみ、ベースとなる予定を作成
-        final_rows.append([f"{key}_{clean_info}", target_date, "", target_date, "", "True", "", key])
-    else:
-        # 時程表に記号が見つからない場合は、解析不能として記号のみ残して終了
-        final_rows.append([f"{key}_{clean_info}(時程表未登録)", target_date, "", target_date, "", "True", "時程表に記号なし", key])
-        return
-
-    # 3. 自分のシフト詳細行を特定
-    my_time_shift = sched_clean[sched_clean.iloc[:, 1] == clean_info]
+    # 3. 自分の詳細行（シフト記号が一致する行）を特定
+    my_time_shift = t_s[t_s.iloc[:, 1] == clean_info]
+                    
+    if (time_schedule.iloc[:, 1] == shift_info).any():
+        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
+        
+    shift_code = my_daily_shift.iloc[0, col]
+    sched_clean = time_schedule.fillna("").astype(str)
+    my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
                     
     if not my_time_shift.empty:
         prev_val = ""
-        # 3列目(時刻列)から右へループ
         for t_col in range(2, time_schedule.shape[1]):
             current_val = my_time_shift.iloc[0, t_col].strip()
-            
-            # 値が変化した（＝担当場所が変わった、または勤務開始/終了）タイミングを検知
             if current_val != prev_val:
                 if current_val != "": 
-                    # --- 渡す側の情報を整理 (handing_over) ---
                     handing_over_department = "" 
                     mask_handing_over = pd.Series([False] * len(time_schedule)) 
                     
                     if prev_val == "": 
-                        # 勤務開始時：その場所(current_val)で直前まで働いていた人を探す
                         mask_handing_over = (time_schedule.iloc[:, t_col] == "") & (time_schedule.iloc[:, t_col-1] != "")
-                        if mask_handing_over.any():
-                            handing_over_department = "(交代)"
+                        if mask_handing_over.any(): handing_over_department = "(交代)"
                     else:
-                        # 部署移動時：直前の部署名(prev_val)を記載
                         handing_over_department = f"({prev_val})" 
                         mask_handing_over = (time_schedule.iloc[:, t_col] == prev_val)
-                        
-                        # 前の予定（final_rowsの最後）の「終了時間」を現在の時刻で確定
-                        if len(final_rows) > 0 and final_rows[-1][5] == "False":
+                        if len(final_rows) > 0:
                             final_rows[-1][4] = str(time_schedule.iloc[0, t_col]).strip()
                     
-                    # --- 受ける側の情報を整理 (taking_over) ---
                     mask_taking_over = (time_schedule.iloc[:, t_col-1] == current_val)   
-                    
-                    handing_over = ""
-                    taking_over = ""
+                    handing_over = ""; taking_over = ""
 
-                    # i=0: 渡す相手(to)、i=1: 引き継ぎ元(from)をループで特定
                     for i in range(0, 2):
                         mask = mask_handing_over if i == 0 else mask_taking_over
-                        
-                        # 時程表から該当するシフト記号(A, B等)を取得
-                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]].unique()
-                        
-                        # 他人のシフト(other_staff_shift)の当日列に、その記号を持っている人を特定
-                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.strip().isin(search_keys)]
-                        names_series = target_rows.iloc[:, 0].unique().astype(str)
+                        search_keys = time_schedule.loc[mask, time_schedule.columns[1]] 
+                        target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)] 
+                        names = target_rows.iloc[:, 0].unique().astype(str)
                         
                         if i == 0:
-                            staff_names = f"to {'・'.join(names_series)}" if len(names_series) > 0 else ""
-                            handing_over = f"{handing_over_department}{staff_names}"
+                            staff = f"to {'・'.join(names)}" if len(names) > 0 else ""
+                            handing_over = f"{handing_over_department}{staff}"
                         else:
-                            staff_names = f"from {'・'.join(names_series)}" if len(names_series) > 0 else ""
-                            taking_over = f"【{current_val}】{staff_names}"    
+                            staff = f"from {'・'.join(names)}" if len(names) > 0 else ""
+                            taking_over = f"【{current_val}】{staff}"    
                     
-                    # 詳細な勤務予定（1コマ分）をリストに追加
-                    final_rows.append([
-                        f"{handing_over}=>{taking_over}", 
-                        target_date, 
-                        str(time_schedule.iloc[0, t_col]).strip(), 
-                        target_date, 
-                        "", # 終了時間は次の変化タイミングでセット
-                        "False", 
-                        "", 
-                        key
-                    ])
+                    final_rows.append([f"{handing_over}=>{taking_over}", target_date, str(time_schedule.iloc[0, t_col]).strip(), target_date, "", "False", "", key])
                 else:
-                    # current_val が空（＝勤務終了）の場合、最後の予定の終了時間をセット
-                    if len(final_rows) > 0 and final_rows[-1][5] == "False":
+                    if len(final_rows) > 0:
                         final_rows[-1][4] = str(time_schedule.iloc[0, t_col]).strip()
-            
             prev_val = current_val
-            
+
 service = get_gapi_service()
 if service:
     if st.button("① PDFリスト取得"):
@@ -154,7 +124,7 @@ if service:
                         if not shift_code or shift_code.lower() == "nan": continue
                         target_date = f"{y}/{m}/{col}"
                         
-                        if any(h in shift_code for h in ["休", "有給", "有休", "公休"]):
+                        if any(h in shift_code for h in ["休", "有給", "公休"]):
                             rows_res.append([f"{key}_休日", target_date, "", target_date, "", "True", "", key])
                         elif "@" in lower_val:
                             parts = lower_val.split("@")
