@@ -79,5 +79,6 @@ def extract_year_month(pdf_stream):
     """PDFテキストから年月を抽出"""
     with pdfplumber.open(pdf_stream) as pdf:
         text = pdf.pages[0].extract_text()
-        m = re.search(r'(\20\d{2})[年/](\d{1,2})', text)
+        # 修正後（\を消して 20 という数字にする）
+        m = re.search(r'(20\d{2})[年/](\d{1,2})', text)
         return m.groups() if m else ("2026", "3")
