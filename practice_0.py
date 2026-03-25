@@ -28,7 +28,7 @@ def time_schedule_from_drive(service, file_id):
             location_name = str(full_df.iloc[start_row, 0]).strip()
             end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
             
-            # 列の読み取り範囲を決定（時刻が入っている最終列まで）
+            # 列の読み取り範囲を決定（データが入っている最終列まで）
             valid_cols = [c for c in range(2, full_df.shape[1]) if pd.notna(full_df.iloc[start_row, c])]
             col_limit = max(valid_cols) + 1 if valid_cols else full_df.shape[1]
 
@@ -41,22 +41,15 @@ def time_schedule_from_drive(service, file_id):
                 lambda x: unicodedata.normalize('NFKC', x).strip()
             )
 
-            # 0行目の時刻シリアル値を "HH:MM" 形式に変換
-            for col in range(2, data_range.shape[1]):
-                val = data_range.iloc[0, col]
-                if isinstance(val, (int, float)) and val < 1:
-                    h = int(val * 24)
-                    m = int(round((val * 24 - h) * 60))
-                    data_range.iloc[0, col] = f"{h}:{m:02d}"
-                else:
-                    data_range.iloc[0, col] = str(val).strip()
-            
-            location_data_dic[location_name] = [data_range.fillna('')]
+            # 0行目の時刻（数値やシリアル値）の正規化は app.py 側の format_time でも行うが、
+            # 読み込み時点である程度整えておく
+            data_range = data_range.fillna('')
+            location_data_dic[location_name] = [data_range]
             
     return location_data_dic
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDFから指定スタッフの2行（記号・時間）と他全員のデータを抽出"""
+    """PDFから指定スタッフのデータを抽出"""
     clean_target = re.sub(r'[\s　]', '', str(target_staff))
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
@@ -70,15 +63,16 @@ def pdf_reader(pdf_stream, target_staff):
         matched = df.index[search_col == clean_target].tolist()
         if matched:
             idx = matched[0]
+            # 2段構造（記号行と時間指定行）を考慮して2行取得
             res_my = df.iloc[idx : idx+2, :].copy()
             res_other = df.copy()
             break
     return res_my, res_other
 
 def extract_year_month(pdf_stream):
-    """PDFテキストから年月を抽出"""
+    """PDFテキストから年月を抽出（\を削除し正規表現エラーを修正済み）"""
     with pdfplumber.open(pdf_stream) as pdf:
         text = pdf.pages[0].extract_text()
-        # 修正後（\を消して 20 という数字にする）
+        # \20 を 20 に修正
         m = re.search(r'(20\d{2})[年/](\d{1,2})', text)
         return m.groups() if m else ("2026", "3")
