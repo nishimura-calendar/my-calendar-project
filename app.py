@@ -28,32 +28,27 @@ def get_gapi_service():
         return None
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する。
-    """
-    # 1. 記号の正規化（全角半角・空白対策）
+    # 記号の正規化
     clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
     
-    # 2. 時程表(Excel)のコピーと記号列(index 1)の正規化
+    # 時程表の準備
     t_s = time_schedule.copy()
-    t_s.iloc[:, 1] = t_s.iloc[:, 1].astype(str).apply(
-        lambda x: unicodedata.normalize('NFKC', x).strip()
-    )
+    t_s.iloc[:, 1] = t_s.iloc[:, 1].astype(str).apply(lambda x: unicodedata.normalize('NFKC', x).strip())
     
-    # 3. 自分の詳細行（シフト記号が一致する行）を特定
-    # 0行目は時刻ヘッダーなので、1行目以降から探します
+    # 自分のシフト行を特定
     my_time_shift = t_s[t_s.iloc[:, 1] == clean_info]
                     
     if not my_time_shift.empty:
-        # --- 終日イベントを追加（例：T2_A） ---
+        # 終日予定を追加（現在表示されている行）
         final_rows.append([f"{key}_{clean_info}", target_date, "", target_date, "", "True", "", key])
         
         prev_val = ""
-        # 3. 自分の詳細スケジュールをループ（index 2以降が各時刻の担当場所）
+        # 3列目(index 2)から右端まで、15分刻みの場所をループ
         for t_col in range(2, t_s.shape[1]):
-            # 現在の場所名を取得（空文字や nan を適切に処理）
+            # 現在の場所名を取得
             raw_val = my_time_shift.iloc[0, t_col]
-            current_val = str(raw_val).strip() if pd.notna(raw_val) and str(raw_val).lower() != "nan" else ""
+            # nan や空文字を厳格にチェック
+            current_val = str(raw_val).strip() if pd.notna(raw_val) and str(raw_val).lower() != "nan" and str(raw_val).strip() != "" else ""
             
             # 担当場所が変化したタイミングを検知
             if current_val != prev_val:
@@ -63,30 +58,25 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     mask_h = pd.Series([False] * len(t_s)) 
                     
                     if prev_val == "": 
-                        # 勤務開始時：その場所が空く（直前まで誰かいた）人を探す
+                        # 勤務開始時
                         mask_h = (t_s.iloc[:, t_col].astype(str).replace('nan','') == "") & \
                                  (t_s.iloc[:, t_col-1].astype(str).replace('nan','') != "")
                         if mask_h.any(): handing_over_dep = "(交代)"
                     else:
-                        # 部署移動時：前の部署名をセット
+                        # 部署移動時
                         handing_over_dep = f"({prev_val})" 
                         mask_h = (t_s.iloc[:, t_col].astype(str).str.strip() == prev_val)
                         
-                        # 直前の予定に「終了時刻」をセット（現在の列の0行目の時刻）
+                        # 直前の予定に「終了時刻」をセット
                         if len(final_rows) > 0 and final_rows[-1][5] == "False":
                             final_rows[-1][4] = str(t_s.iloc[0, t_col]).strip()
                     
-                    # 受ける側の判定（直前列に自分の現在の部署名が入っている人を探す）
                     mask_t = (t_s.iloc[:, t_col-1].astype(str).str.strip() == current_val)   
                     
                     handing_over = ""; taking_over = ""
-
-                    # 相手の名前を特定（i=0: 渡す相手、i=1: 受ける相手）
                     for i in range(0, 2):
                         mask = mask_h if i == 0 else mask_t
                         search_keys = t_s.loc[mask, t_s.columns[1]].unique()
-                        
-                        # 他人のシフトデータ(other_staff_shift)から該当する記号の人を特定
                         target_rows = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.strip().isin(search_keys)]
                         names = target_rows.iloc[:, 0].unique().astype(str)
                         
@@ -97,23 +87,24 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                             staff = f"from {'・'.join(names)}" if len(names) > 0 else ""
                             taking_over = f"【{current_val}】{staff}"    
                     
-                    # カレンダー用の詳細行を追加
+                    # --- ここが詳細行 ---
                     final_rows.append([
                         f"{handing_over}=>{taking_over}", 
                         target_date, 
                         str(t_s.iloc[0, t_col]).strip(), # 開始時刻
                         target_date, 
-                        "", # 終了時刻（次のループまたは勤務終了時に確定）
+                        "", # 終了時刻
                         "False", 
                         "", 
                         key
                     ])
                 else:
-                    # 勤務終了時：最後の予定の終了時間をセット
+                    # 勤務終了時
                     if len(final_rows) > 0 and final_rows[-1][5] == "False":
                         final_rows[-1][4] = str(t_s.iloc[0, t_col]).strip()
             
             prev_val = current_val
+            
 service = get_gapi_service()
 if service:
     if st.button("① PDFリスト取得"):
