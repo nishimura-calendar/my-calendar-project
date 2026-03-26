@@ -42,20 +42,13 @@ def pdf_reader(pdf_stream, target_staff):
     return pd.DataFrame(), pd.DataFrame()
 
 def extract_year_month(pdf_stream):
-    """PDFから『2026年1月度』というタイトルの年月を確実に抽出する"""
     with pdfplumber.open(pdf_stream) as pdf:
         text = pdf.pages[0].extract_text()
-        # タイトル付近にある「202X年X月」という形式を、作成日(2025/12/27)より優先して探す
         lines = text.split('\n')
         for line in lines:
+            # タイトル行（勤務予定表や月度を含む行）から年月を抽出
             if "勤務予定表" in line or "月度" in line:
                 m = re.search(r'(20\d{2})[年/]\s?(\d{1,2})', line)
                 if m:
                     return m.group(1), m.group(2)
-        
-        # 見つからない場合の予備（テキスト全体から最初に出現する2026年以降の日付を探す）
-        m = re.search(r'(202[6-9])[年/]\s?(\d{1,2})', text)
-        if m:
-            return m.group(1), m.group(2)
-            
-    return "2026", "1" # 最終手段
+    return "2026", "1"
