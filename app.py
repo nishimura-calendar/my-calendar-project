@@ -17,44 +17,47 @@ def format_time(val):
     except: return str(val)
 
 def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_rows):
-    """詳細な変化点と交代相手を算出"""
-    valid_locs = t_s.iloc[:, 0].astype(str).unique().tolist()
+    """詳細な時間と交代相手の計算ロジック"""
     time_headers = [format_time(t_s.iloc[0, c]) for c in range(t_s.shape[1])]
     clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
-    my_time_row = t_s[t_s.iloc[:, 1] == clean_info]
+    my_time_row = t_s[t_s.iloc[:, 1].astype(str).str.strip() == clean_info]
+    
     if my_time_row.empty: return
 
-    # 背景イベント
+    # 背景(終日)
     final_rows.append([f"{loc_name}_{clean_info}", target_date, "", target_date, "", "True", "", loc_name])
     
     prev_val = ""
     for t_col in range(2, t_s.shape[1]):
-        current_val = str(my_time_row.iloc[0, t_col]).strip()
-        actual_val = current_val if (current_val in valid_locs and current_val not in ["出勤","退勤","実働","休憩"]) else ""
+        val = str(my_time_row.iloc[0, t_col]).strip()
+        # 除外ワード以外をタスク名として採用
+        actual_val = val if val not in ["出勤","退勤","実働時間","休憩時間","深夜","nan",""] else ""
 
         if actual_val != prev_val:
             if len(final_rows) > 0 and final_rows[-1][5] == "False":
                 final_rows[-1][4] = time_headers[t_col]
             
             if actual_val != "":
-                # 交代相手の検索（同じ列に同じ記号を持つ人）
+                # 他の人のシフトと比較して交代相手(to)を探す
                 partners = []
                 for r_idx in range(len(other_s)):
-                    cell_val = str(other_s.iloc[r_idx, day_col])
-                    if clean_info in cell_val and other_s.iloc[r_idx, 0] != "西村文宏":
-                        partners.append(other_s.iloc[r_idx, 0])
-                partner_name = " / ".join(partners) if partners else ""
+                    p_name = str(other_s.iloc[r_idx, 0]).replace('\n','')
+                    p_shift = str(other_s.iloc[r_idx, day_col])
+                    if clean_info in p_shift and "西村" not in p_name:
+                        partners.append(p_name)
                 
-                prefix = f"(交代)to {partner_name}" if partner_name else ""
+                partner_str = " / ".join(list(set(partners)))
+                prefix = f"(交代)to {partner_str}" if partner_str else ""
                 subj = f"{prefix}=>【{actual_val}】" if prev_val == "" else f"({prev_val})=>【{actual_val}】"
+                
                 final_rows.append([subj, target_date, time_headers[t_col], target_date, "", "False", "", loc_name])
             prev_val = actual_val
 
-# --- Streamlit ---
-st.title("📅 シフト一括変換（本町・複数勤務地 完全対応版）")
-up = st.file_uploader("シフトPDFをアップロード", type="pdf")
+# --- メイン画面 ---
+st.title("📅 シフト変換（本町・複数勤務地 完全対応）")
+up = st.file_uploader("PDFをアップロード", type="pdf")
 
-if up and st.button("変換開始"):
+if up and st.button("変換実行"):
     info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/drive.readonly'])
     service = build('drive', 'v3', credentials=creds)
@@ -68,17 +71,17 @@ if up and st.button("変換開始"):
         my_s, other_s, t_s = data[0], data[1], data[2]
         res = []
         for col in range(1, my_s.shape[1]):
-            v1 = str(my_s.iloc[0, col]).strip() # 名前/本町
-            v2 = str(my_s.iloc[1, col]).strip() # 記号/9@14
+            v1 = str(my_s.iloc[0, col]).strip() # 上段（名前 or 記号）
+            v2 = str(my_s.iloc[1, col]).strip() # 下段（記号 or 9@14）
             dt = f"{y}/{m}/{col}"
             
-            # --- 1. 特殊シフト（@あり）の判定 ---
+            # 1. 特殊シフト（@あり）の判定
             s_t, e_t, is_spec = parse_special_shift(v2)
             if is_spec:
                 res.append([f"{v1}_{v2}", dt, s_t, dt, e_t, "False", "", loc_key])
                 continue
             
-            # --- 2. 通常の記号処理 ---
+            # 2. 通常の記号処理
             target_shift = v1 if v1 and "nan" not in v1.lower() else ""
             if not target_shift: continue
             
