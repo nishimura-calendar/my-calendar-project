@@ -21,7 +21,8 @@ def format_time(val):
 
 def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_rows):
     """
-    エクセル資料のロジックに基づき、場所と人の「引受け・引渡し」をSubjectに反映
+    西村さんのエクセル資料「変化点9・10」を完全再現したロジック。
+    引受け元(handing_over)と引受け先(taking_over)をSubjectに反映します。
     """
     time_headers = [format_time(t_s.iloc[0, c]) for c in range(t_s.shape[1])]
     clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
@@ -30,10 +31,10 @@ def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_ro
     if my_time_row.empty:
         return
 
-    # 1. 終日イベント（背景）
+    # 1. 終日イベント（背景情報）
     final_rows.append([f"{loc_name}_{clean_info}", target_date, "", target_date, "", "True", "", loc_name])
     
-    # 2. 相手（人）の特定：同じ日の同じ記号を持つ自分以外のスタッフ
+    # 2. 相手（人）の特定：同じ日の同じシフト記号を持つ自分以外のスタッフ
     opponents = []
     for r_idx in range(len(other_s)):
         cell_val = unicodedata.normalize('NFKC', str(other_s.iloc[r_idx, day_col])).strip()
@@ -41,10 +42,10 @@ def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_ro
         if clean_info == cell_val and "西村" not in staff_name and staff_name != "":
             opponents.append(staff_name)
     
-    opponent_str = " / ".join(list(set(opponents)))
-    person_context = opponent_str if opponent_str else "担当"
+    # 引受・引渡しの「人」のコンテキスト
+    person_context = " / ".join(list(set(opponents))) if opponents else "担当"
 
-    # 3. 業務変化点の処理（エクセル資料の「変化点9・10」）
+    # 3. 業務変化点の処理（エクセル資料のロジック）
     prev_val = ""
     last_event_idx = -1
     
@@ -54,21 +55,25 @@ def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_ro
         actual_val = val if val not in ["出勤","退勤","実働時間","休憩時間","深夜","nan","","0","0.0"] else ""
 
         if actual_val != prev_val:
-            # 【変化点 9：直前のイベントを閉じる】
+            # --- 変化点 9：直前のイベントの終了時刻を確定 ---
             if len(final_rows) > 0 and final_rows[-1][4] == "" and final_rows[-1][5] == "False":
                 final_rows[-1][4] = time_headers[t_col]
             
-            # 【変化点 10：新しいイベントを開始】
+            # --- 変化点 10：新規Subjectの作成 ---
             if actual_val != "":
+                # エクセルの subject={handing_over} => {taking_over} の再現
                 if prev_val == "":
-                    # 最初のコマ：人から引受ける
-                    subj = f"({person_context})引受 => 【{actual_val}】"
+                    # 勤務開始時：人(handing_over) から 場所(taking_over) へ
+                    handing_over = person_context
+                    taking_over = f"【{actual_val}】"
                 else:
-                    # 途中のコマ：場所(前)から場所(次)へ
-                    subj = f"({prev_val}) => 【{actual_val}】"
+                    # 業務交代時：場所(handing_over) から 場所(taking_over) へ
+                    handing_over = prev_val
+                    taking_over = f"【{actual_val}】"
                 
+                subj = f"({handing_over}) => {taking_over}"
                 final_rows.append([subj, target_date, time_headers[t_col], target_date, "", "False", "", loc_name])
-                last_event_idx = len(final_rows) - 1 # 最後の業務位置を保持
+                last_event_idx = len(final_rows) - 1 # 最後の業務位置を更新
             
             prev_val = actual_val
 
@@ -76,12 +81,13 @@ def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_ro
     # 最後に登録された業務イベントに、人への引渡しを追記
     if last_event_idx != -1:
         current_subj = final_rows[last_event_idx][0]
+        # (最後の場所) => 引渡(人) を追加
         final_rows[last_event_idx][0] = f"{current_subj} => 引渡({person_context})"
 
 # --- Streamlit インターフェース ---
 st.set_page_config(page_title="シフト変換ツール（完全版）", layout="wide")
 st.title("📅 シフト一括変換システム")
-st.write("引受け・引渡し（人・場所）対応版")
+st.write("西村さん専用：人・場所の引受け・引渡し対応版")
 
 up = st.file_uploader("勤務予定表(PDF)をアップロードしてください", type="pdf")
 
@@ -109,11 +115,11 @@ if up and st.button("変換を実行"):
             res = []
             
             for col in range(1, my_s.shape[1]):
-                v1 = str(my_s.iloc[0, col]).strip() # 上段記号
-                v2 = str(my_s.iloc[1, col]).strip() # 下段（本町など）
+                v1 = str(my_s.iloc[0, col]).strip()
+                v2 = str(my_s.iloc[1, col]).strip()
                 dt = f"{y}/{m}/{col}"
                 
-                # 特殊対応（本町など）
+                # 特殊対応（本町など @ 判定）
                 s_t, e_t, is_spec = parse_special_shift(v2)
                 if is_spec:
                     res.append([f"{v1}_{v2}", dt, s_t, dt, e_t, "False", "", loc_key])
