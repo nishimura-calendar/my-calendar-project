@@ -21,58 +21,65 @@ def format_time(val):
 
 def shift_cal(loc_name, target_date, day_col, shift_info, other_s, t_s, final_rows):
     """
-    shift_info（例: 'A'）と同じ記号をその日の列(day_col)から探し、
-    自分(西村)以外の名前を「交代相手」として抽出してイベントを生成します。
+    エクセル資料の「引渡し・引受け」概念を忠実に再現したロジック
     """
     time_headers = [format_time(t_s.iloc[0, c]) for c in range(t_s.shape[1])]
-    # シフト記号の正規化
     clean_info = unicodedata.normalize('NFKC', str(shift_info)).strip()
     
-    # 時程表（マスター）から該当シフトの行を特定
     my_time_row = t_s[t_s.iloc[:, 1].astype(str).str.strip() == clean_info]
     if my_time_row.empty:
         return
 
-    # 1. 終日イベント（背景）の登録
+    # 背景（終日）
     final_rows.append([f"{loc_name}_{clean_info}", target_date, "", target_date, "", "True", "", loc_name])
     
-    # 2. 交代相手の抽出ロジック
-    # その日の列(day_col)を確認し、同じ記号を持つ自分以外の名前を拾う
-    partners = []
+    # --- 引受け・引渡し相手の特定 ---
+    # 同じ日の同じシフト記号を持つ人を「相手」として抽出
+    opponents = []
     for r_idx in range(len(other_s)):
         cell_val = unicodedata.normalize('NFKC', str(other_s.iloc[r_idx, day_col])).strip()
         staff_name = str(other_s.iloc[r_idx, 0]).replace('\n', '').strip()
-        
         if clean_info == cell_val and "西村" not in staff_name and staff_name != "":
-            partners.append(staff_name)
+            opponents.append(staff_name)
     
-    partner_str = " / ".join(list(set(partners))) # 重複を除去して結合
+    opponent_str = " / ".join(list(set(opponents)))
+    
+    # 相手がいる場合は「相手名」、いない場合は「(無)」とする（資料のtaking_over/handing_overに対応）
+    person_context = opponent_str if opponent_str else ""
 
-    # 3. 変化点（具体的な業務内容）の登録
     prev_val = ""
     for t_col in range(2, t_s.shape[1]):
         val = str(my_time_row.iloc[0, t_col]).strip()
-        # 不要な文字列を除外
-        actual_val = val if val not in ["出勤","退勤","実働時間","休憩時間","深夜","nan",""] else ""
+        # 有効な業務名のみ抽出
+        actual_val = val if val not in ["出勤","退勤","実働時間","休憩時間","深夜","nan","","0","0.0"] else ""
 
         if actual_val != prev_val:
-            # 直前のイベントの終了時刻を確定させる
+            # 【変化点：前の業務を閉じる】
             if len(final_rows) > 0 and final_rows[-1][4] == "" and final_rows[-1][5] == "False":
                 final_rows[-1][4] = time_headers[t_col]
             
-            # 新しいタスクの開始
+            # 【変化点：新しい業務を開始する】
             if actual_val != "":
-                prefix = f"(交代)to {partner_str}" if partner_str else ""
-                # 前のタスク名がある場合は連結、なければ新規
+                # エクセル資料の ① subject={handing_over} => {taking_over} の再現
+                # handing_over: 前の業務（または相手からの引継ぎ）
+                # taking_over: これから始まる業務
+                
                 if prev_val == "":
+                    # 勤務開始時：相手から業務を「引受ける」
+                    prefix = f"({person_context})引受" if person_context else ""
                     subj = f"{prefix}=>【{actual_val}】"
                 else:
+                    # 業務交代時：前の業務を次の業務へ「繋ぐ」
                     subj = f"({prev_val})=>【{actual_val}】"
                 
                 final_rows.append([subj, target_date, time_headers[t_col], target_date, "", "False", "", loc_name])
             
+            # もし業務が終了（actual_valが空）になった場合、
+            # 直前のイベント名に「引渡し」を付与するなどの調整も可能ですが、
+            # まずはこの「引受け」開始の形で午前中の精度に戻るか確認してください。
+            
             prev_val = actual_val
-
+            
 # --- Streamlit UI ---
 st.set_page_config(page_title="シフト変換ツール", layout="wide")
 st.title("📅 シフト一括変換システム")
