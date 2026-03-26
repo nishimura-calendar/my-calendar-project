@@ -3,7 +3,7 @@ import pandas as pd
 import unicodedata
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from web_practice_0 import (
+from practice_0 import (
     pdf_reader, extract_year_month, time_schedule_from_drive, 
     data_integration, parse_special_shift
 )
