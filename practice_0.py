@@ -6,7 +6,7 @@ import io
 import unicodedata
 
 def extract_year_month(pdf_stream):
-    """タイトル行から年月を抽出"""
+    """PDFタイトルから年月を抽出"""
     with pdfplumber.open(pdf_stream) as pdf:
         text = pdf.pages[0].extract_text()
         for line in text.split('\n'):
@@ -15,8 +15,26 @@ def extract_year_month(pdf_stream):
                 if m: return m.group(1), m.group(2)
     return "2026", "1"
 
+def parse_special_shift(text):
+    """
+    '9@14' や '10.5@19' のような文字列を解析し (開始, 終了, 成功フラグ) を返す
+    """
+    text = str(text).strip()
+    if "@" in text:
+        try:
+            parts = text.split("@")
+            s_val = float(parts[0])
+            e_val = float(parts[1])
+            # 小数点（.5など）を分に変換
+            start_t = f"{int(s_val):02d}:{int((s_val % 1) * 60):02d}"
+            end_t = f"{int(e_val):02d}:{int((e_val % 1) * 60):02d}"
+            return start_t, end_t, True
+        except (ValueError, IndexError):
+            return None, None, False
+    return None, None, False
+
 def time_schedule_from_drive(service, file_id):
-    """Excelから場所ごとの時程表を取得し、col_limitで範囲を制限する"""
+    """Excel時程表を勤務地別に取得（col_limit適用）"""
     from googleapiclient.http import MediaIoBaseDownload
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO(); downloader = MediaIoBaseDownload(fh, request)
@@ -29,30 +47,24 @@ def time_schedule_from_drive(service, file_id):
     
     for _, full_df in excel_data.items():
         if full_df.empty: continue
-        
-        # --- 【西村さん指定：列方向の範囲制限】 ---
+        # 数値列までの範囲制限
         col_limit = len(full_df.columns)
         for i in range(2, len(full_df.columns)):
             val = full_df.iloc[0, i]
             try: float(val)
-            except (ValueError, TypeError):
-                col_limit = i
-                break
+            except: col_limit = i; break
         
-        # A列の場所名を起点に分割
         loc_idx = full_df[full_df.iloc[:, 0].astype(str).str.strip().replace('nan', '') != ""].index.tolist()
         for i, start_row in enumerate(loc_idx):
-            loc_name = str(full_df.iloc[start_row, 0]).strip()
+            loc_name = re.sub(r'[\s　]', '', str(full_df.iloc[start_row, 0]))
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
-            
             df = full_df.iloc[start_row:end_row, 0:col_limit].copy().reset_index(drop=True).fillna('')
-            # B列（記号）の正規化
             df.iloc[:, 1] = df.iloc[:, 1].astype(str).apply(lambda x: unicodedata.normalize('NFKC', x).strip())
             location_data_dic[loc_name] = df
     return location_data_dic
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDFから【勤務地抽出ロジック】を用いて場所別に自分と他人のデータを保持"""
+    """PDFから勤務地別に自分(2行)と全員のデータを抽出"""
     clean_target = re.sub(r'[\s　]', '', str(target_staff))
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
     
@@ -61,26 +73,21 @@ def pdf_reader(pdf_stream, target_staff):
     for table in tables:
         df = table.df
         if df.empty: continue
-        
-        # --- 【西村さん指定：勤務地抽出ロジック】 ---
+        # 勤務地名抽出（改行ロジック）
         text = str(df.iloc[0, 0])
-        lines = text.splitlines()
-        target_index = text.count('\n') // 2
-        work_place = lines[target_index] if target_index < len(lines) else (lines[-1] if lines else "empty")
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        work_place = re.sub(r'[\s　]', '', lines[len(lines)//2]) if lines else "Unknown"
         
-        search_col = df.iloc[:, 0].astype(str).str.replace(r'[\s　]', '', regex=True)
-        matched = df.index[search_col == clean_target].tolist()
+        df.iloc[:, 0] = df.iloc[:, 0].astype(str).str.replace(r'[\s　]', '', regex=True)
+        matched = df.index[df.iloc[:, 0] == clean_target].tolist()
         if matched:
             idx = matched[0]
-            # { 勤務地: [自分の2行(本町対応用), テーブル全体] }
             pdf_dic[work_place] = [df.iloc[idx:idx+2, :].copy(), df]
     return pdf_dic
 
 def data_integration(pdf_dic, time_sched_dic):
-    """PDFの場所KeyとExcelの場所Keyを紐付けた辞書を作成"""
     integrated = {}
     for key in pdf_dic.keys():
         if key in time_sched_dic:
-            # [自分の2行, テーブル全体, 時程表]
             integrated[key] = pdf_dic[key] + [time_sched_dic[key]]
     return integrated
