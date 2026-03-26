@@ -111,26 +111,33 @@ if up and st.button("変換を実行"):
             p_dic = pdf_reader(up, TARGET_STAFF)
             integrated = data_integration(p_dic, t_dic)
         
+# --- app.py のメインループ (修正版) ---
+
         for loc_key, data in integrated.items():
             my_s, other_s, t_s = data[0], data[1], data[2]
             res = []
             for col in range(1, my_s.shape[1]):
-                v1, v2 = str(my_s.iloc[0, col]).strip(), str(my_s.iloc[1, col]).strip()
+                # v1: 記号（A, B, Cなど）, v2: 時間・備考（9@14や有給など）
+                v1 = str(my_s.iloc[0, col]).strip()
+                v2 = str(my_s.iloc[1, col]).strip()
                 dt = f"{y}/{m}/{col}"
-                # 特殊対応（@判定）
+                
+                # 1. 有給・休日の判定（最優先）
+                # v1 または v2 に「有給」「休」の文字が含まれているかチェック
+                is_holiday = any(k in v1 or k in v2 for k in ["有給", "休", "公休", "特休"])
+                
+                if is_holiday:
+                    # 休日として登録（明日の処理で「赤」にするため "休日" という文字を入れる）
+                    res.append([f"{loc_key}_休日(有給)", dt, "", dt, "", "True", "", loc_key])
+                    continue # 休日の場合は以下のシフト計算はしない
+
+                # 2. 特殊対応（@判定：本町など）
                 s_t, e_t, is_spec = parse_special_shift(v2)
                 if is_spec:
+                    # Subjectに @ を残すことで、明日の処理で「青」にする判定基準にする
                     res.append([f"{v1}_{v2}", dt, s_t, dt, e_t, "False", "", loc_key])
                     continue
-                # 通常シフト
+                
+                # 3. 通常シフト（記号がある場合）
                 if v1 and "nan" not in v1.lower():
-                    if any(h in v1 for h in ["休", "有給", "公休"]):
-                        res.append([f"{loc_key}_休日", dt, "", dt, "", "True", "", loc_key])
-                    else:
-                        shift_cal(loc_key, dt, col, v1, other_s, t_s, res)
-            
-            if res:
-                st.subheader(f"📍 {loc_key}")
-                df_out = pd.DataFrame(res, columns=['Subject','Start Date','Start Time','End Date','End Time','All Day Event','Description','Location'])
-                st.dataframe(df_out)
-                st.download_button(f"{loc_key}保存", df_out.to_csv(index=False, encoding='utf-8-sig'), f"shift_{loc_key}_{y}{m}.csv", "text/csv")
+                    shift_cal(loc_key, dt, col, v1, other_s, t_s, res)
