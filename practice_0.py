@@ -17,15 +17,16 @@ def extract_year_month(pdf_stream):
 
 def parse_special_shift(text):
     """
-    '9@14' や '10.5@19' のような文字列を解析し (開始, 終了, 成功フラグ) を返す
+    '9@14' や '10.5@19' を解析して (開始, 終了, 成功フラグ) を返す
+    西村さん専用の特殊時間入力対応ロジック
     """
-    text = str(text).strip()
+    text = str(text).strip().replace(' ', '')
     if "@" in text:
         try:
             parts = text.split("@")
             s_val = float(parts[0])
             e_val = float(parts[1])
-            # 小数点（.5など）を分に変換
+            # 小数点（.5）を分（30分）に変換
             start_t = f"{int(s_val):02d}:{int((s_val % 1) * 60):02d}"
             end_t = f"{int(e_val):02d}:{int((e_val % 1) * 60):02d}"
             return start_t, end_t, True
@@ -34,7 +35,7 @@ def parse_special_shift(text):
     return None, None, False
 
 def time_schedule_from_drive(service, file_id):
-    """Excel時程表を勤務地別に取得（col_limit適用）"""
+    """Excelの時程表を取得"""
     from googleapiclient.http import MediaIoBaseDownload
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO(); downloader = MediaIoBaseDownload(fh, request)
@@ -47,7 +48,6 @@ def time_schedule_from_drive(service, file_id):
     
     for _, full_df in excel_data.items():
         if full_df.empty: continue
-        # 数値列までの範囲制限
         col_limit = len(full_df.columns)
         for i in range(2, len(full_df.columns)):
             val = full_df.iloc[0, i]
@@ -64,7 +64,7 @@ def time_schedule_from_drive(service, file_id):
     return location_data_dic
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDFから勤務地別に自分(2行)と全員のデータを抽出"""
+    """PDFから自分と他人のデータを場所別に抽出"""
     clean_target = re.sub(r'[\s　]', '', str(target_staff))
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
     
@@ -73,7 +73,6 @@ def pdf_reader(pdf_stream, target_staff):
     for table in tables:
         df = table.df
         if df.empty: continue
-        # 勤務地名抽出（改行ロジック）
         text = str(df.iloc[0, 0])
         lines = [l.strip() for l in text.splitlines() if l.strip()]
         work_place = re.sub(r'[\s　]', '', lines[len(lines)//2]) if lines else "Unknown"
@@ -82,6 +81,7 @@ def pdf_reader(pdf_stream, target_staff):
         matched = df.index[df.iloc[:, 0] == clean_target].tolist()
         if matched:
             idx = matched[0]
+            # [自分の2行, 全員のデータ] を保持
             pdf_dic[work_place] = [df.iloc[idx:idx+2, :].copy(), df]
     return pdf_dic
 
