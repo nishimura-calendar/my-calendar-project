@@ -1,147 +1,124 @@
 import pandas as pd
-import camelot
-import io
-import re
 import pdfplumber
+import re
+import io
 import unicodedata
-from googleapiclient.http import MediaIoBaseDownload
+import streamlit as st
 
-# --- 1. 時間整形関数：数値やシリアル値を「HH:MM」に変換 ---
-def format_to_hhmm(val):
-    try:
-        if val == "" or str(val).lower() == "nan": 
-            return ""
-        num = float(val)
-        h = int(num * 24 if num < 1 else num)
-        m = int(round((num * 24 - h) * 60 if num < 1 else (num - h) * 60))
-        return f"{h:02d}:{m:02d}"
-    except:
-        return str(val).strip()
-
-# --- 2. 特殊抽出関数：備考欄(v2)から「開始@終了」を抜き出す ---
-def parse_special_shift(text):
-    if not text or str(text).lower() == 'nan' or text == "":
-        return "", "", False
-    match = re.search(r'([\d\.:]+)\s*@\s*([\d\.:]+)', str(text))
-    if match:
-        def _adjust(t_str):
-            t_str = t_str.replace('.', ':')
-            if ':' in t_str:
-                h, m = t_str.split(':')
-                return f"{int(h):02d}:{int(m) if m else 0:02d}"
-            else:
-                return f"{int(t_str):02d}:00"
-        return _adjust(match.group(1)), _adjust(match.group(2)), True
-    return "", "", False
-
-# --- 3. ドライブ取得関数：時程表を読み込み、時間を事前変換 ---
-def time_schedule_from_drive(service, file_id):
-    request = service.files().export_media(fileId=file_id, mimeType='text/csv')
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    full_df = pd.read_csv(fh, header=None).fillna('')
-
-    location_data_dic = {}
-    loc_idx = full_df[full_df.iloc[:, 0] != ""].index.tolist()
-    for i, start_row in enumerate(loc_idx):
-        loc_name = str(full_df.iloc[start_row, 0]).strip()
-        end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
-        df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
-        # 3列目以降、全ての列の時間軸（1行目）を変換
-        for col in range(2, df.shape[1]):
-            df.iloc[0, col] = format_to_hhmm(df.iloc[0, col])
-        location_data_dic[loc_name] = df
-    return location_data_dic
-
-# --- 4. 年月抽出関数 ---
 def extract_year_month(pdf_stream):
     """PDFテキストから年月(20XX年XX月)を抽出"""
     try:
         with pdfplumber.open(pdf_stream) as pdf:
-            # 1ページ目のテキストを取得
             text = pdf.pages[0].extract_text()
             if not text:
-                return "2025", "3" # テキストが取れない場合のデフォルト
+                return "2026", "3"
             
-            # 正規表現の修正: \20 ではなく 20 と記述
+            # 正規表現の修正済み
             match = re.search(r'(20\d{2})年\s*(\d{1,2})月', text)
             if match:
                 return match.group(1), match.group(2)
             
-            # 別パターンの検索 (2025/03 など)
-            match_alt = re.search(r'(20\d{2})[/\s](\d{1,2})', text)
+            # 2026.3 などの形式にも対応
+            match_alt = re.search(r'(20\d{2})\.(\d{1,2})', text)
             if match_alt:
                 return match_alt.group(1), match_alt.group(2)
                 
     except Exception as e:
-        print(f"Year/Month extraction error: {e}")
+        st.error(f"年月抽出エラー: {e}")
         
-    return "2025", "3" # 見つからない場合のフォールバック
+    return "2026", "3"
 
-# --- 5. pdfファイル読込関数 ---
-def pdf_reader(pdf_stream, target_staff):
-    """PDFから場所名を抽出し、空白を完全除去して自分と他人のシフトを抽出"""
-    # 検索対象の名前から空白を除去
-    clean_target = re.sub(r'[\s　]', '', str(target_staff))
-    
-    with open("temp.pdf", "wb") as f:
-        f.write(pdf_stream.getbuffer())
-        
-    # flavor='lattice' で罫線を解析
-    tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
-    table_dictionary = {}
-    
-    for i, table in enumerate(tables):
-        df = table.df
-        if not df.empty:
-            # --- 勤務地抽出ロジック ---
-            text = str(df.iloc[0, 0])
-            lines = text.splitlines()
-            target_index = text.count('\n') // 2
-            work_place = lines[target_index] if target_index < len(lines) else (lines[-1] if lines else "empty")
-            df.iloc[0, 0] = work_place
-            df = df.fillna('')
+def parse_special_shift(text):
+    """'9@14' や '10.5@19' を解析"""
+    text = str(text).strip().replace(' ', '').replace('　', '')
+    if "@" in text:
+        try:
+            parts = text.split("@")
+            def conv(val_str):
+                v = float(val_str)
+                h = int(v)
+                m = int(round((v % 1) * 60))
+                return f"{h:02d}:{m:02d}"
+            return conv(parts[0]), conv(parts[1]), True
+        except:
+            return "", "", False
+    return "", "", False
 
-            # --- 検索用列の作成（スペース除去） ---
-            search_col = df.iloc[:, 0].astype(str).str.replace(r'[\s　]', '', regex=True)
-
-            # --- 抽出処理 ---
-            matched_indices = df.index[search_col == clean_target].tolist()
-        
-            if matched_indices:
-                idx = matched_indices[0]
-                my_daily_shift = df.iloc[idx : idx+2].copy()
-            
-                # 2. 【変更】自分以外のデータ (other_daily_shift)
-                # 自分を除外し、かつ表のヘッダー（0行目）も除外する
-                other_daily_shift = df[(search_col != clean_target) & (df.index != 0)].copy()
-
-                # 整形
-                my_daily_shift = my_daily_shift.reset_index(drop=True)
-                other_daily_shift = other_daily_shift.reset_index(drop=True)
-                                        
-                # 辞書に [自分, 他人] の形で格納
-                table_dictionary[work_place] = [my_daily_shift, other_daily_shift]
-        
-    return table_dictionary
-
-# --- 6. データ統合関数 ---
-def data_integration(pdf_dic, time_schedule_dic):
-    """
-    PDFから読み取った場所ごとの表と、時程表を場所名(T2など)で紐付ける
-    戻り値: {場所名: [自分のシフト, 他人のシフト, 時程表], ...}
-    """
+def data_integration(pdf_dic, time_sched_dic):
+    """PDFデータと時程表を場所名(key)で統合"""
     integrated = {}
-    for key in pdf_dic.items():
-        if key in pdf_dic:
-            # 自分のシフト(my_s), 他人のシフト(other_s)をpdf_dicから、時程表(t_s)をtime_dicから取得
-            # ※pdf_dic[loc_key] が [my_s, other_s] のリストである前提
-            my_s = pdf_dic[key][0]
-            other_s = pdf_dic[key][1]
-            t_s = time_schedule_dic[key]
-            integrated[key] = [my_s, other_s, t_s]
+    
+    # デバッグ用：現在持っているキーを表示
+    if not pdf_dic:
+        st.warning("PDFから表が抽出されていません。")
+    if not time_sched_dic:
+        st.warning("時程表データが読み込まれていません。")
+
+    for key in pdf_dic.keys():
+        # 時程表側のキーを正規化して比較（スペースなどの差異を吸収）
+        norm_key = unicodedata.normalize('NFKC', key).strip()
+        
+        # 時程表の中に一致する場所があるか探す
+        match_key = None
+        for t_key in time_sched_dic.keys():
+            if norm_key in unicodedata.normalize('NFKC', t_key).strip():
+                match_key = t_key
+                break
+        
+        if match_key:
+            integrated[key] = pdf_dic[key] + [time_sched_dic[match_key]]
+        else:
+            st.info(f"場所 '{key}' に一致する時程表が見つかりません。")
+            
     return integrated
+
+def pdf_reader(pdf_stream, target_staff):
+    """pdfplumberを使用して表を読み取り、場所別に整理する"""
+    pdf_dic = {}
+    clean_target = unicodedata.normalize('NFKC', str(target_staff)).strip()
+    
+    with pdfplumber.open(pdf_stream) as pdf:
+        for i, page in enumerate(pdf.pages):
+            tables = page.extract_tables()
+            if not tables:
+                continue
+                
+            for j, table in enumerate(tables):
+                df = pd.DataFrame(table)
+                if df.empty or df.shape[1] < 2:
+                    continue
+                
+                # 場所名の特定（表の左上セルなどを解析）
+                first_cell = str(df.iloc[0, 0])
+                # 改行があれば最初の行を場所名とする
+                loc_name = first_cell.split('\n')[0].strip()
+                loc_name = unicodedata.normalize('NFKC', loc_name)
+                
+                # キーが空、または「場所」などでないか確認
+                if not loc_name or "None" in loc_name:
+                    loc_name = f"場所_{i+1}"
+
+                # --- 自分の行(my_s)と全員の行(other_s)を特定するロジック ---
+                # 西村さんのPDF構造：1つの表に全員分あるか、個人別か
+                # ここでは「自分の名前」が含まれる行を探して my_s を作る簡易版
+                
+                my_rows = []
+                for idx, row in df.iterrows():
+                    row_str = "".join(row.astype(str))
+                    if clean_target in unicodedata.normalize('NFKC', row_str):
+                        # 名前が見つかった行とその下の行（備考など）をセットにする
+                        my_rows.append(df.iloc[idx : idx+2, :])
+                        break # 最初に見つかったものを採用
+                
+                if my_rows:
+                    my_s = my_rows[0].reset_index(drop=True)
+                    # pdf_dic[場所名] = [自分のDF, 元のDF]
+                    pdf_dic[loc_name] = [my_s, df]
+                
+    return pdf_dic
+
+def time_schedule_from_drive(service, file_id):
+    """Google Driveからの取得（実際はAPIを使用）"""
+    # この関数は現状、空またはダミーを返す設計になっています
+    # 運用時はここに実際の取得ロジックを入れます
+    return {}
