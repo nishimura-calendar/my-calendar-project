@@ -37,8 +37,15 @@ def main():
             if 'service' in locals() or 'service' in globals():
                 time_dic = p0.time_schedule_from_drive(service, sheet_id) 
                 if not time_dic:
-                    st.warning("スプレッドシートからデータが見つかりませんでした。")
-            else:
+                    st.info("テスト用データで動作確認します。")
+                    time_dic = {
+                        "T2": pd.DataFrame([
+                            ["", "記号", "10:00", "11:00", "12:00"], # 時間ラベル
+                            ["", "A", "西村", "", ""],            # A記号なら10時に西村
+                            ["", "B", "", "西村", ""]             # B記号なら11時に西村
+                        ])
+                    }
+                else:
                 st.warning("時程表の取得にはGoogle認証(serviceオブジェクト)が必要です。")
                 time_dic = {}
         except Exception as e:
