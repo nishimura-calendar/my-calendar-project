@@ -55,6 +55,7 @@ def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedul
                     res.append(["本町", dt, start_t, dt, end_t, "False", "", loc_key])
             # (B) それ以外で、時程表に記号(v1)がある場合
             elif v1 in valid_symbols:
+                res.append([f"{key}_{v1}", dt, start_t, dt, end_t, "False", "", loc_key])
                 sched_clean = time_schedule.fillna("").astype(str)
                 my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_info]
                 if not my_time_shift.empty:
