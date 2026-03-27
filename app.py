@@ -32,7 +32,7 @@ def main():
     
     # 時程表のスプレッドシートID
     # ※ 西村さんの正しいIDに書き換えてください
-    default_id = "1p7EBN1zTTt09etuQkZTIXBlNutUZqQkG" 
+    default_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE" 
     sheet_id = st.sidebar.text_input("時程表スプレッドシートID", value=default_id)
 
     service = get_gdrive_service()
