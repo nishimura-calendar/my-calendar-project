@@ -57,8 +57,6 @@ def time_schedule_from_drive(service, file_id):
         location_data_dic[loc_name] = df
     return location_data_dic
 
-time_schedule_dic = time_schedule_from_drive(service, file_id)
-
 # --- 4. 年月抽出関数 ---
 def extract_year_month(pdf_stream):
     """PDF内のテキストから '2026年3月' のような表記を探して y, m を返す"""
@@ -115,8 +113,6 @@ def pdf_reader(pdf_stream, target_staff):
                 table_dictionary[work_place] = [my_daily_shift, other_daily_shift]
         
     return table_dictionary
-
-pdf_dic = pdf_reader(pdf_stream, target_staff)
 
 # --- 6. データ統合関数 ---
 def data_integration(pdf_dic, time_schedule_dic):
