@@ -41,34 +41,50 @@ def parse_special_shift(text):
 def time_schedule_from_drive(service, file_id):
     """
     Google Driveからファイルを読み込みます。
-    スプレッドシート形式ならエクスポート、CSV形式なら直接ダウンロードを試みます。
+    様々な文字コード(UTF-8, Shift-JIS, CP932)に対応します。
     """
     try:
         fh = io.BytesIO()
+        # 1. Google Driveからデータをダウンロード
         try:
-            # 1. まずはスプレッドシート形式としてCSVエクスポートを試みる
+            # スプレッドシート形式の場合
             request = service.files().export_media(fileId=file_id, mimeType='text/csv')
             downloader = MediaIoBaseDownload(fh, request)
             done = False
             while not done:
                 _, done = downloader.next_chunk()
         except Exception:
-            # 2. 失敗した（CSVファイル等の）場合、直接ダウンロードを試みる
-            fh = io.BytesIO() # リセット
+            # CSVファイルが直接置かれている場合
+            fh = io.BytesIO()
             request = service.files().get_media(fileId=file_id)
             downloader = MediaIoBaseDownload(fh, request)
             done = False
             while not done:
                 _, done = downloader.next_chunk()
         
-        fh.seek(0)
-        # 読み込み（日本語文字化け対策で utf-8-sig または cp932 を試行）
-        try:
-            full_df = pd.read_csv(fh, header=None, encoding='utf-8-sig').fillna('')
-        except:
-            fh.seek(0)
-            full_df = pd.read_csv(fh, header=None, encoding='cp932').fillna('')
+        content = fh.getvalue()
+        if not content:
+            st.error("ファイルの中身が空です。")
+            return {}
+
+        # 2. 文字コードを順に試して読み込む
+        full_df = None
+        # 試行するエンコードリスト
+        encodings = ['utf-8-sig', 'cp932', 'shift_jis', 'utf-8']
         
+        for enc in encodings:
+            try:
+                full_df = pd.read_csv(io.BytesIO(content), header=None, encoding=enc).fillna('')
+                # 読み込みに成功したらループを抜ける
+                break
+            except Exception:
+                continue
+        
+        if full_df is None:
+            st.error("ファイルの文字コードを判別できませんでした（UTF-8, CP932, Shift-JISのいずれでもありません）。")
+            return {}
+        
+        # 3. データの整形
         location_data_dic = {}
         # A列に値がある行を「場所の区切り」として認識
         loc_idx = full_df[full_df.iloc[:, 0].astype(str).str.strip() != ""].index.tolist()
@@ -80,12 +96,11 @@ def time_schedule_from_drive(service, file_id):
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時間行（1行目）の整形
+            # 時間行（1行目）のシリアル値を時刻に変換
             for col in range(2, df.shape[1]):
                 val = df.iloc[0, col]
                 try:
                     num = float(val)
-                    # 1未満ならシリアル値、1以上ならそのままの時間として扱う
                     h = int(num * 24 if num < 1 else num)
                     m = int(round((num * 24 - h) * 60 if num < 1 else (num - h) * 60))
                     df.iloc[0, col] = f"{h:02d}:{m:02d}"
@@ -95,16 +110,17 @@ def time_schedule_from_drive(service, file_id):
             
         return location_data_dic
     except Exception as e:
-        st.error(f"⚠️ ファイル読み込みエラー: {e}")
+        st.error(f"⚠️ 読み込み中にエラーが発生しました: {e}")
         return {}
 
 def data_integration(pdf_dic, time_sched_dic):
-    """PDFと時程表の紐付け"""
+    """PDFと時程表の場所名を紐付け"""
     integrated = {}
     for p_name, p_list in pdf_dic.items():
         norm_p = normalize_text(p_name)
         found_key = None
         for ts_key in time_sched_dic.keys():
+            # 部分一致も含めて探索
             if ts_key in norm_p or norm_p in ts_key:
                 found_key = ts_key
                 break
