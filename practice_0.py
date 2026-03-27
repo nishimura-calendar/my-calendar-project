@@ -118,7 +118,23 @@ def pdf_reader(pdf_stream, target_staff):
     return pdf_dic
 
 def time_schedule_from_drive(service, file_id):
-    """Google Driveからの取得（実際はAPIを使用）"""
-    # この関数は現状、空またはダミーを返す設計になっています
-    # 運用時はここに実際の取得ロジックを入れます
-    return {}
+    request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    full_df = pd.read_csv(fh, header=None).fillna('')
+
+    location_data_dic = {}
+    loc_idx = full_df[full_df.iloc[:, 0] != ""].index.tolist()
+    for i, start_row in enumerate(loc_idx):
+        loc_name = str(full_df.iloc[start_row, 0]).strip()
+        end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
+        df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+        # 3列目以降、全ての列の時間軸（1行目）を変換
+        for col in range(2, df.shape[1]):
+            df.iloc[0, col] = format_to_hhmm(df.iloc[0, col])
+        location_data_dic[loc_name] = df
+    return location_data_dic
