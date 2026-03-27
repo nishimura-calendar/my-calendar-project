@@ -33,11 +33,17 @@ def main():
         except Exception as e:
             st.error(f"PDF解析エラー: {e}")
             st.stop()
-
-        # 3. 時程表の取得（serviceは認証済みと仮定）
-        # time_dic = p0.time_schedule_from_drive(service, sheet_id)
-        time_dic = {} # ダミー
-
+　　　　 # 3. 時程表の取得（Google Drive 連携）
+        try:
+            # ここで実際に Google Drive からデータを取得します
+            # ※ service オブジェクトが定義されていることが前提です
+            time_dic = p0.time_schedule_from_drive(service, sheet_id) 
+            
+            if not time_dic:
+                st.warning("スプレッドシートからデータが見つかりませんでした。IDを確認してください。")
+        except Exception as e:
+            st.error(f"時程表の取得中にエラーが発生しました: {e}")
+            time_dic = {}
         # 4. データの統合
         integrated = p0.data_integration(pdf_dic, time_dic)
 
