@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import practice_0 as p0  # アップロードいただいた practice_0.py を使用
+import practice_0 
 
 def main():
     st.set_page_config(page_title="シフト抽出システム", layout="wide")
