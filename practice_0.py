@@ -40,21 +40,34 @@ def parse_special_shift(text):
 
 def time_schedule_from_drive(service, file_id):
     """
-    Google DriveからスプレッドシートをCSV形式でエクスポートして取得します。
+    Google Driveからファイルを読み込みます。
+    スプレッドシート形式ならエクスポート、CSV形式なら直接ダウンロードを試みます。
     """
     try:
-        # サービスアカウントがファイルにアクセスできるか試行
-        request = service.files().export_media(fileId=file_id, mimeType='text/csv')
         fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
+        try:
+            # 1. まずはスプレッドシート形式としてCSVエクスポートを試みる
+            request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        except Exception:
+            # 2. 失敗した（CSVファイル等の）場合、直接ダウンロードを試みる
+            fh = io.BytesIO() # リセット
+            request = service.files().get_media(fileId=file_id)
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
         
         fh.seek(0)
-        # 読み込み時のエラーを防ぐため、型指定を避けて読み込み
-        full_df = pd.read_csv(fh, header=None, encoding='utf-8').fillna('')
+        # 読み込み（日本語文字化け対策で utf-8-sig または cp932 を試行）
+        try:
+            full_df = pd.read_csv(fh, header=None, encoding='utf-8-sig').fillna('')
+        except:
+            fh.seek(0)
+            full_df = pd.read_csv(fh, header=None, encoding='cp932').fillna('')
         
         location_data_dic = {}
         # A列に値がある行を「場所の区切り」として認識
@@ -67,12 +80,12 @@ def time_schedule_from_drive(service, file_id):
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時間行（1行目）のシリアル値を時刻文字列に変換
+            # 時間行（1行目）の整形
             for col in range(2, df.shape[1]):
                 val = df.iloc[0, col]
                 try:
                     num = float(val)
-                    # シリアル値（0.416...）を時刻に変換
+                    # 1未満ならシリアル値、1以上ならそのままの時間として扱う
                     h = int(num * 24 if num < 1 else num)
                     m = int(round((num * 24 - h) * 60 if num < 1 else (num - h) * 60))
                     df.iloc[0, col] = f"{h:02d}:{m:02d}"
@@ -82,17 +95,14 @@ def time_schedule_from_drive(service, file_id):
             
         return location_data_dic
     except Exception as e:
-        # 詳細なエラー原因を画面に表示
-        st.error(f"⚠️ スプレッドシート読み込みエラー: {e}")
-        st.info("💡 対策: Google Cloud Consoleで 'Google Sheets API' が有効か確認してください。")
+        st.error(f"⚠️ ファイル読み込みエラー: {e}")
         return {}
 
 def data_integration(pdf_dic, time_sched_dic):
-    """PDFと時程表の場所名を紐付け"""
+    """PDFと時程表の紐付け"""
     integrated = {}
     for p_name, p_list in pdf_dic.items():
         norm_p = normalize_text(p_name)
-        # 場所名が完全一致するか、または部分一致するか確認
         found_key = None
         for ts_key in time_sched_dic.keys():
             if ts_key in norm_p or norm_p in ts_key:
@@ -102,11 +112,11 @@ def data_integration(pdf_dic, time_sched_dic):
         if found_key:
             integrated[p_name] = p_list + [time_sched_dic[found_key]]
         else:
-            st.warning(f"⚠️ 場所 '{p_name}' の時程表が見つかりません。スプレッドシートの場所名を確認してください。")
+            st.warning(f"⚠️ 場所 '{p_name}' の時程表が見つかりません。")
     return integrated
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDFから自分と全員の表を抽出"""
+    """PDF解析"""
     pdf_dic = {}
     clean_target = normalize_text(target_staff)
     with pdfplumber.open(pdf_stream) as pdf:
@@ -115,15 +125,11 @@ def pdf_reader(pdf_stream, target_staff):
             for table in tables:
                 df = pd.DataFrame(table)
                 if df.empty or df.shape[1] < 2: continue
-                
-                # 表の左上を場所名とみなす
                 first_cell = str(df.iloc[0, 0]).replace('\n', '')
                 loc_name = first_cell.strip()
-                
                 my_s = None
                 for idx, row in df.iterrows():
-                    row_text = "".join(row.astype(str))
-                    if clean_target in normalize_text(row_text):
+                    if clean_target in normalize_text("".join(row.astype(str))):
                         my_s = df.iloc[idx : idx+2, :].reset_index(drop=True)
                         break
                 if my_s is not None:
