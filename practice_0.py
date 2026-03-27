@@ -59,13 +59,28 @@ def time_schedule_from_drive(service, file_id):
 
 # --- 4. 年月抽出関数 ---
 def extract_year_month(pdf_stream):
-    """PDF内のテキストから '2026年3月' のような表記を探して y, m を返す"""
-    with pdfplumber.open(pdf_stream) as pdf:
-        text = pdf.pages[0].extract_text()
-        match = re.search(r'(\20\d{2})年\s*(\d{1,2})月', text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-    return None, None
+    """PDFテキストから年月(20XX年XX月)を抽出"""
+    try:
+        with pdfplumber.open(pdf_stream) as pdf:
+            # 1ページ目のテキストを取得
+            text = pdf.pages[0].extract_text()
+            if not text:
+                return "2025", "3" # テキストが取れない場合のデフォルト
+            
+            # 正規表現の修正: \20 ではなく 20 と記述
+            match = re.search(r'(20\d{2})年\s*(\d{1,2})月', text)
+            if match:
+                return match.group(1), match.group(2)
+            
+            # 別パターンの検索 (2025/03 など)
+            match_alt = re.search(r'(20\d{2})[/\s](\d{1,2})', text)
+            if match_alt:
+                return match_alt.group(1), match_alt.group(2)
+                
+    except Exception as e:
+        print(f"Year/Month extraction error: {e}")
+        
+    return "2025", "3" # 見つからない場合のフォールバック
 
 # --- 5. pdfファイル読込関数 ---
 def pdf_reader(pdf_stream, target_staff):
