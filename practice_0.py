@@ -41,11 +41,13 @@ def parse_special_shift(text):
 def time_schedule_from_drive(service, file_id):
     """
     Google Driveからファイルを読み込みます。
-    様々な文字コード(UTF-8, Shift-JIS, CP932)に対応します。
+    Excel(.xlsx)内の 6.25 などの数値を時刻形式(06:15)に変換します。
     """
     try:
         fh = io.BytesIO()
-        # 1. Google Driveからデータをダウンロード
+        is_csv_export = False
+        
+        # 1. ダウンロード試行
         try:
             # スプレッドシート形式の場合
             request = service.files().export_media(fileId=file_id, mimeType='text/csv')
@@ -53,8 +55,9 @@ def time_schedule_from_drive(service, file_id):
             done = False
             while not done:
                 _, done = downloader.next_chunk()
+            is_csv_export = True
         except Exception:
-            # CSVファイルが直接置かれている場合
+            # Excel形式などの場合
             fh = io.BytesIO()
             request = service.files().get_media(fileId=file_id)
             downloader = MediaIoBaseDownload(fh, request)
@@ -64,29 +67,30 @@ def time_schedule_from_drive(service, file_id):
         
         content = fh.getvalue()
         if not content:
-            st.error("ファイルの中身が空です。")
             return {}
 
-        # 2. 文字コードを順に試して読み込む
+        # 2. データの読み込み
         full_df = None
-        # 試行するエンコードリスト
-        encodings = ['utf-8-sig', 'cp932', 'shift_jis', 'utf-8']
-        
-        for enc in encodings:
+        if is_csv_export:
+            full_df = pd.read_csv(io.BytesIO(content), header=None, encoding='utf-8-sig').fillna('')
+        else:
             try:
-                full_df = pd.read_csv(io.BytesIO(content), header=None, encoding=enc).fillna('')
-                # 読み込みに成功したらループを抜ける
-                break
-            except Exception:
-                continue
+                # Excel(.xlsx)として読み込み
+                full_df = pd.read_excel(io.BytesIO(content), header=None).fillna('')
+            except:
+                # それ以外はCSVとして読み込み
+                for enc in ['utf-8-sig', 'cp932', 'shift_jis', 'utf-8']:
+                    try:
+                        full_df = pd.read_csv(io.BytesIO(content), header=None, encoding=enc).fillna('')
+                        break
+                    except: continue
         
-        if full_df is None:
-            st.error("ファイルの文字コードを判別できませんでした（UTF-8, CP932, Shift-JISのいずれでもありません）。")
+        if full_df is None or full_df.empty:
             return {}
         
         # 3. データの整形
         location_data_dic = {}
-        # A列に値がある行を「場所の区切り」として認識
+        # A列に値がある行（T1, T2など）を特定
         loc_idx = full_df[full_df.iloc[:, 0].astype(str).str.strip() != ""].index.tolist()
         
         for i, start_row in enumerate(loc_idx):
@@ -96,21 +100,27 @@ def time_schedule_from_drive(service, file_id):
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時間行（1行目）のシリアル値を時刻に変換
+            # 1行目の時刻ラベル変換 (6.25 -> 06:15 / 0.416 -> 10:00)
             for col in range(2, df.shape[1]):
                 val = df.iloc[0, col]
                 try:
                     num = float(val)
-                    h = int(num * 24 if num < 1 else num)
-                    m = int(round((num * 24 - h) * 60 if num < 1 else (num - h) * 60))
-                    df.iloc[0, col] = f"{h:02d}:{m:02d}"
+                    if 0 < num < 24.1: # 6.25 などの形式
+                        h = int(num)
+                        m = int(round((num - h) * 60))
+                        if m >= 60: h += 1; m = 0
+                        df.iloc[0, col] = f"{h:02d}:{m:02d}"
+                    elif 0 < num < 1: # Excelのシリアル値形式
+                        h = int(num * 24)
+                        m = int(round((num * 24 - h) * 60))
+                        df.iloc[0, col] = f"{h:02d}:{m:02d}"
                 except:
                     pass
             location_data_dic[norm_name] = df
             
         return location_data_dic
     except Exception as e:
-        st.error(f"⚠️ 読み込み中にエラーが発生しました: {e}")
+        st.error(f"⚠️ ファイル読み込みエラー: {e}")
         return {}
 
 def data_integration(pdf_dic, time_sched_dic):
@@ -120,11 +130,9 @@ def data_integration(pdf_dic, time_sched_dic):
         norm_p = normalize_text(p_name)
         found_key = None
         for ts_key in time_sched_dic.keys():
-            # 部分一致も含めて探索
             if ts_key in norm_p or norm_p in ts_key:
                 found_key = ts_key
                 break
-        
         if found_key:
             integrated[p_name] = p_list + [time_sched_dic[found_key]]
         else:
