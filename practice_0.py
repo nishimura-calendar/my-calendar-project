@@ -3,8 +3,6 @@ import pdfplumber
 import re
 import io
 import unicodedata
-import streamlit as st
-from googleapiclient.http import MediaIoBaseDownload
 
 def normalize_text(text):
     """全角半角、空白、改行を統一して比較しやすくする"""
@@ -26,16 +24,15 @@ def extract_year_month(pdf_stream):
 def parse_special_shift(text):
     """
     '10.5①19' や '10.5@19' 形式を解析。
-    ① や @ を区切りとして前後の数値を時刻(HH:MM)に変換する。
+    小数を時刻(HH:MM)に変換する。 (例: 10.25 -> 10:15)
     """
     text = normalize_text(text)
-    # 区切り文字 ① または @ で分割
+    # ① または @ で分割
     parts = re.split(r'[①@]', text)
     
     if len(parts) >= 2:
         try:
             def conv(v_str):
-                # 文字列の中から数値（整数・小数）を抽出
                 num_match = re.search(r'(\d+\.?\d*)', v_str)
                 if not num_match: return None
                 v = float(num_match.group(1))
@@ -51,51 +48,25 @@ def parse_special_shift(text):
         except: pass
     return "", "", False
 
-def time_schedule_from_drive(service, file_id):
-    """Google Driveから時程表を読み込み、時刻ラベルを正規化"""
+def read_excel_schedule(file_stream):
+    """
+    アップロードされたエクセルファイルから時程表を読み込む。
+    6.25 -> 06:15 などの変換を行う。
+    """
     try:
-        fh = io.BytesIO()
-        is_csv_export = False
-        try:
-            request = service.files().export_media(fileId=file_id, mimeType='text/csv')
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done: _, done = downloader.next_chunk()
-            is_csv_export = True
-        except:
-            fh = io.BytesIO()
-            request = service.files().get_media(fileId=file_id)
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done: _, done = downloader.next_chunk()
-        
-        content = fh.getvalue()
-        if not content: return {}
-
-        full_df = None
-        if is_csv_export:
-            full_df = pd.read_csv(io.BytesIO(content), header=None, encoding='utf-8-sig').fillna('')
-        else:
-            try:
-                full_df = pd.read_excel(io.BytesIO(content), header=None).fillna('')
-            except:
-                for enc in ['utf-8-sig', 'cp932', 'shift_jis']:
-                    try:
-                        full_df = pd.read_csv(io.BytesIO(content), header=None, encoding=enc).fillna('')
-                        break
-                    except: continue
-        
-        if full_df is None or full_df.empty: return {}
-        
+        full_df = pd.read_excel(file_stream, header=None).fillna('')
         location_data_dic = {}
+        
+        # A列に文字がある行を場所の区切りとする
         loc_idx = full_df[full_df.iloc[:, 0].astype(str).str.strip() != ""].index.tolist()
+        
         for i, start_row in enumerate(loc_idx):
             raw_name = str(full_df.iloc[start_row, 0])
             norm_name = normalize_text(raw_name)
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時刻ラベル (6.25 -> 06:15)
+            # 1行目の時刻ラベルを変換 (6.25 -> 06:15)
             for col in range(2, df.shape[1]):
                 val = df.iloc[0, col]
                 try:
@@ -104,18 +75,14 @@ def time_schedule_from_drive(service, file_id):
                         h = int(num); m = int(round((num - h) * 60))
                         if m >= 60: h += 1; m = 0
                         df.iloc[0, col] = f"{h:02d}:{m:02d}"
-                    elif 0 < num < 1:
-                        h = int(num * 24); m = int(round((num * 24 - h) * 60))
-                        df.iloc[0, col] = f"{h:02d}:{m:02d}"
                 except: pass
             location_data_dic[norm_name] = df
         return location_data_dic
     except Exception as e:
-        st.error(f"時程表読み込みエラー: {e}")
-        return {}
+        return None
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDF解析: 指定スタッフの2行(記号・特記事項)を抽出"""
+    """PDFから指定スタッフの勤務情報を2行分(記号・特記事項)抽出"""
     pdf_dic = {}
     clean_target = normalize_text(target_staff)
     with pdfplumber.open(pdf_stream) as pdf:
@@ -127,7 +94,8 @@ def pdf_reader(pdf_stream, target_staff):
                 loc_name = str(df.iloc[0, 0]).replace('\n', '').strip()
                 my_s = None
                 for idx, row in df.iterrows():
-                    if clean_target in normalize_text("".join(row.astype(str))):
+                    row_str = "".join(row.astype(str))
+                    if clean_target in normalize_text(row_str):
                         my_s = df.iloc[idx : idx+2, :].reset_index(drop=True)
                         break
                 if my_s is not None:
