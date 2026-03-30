@@ -7,7 +7,7 @@ import streamlit as st
 from googleapiclient.http import MediaIoBaseDownload
 
 def normalize_text(text):
-    """全角半角、空白、改行を統一"""
+    """全角半角、空白、改行を統一して比較しやすくする"""
     if not text or str(text).lower() == 'nan': return ""
     normalized = unicodedata.normalize('NFKC', str(text))
     return re.sub(r'[\s　\n\r]', '', normalized).strip()
@@ -25,17 +25,17 @@ def extract_year_month(pdf_stream):
 
 def parse_special_shift(text):
     """
-    '10.5①19' などの形式を解析。
-    丸文字 ① または @ を区切りとして前後を時刻に変換。
+    '10.5①19' や '10.5@19' 形式を解析。
+    ① や @ を区切りとして前後の数値を時刻(HH:MM)に変換する。
     """
     text = normalize_text(text)
-    # ① または @ で分割
+    # 区切り文字 ① または @ で分割
     parts = re.split(r'[①@]', text)
     
     if len(parts) >= 2:
         try:
             def conv(v_str):
-                # 文字列から数値部分だけを抽出（例：「本町10.5」→「10.5」）
+                # 文字列の中から数値（整数・小数）を抽出
                 num_match = re.search(r'(\d+\.?\d*)', v_str)
                 if not num_match: return None
                 v = float(num_match.group(1))
@@ -52,7 +52,7 @@ def parse_special_shift(text):
     return "", "", False
 
 def time_schedule_from_drive(service, file_id):
-    """Google Driveから時程表（Excel/スプレッドシート）を読み込み"""
+    """Google Driveから時程表を読み込み、時刻ラベルを正規化"""
     try:
         fh = io.BytesIO()
         is_csv_export = False
@@ -95,7 +95,7 @@ def time_schedule_from_drive(service, file_id):
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時刻ラベル変換 (6.25 -> 06:15)
+            # 時刻ラベル (6.25 -> 06:15)
             for col in range(2, df.shape[1]):
                 val = df.iloc[0, col]
                 try:
@@ -111,11 +111,11 @@ def time_schedule_from_drive(service, file_id):
             location_data_dic[norm_name] = df
         return location_data_dic
     except Exception as e:
-        st.error(f"⚠️ ファイル読み込みエラー: {e}")
+        st.error(f"時程表読み込みエラー: {e}")
         return {}
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDF解析"""
+    """PDF解析: 指定スタッフの2行(記号・特記事項)を抽出"""
     pdf_dic = {}
     clean_target = normalize_text(target_staff)
     with pdfplumber.open(pdf_stream) as pdf:
