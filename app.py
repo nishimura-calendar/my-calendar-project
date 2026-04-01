@@ -18,60 +18,64 @@ def get_gcp_services():
         return None
 
 def main():
-    st.set_page_config(page_title="Shift Integration System", layout="wide")
-    st.title("📅 シフト・時程表 CSV出力システム")
+    st.set_page_config(page_title="Shift Integration", layout="wide")
+    st.title("📅 シフト・時程表 CSV出力")
 
-    st.sidebar.header("ユーザー設定")
-    target_staff = st.sidebar.text_input("検索氏名", value="田坂 友愛")
-    target_date = st.sidebar.date_input("対象日")
-    file_id = st.sidebar.text_input("時程表SS ID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
-    
-    uploaded_pdf = st.file_uploader("勤務表PDFをアップロード", type="pdf")
+    with st.sidebar:
+        st.header("設定")
+        target_staff = st.text_input("検索する氏名", value="田坂 友愛")
+        target_date = st.date_input("対象の日付")
+        file_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+
+    uploaded_pdf = st.file_uploader("勤務表PDFをアップロードしてください", type="pdf")
 
     if uploaded_pdf and target_staff:
-        if st.button("🚀 解析・CSV生成"):
+        if st.button("🚀 実行してCSVを生成"):
             drive_service = get_gcp_services()
             if not drive_service: st.stop()
             
-            with st.spinner("解析中..."):
+            with st.spinner("データを解析しています..."):
+                # 1. 時程表取得
                 time_dic = p0.download_and_extract_schedule(drive_service, file_id)
+                # 2. PDF解析
                 pdf_stream = io.BytesIO(uploaded_pdf.read())
                 pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-                
-                # CSVデータの生成
-                shifts, holidays, events = p0.generate_calendar_data(pdf_dic, time_dic, target_date)
+                # 3. データ統合・CSV生成
+                shifts, holidays, events = p0.generate_all_csv_data(pdf_dic, time_dic, target_date)
                 
                 if shifts or holidays or events:
-                    st.success("解析完了。以下のボタンからCSVをダウンロードしてください。")
+                    st.success("解析が完了しました。")
                     
-                    c1, c2, c3 = st.columns(3)
+                    cols = st.columns(3)
                     
-                    with c1:
+                    with cols[0]:
+                        st.subheader("シフト.csv")
                         if shifts:
                             df_s = pd.DataFrame(shifts)
+                            st.dataframe(df_s, hide_index=True)
                             csv_s = df_s.to_csv(index=False, header=False).encode('utf-8-sig')
-                            st.download_button("📥 シフト.csv", csv_s, "シフト.csv", "text/csv")
-                            st.dataframe(df_s)
-                    
-                    with c2:
+                            st.download_button("📥 ダウンロード", csv_s, "シフト.csv", "text/csv")
+                        else: st.info("データなし")
+
+                    with cols[1]:
+                        st.subheader("休日.csv")
                         if holidays:
                             df_h = pd.DataFrame(holidays)
+                            st.dataframe(df_h, hide_index=True)
                             csv_h = df_h.to_csv(index=False, header=False).encode('utf-8-sig')
-                            st.download_button("📥 休日.csv", csv_h, "休日.csv", "text/csv")
-                            st.dataframe(df_h)
-                        else:
-                            st.write("休日データなし")
-                            
-                    with c3:
+                            st.download_button("📥 ダウンロード", csv_h, "休日.csv", "text/csv")
+                        else: st.info("データなし")
+
+                    with cols[2]:
+                        st.subheader("イベント.csv")
                         if events:
                             df_e = pd.DataFrame(events)
+                            st.dataframe(df_e, hide_index=True)
                             csv_e = df_e.to_csv(index=False, header=False).encode('utf-8-sig')
-                            st.download_button("📥 イベント.csv", csv_e, "イベント.csv", "text/csv")
-                            st.dataframe(df_e)
-                        else:
-                            st.write("イベントデータなし")
+                            st.download_button("📥 ダウンロード", csv_e, "イベント.csv", "text/csv")
+                        else: st.info("データなし")
                 else:
-                    st.error("紐付け可能なデータがありませんでした。")
+                    st.warning("該当するデータが見つかりませんでした。条件を確認してください。")
 
 if __name__ == "__main__":
     main()
