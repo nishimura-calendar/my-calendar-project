@@ -2,30 +2,50 @@ import streamlit as st
 import practice_0 as p0
 import io
 import pandas as pd
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+def get_gcp_services():
+    """GCPサービス（Drive, Sheets）の構築"""
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_info,
+            scopes=[
+                'https://www.googleapis.com/auth/spreadsheets.readonly',
+                'https://www.googleapis.com/auth/drive.readonly'
+            ]
+        )
+        drive_service = build('drive', '3', credentials=credentials)
+        return drive_service
+    except Exception as e:
+        st.error(f"GCP認証エラー: {e}")
+        return None
 
 def main():
     st.set_page_config(page_title="シフト・時程 統合システム", layout="wide")
     
-    st.title("📅 シフト・時程表 統合表示 (Excel版)")
-    st.info("PDF(勤務表)とExcel(時程表)の両方をアップロードしてください。API設定は不要です。")
+    st.title("📅 シフト・時程表 統合表示 (Drive Excel版)")
+    st.info("ドライブ上の「時程表.xlsx」を自動取得し、アップロードされたPDFと紐付けます。")
 
     # サイドバー設定
-    st.sidebar.header("検索設定")
+    st.sidebar.header("設定")
     target_staff = st.sidebar.text_input("検索する氏名", value="田坂 友愛")
+    # 基本事項に記載のID
+    excel_file_id = st.sidebar.text_input("ExcelファイルID", value="1diDgaB--1vn5amCMmDGPv-Ld3IIIF-nK")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        pdf_file = st.file_uploader("1. 勤務表PDFをアップロード", type="pdf")
-    with col2:
-        excel_file = st.file_uploader("2. 時程表Excelをアップロード", type=["xlsx", "xls"])
+    pdf_file = st.file_uploader("勤務表PDFをアップロードしてください", type="pdf")
 
-    if pdf_file and excel_file and target_staff:
+    if pdf_file and target_staff and excel_file_id:
         if st.button("解析と紐付けを実行"):
-            with st.spinner("データを解析中..."):
-                # 1. Excelから時程表データを取得
-                time_dic = p0.extract_time_schedule_from_excel(excel_file)
+            drive_service = get_gcp_services()
+            if not drive_service: return
+            
+            with st.spinner("データを取得・解析中..."):
+                # 1. Google Driveから時程表Excelをダウンロード・解析
+                time_dic = p0.download_and_extract_excel(drive_service, excel_file_id)
                 
-                # 2. PDFから個人シフトを抽出
+                # 2. PDF解析
                 pdf_stream = io.BytesIO(pdf_file.read())
                 pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
 
@@ -38,10 +58,10 @@ def main():
                         for k in pdf_dic.keys(): st.success(f"✅ {k}")
                     else: st.error("氏名が見つかりません")
                 with c_xls:
-                    st.write("**Excelの勤務地:**")
+                    st.write("**Excel(Drive)の勤務地:**")
                     if time_dic:
                         for k in time_dic.keys(): st.success(f"✅ {k}")
-                    else: st.error("勤務地(T1,T2等)が見つかりません")
+                    else: st.error("Excelから勤務地が見つかりません。共有設定やIDを確認してください。")
 
                 # 3. 紐付け処理
                 final_data = p0.data_integration(pdf_dic, time_dic)
@@ -65,7 +85,7 @@ def main():
                         st.warning("勤務地名が一致しないため紐付けできませんでした。")
 
     else:
-        st.info("左側のサイドバーで氏名を確認し、2つのファイルをアップロードしてください。")
+        st.info("サイドバーで条件を確認し、PDFをアップロードしてください。")
 
 if __name__ == "__main__":
     main()
