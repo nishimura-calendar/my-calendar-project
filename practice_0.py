@@ -4,6 +4,17 @@ import re
 import io
 import unicodedata
 
+# --- 0. 名称変換設定 (PDFの表記をExcelのA列に合わせる) ---
+# PDFで抽出される可能性のある名前を、Excelで管理している名前に変換します。
+LOCATION_MAP = {
+    "第1ターミナル": "T1",
+    "第2ターミナル": "T2",
+    "関西国際空港第1": "T1",
+    "関西国際空港第2": "T2",
+    # 札幌や羽田なども、PDF側の表記が特殊ならここに追加します
+    # "新千歳空港": "札幌", 
+}
+
 # --- 1. 時間整形関数 ---
 def format_to_hhmm(val):
     try:
@@ -21,9 +32,22 @@ def format_to_hhmm(val):
 def normalize_text(text):
     if text is None or str(text).lower() == 'nan': return ""
     normalized = unicodedata.normalize('NFKC', str(text))
-    return re.sub(r'[\s　\n\r]', '', normalized).strip()
+    # 空白や改行を削除し、大文字に統一
+    return re.sub(r'[\s　\n\r]', '', normalized).strip().upper()
 
-# --- 3. 時程表（Excel）の読み込み ---
+# --- 3. 勤務地名の変換ロジック ---
+def map_location_name(raw_name):
+    """
+    PDFから抽出された生の名称を、Excel側の名称に変換します。
+    """
+    norm_name = normalize_text(raw_name)
+    # マップにあるキーワードが含まれているかチェック
+    for key, excel_name in LOCATION_MAP.items():
+        if normalize_text(key) in norm_name:
+            return normalize_text(excel_name)
+    return norm_name
+
+# --- 4. 時程表（Excel）の読み込み ---
 def read_excel_schedule(file_stream):
     try:
         full_df = pd.read_excel(file_stream, header=None).fillna('')
@@ -32,7 +56,7 @@ def read_excel_schedule(file_stream):
         
         for i, start_row in enumerate(loc_idx):
             raw_name = str(full_df.iloc[start_row, 0]).strip()
-            norm_name = normalize_text(raw_name)
+            norm_name = normalize_text(raw_name) # Excel側の名前も正規化
             if not norm_name: continue
             
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
@@ -46,7 +70,7 @@ def read_excel_schedule(file_stream):
     except:
         return None
 
-# --- 4. PDF読み込み関数 ---
+# --- 5. PDF読み込み関数 ---
 def pdf_reader(pdf_stream, target_staff):
     table_dictionary = {}
     clean_target = normalize_text(target_staff)
@@ -57,10 +81,12 @@ def pdf_reader(pdf_stream, target_staff):
                 text = page.extract_text() or ""
                 lines = [line.strip() for line in text.split('\n') if line.strip()]
                 
-                # 勤務地特定ロジック (中央値インデックス)
+                # 勤務地特定 (中央値付近)
                 target_index = len(lines) // 2
-                work_place_raw = lines[target_index] if lines else "unknown"
-                work_place = normalize_text(work_place_raw)
+                raw_place = lines[target_index] if lines else "unknown"
+                
+                # 重要：ここで名称を Excel 形式 (T1, T2 など) に変換
+                work_place = map_location_name(raw_place)
                 
                 tables = page.extract_tables()
                 for table in tables:
@@ -82,10 +108,11 @@ def pdf_reader(pdf_stream, target_staff):
         print(f"PDF Reader Error: {e}")
     return table_dictionary
 
-# --- 5. データ統合関数 ---
+# --- 6. データ統合関数 ---
 def data_integration(pdf_dic, time_schedule_dic):
     integrated_data = {}
     for loc_key, pdf_data in pdf_dic.items():
+        # 両方のキーが正規化されているため、一致しやすくなります
         if loc_key in time_schedule_dic:
             integrated_data[loc_key] = [pdf_data[0], pdf_data[1], time_schedule_dic[loc_key]]
     return integrated_data
