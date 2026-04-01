@@ -3,8 +3,8 @@ import practice_0 as p0
 import io
 
 def main():
-    st.set_page_config(page_title="シフト・時程表 確認ツール", layout="wide")
-    st.title("📅 シフト・時程表 独立出力システム")
+    st.set_page_config(page_title="シフト・時程表 統合システム", layout="wide")
+    st.title("📅 シフト・時程表 勤務地紐付けシステム")
 
     # サイドバー：設定
     st.sidebar.header("設定")
@@ -17,41 +17,54 @@ def main():
     with col2:
         excel_file = st.file_uploader("時程表Excelをアップロード", type=["xlsx", "xls"])
 
-    if pdf_file or excel_file:
-        if st.button("データ解析開始"):
-            # --- 1. PDFデータの解析と表示 ---
-            if pdf_file and target_staff:
-                st.header("📋 PDF勤務表からの抽出結果")
-                with st.spinner("PDFを解析中..."):
-                    pdf_stream = io.BytesIO(pdf_file.read())
-                    pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-                    
-                    if not pdf_dic:
-                        st.warning(f"PDF内に「{target_staff}」のデータが見つかりませんでした。")
-                    else:
-                        for loc, data_list in pdf_dic.items():
-                            with st.expander(f"📍 PDF場所名: {loc}", expanded=True):
-                                st.subheader("自分のシフト")
-                                st.dataframe(data_list[0])
-                                st.subheader("同僚のシフト")
-                                st.dataframe(data_list[1])
-            
-            st.divider()
+    if pdf_file and excel_file and target_staff:
+        if st.button("データ解析・紐付け開始"):
+            with st.spinner("解析および紐付け中..."):
+                # 1. Excel（時程表）の読み込み
+                # ExcelのA列にある名前をKeyとして辞書化
+                time_dic = p0.read_excel_schedule(excel_file)
+                
+                # 2. PDFの読み込み
+                # PDFの左上(0,0)にある名前をKeyとして自分のシフト・他人のシフトを抽出
+                pdf_stream = io.BytesIO(pdf_file.read())
+                pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
+                
+                if not pdf_dic:
+                    st.error(f"PDF内に「{target_staff}」のデータが見つかりませんでした。")
+                    return
 
-            # --- 2. Excelデータの解析と表示 ---
-            if excel_file:
-                st.header("⏱️ Excel時程表からの抽出結果")
-                with st.spinner("Excelを解析中..."):
-                    # streamをリセット（念のため）
-                    excel_file.seek(0)
-                    time_dic = p0.read_excel_schedule(excel_file)
+                # 3. データの統合 (紐付け処理)
+                # PDFの場所名とExcelの場所名が一致するものをまとめる
+                final_data = p0.data_integration(pdf_dic, time_dic)
+                
+                if not final_data:
+                    st.error("❌ PDFとExcelの勤務地名が一致しませんでした。")
+                    st.write("PDFから見つかった場所名:", list(pdf_dic.keys()))
+                    st.write("Excelから見つかった場所名:", list(time_dic.keys()) if time_dic else "なし")
+                    return
+
+                # 4. 結果表示（紐付けられた単位で表示）
+                st.success("✅ 勤務地による紐付けに成功しました")
+                
+                for loc, data_list in final_data.items():
+                    # data_list[0]: 自分のシフト
+                    # data_list[1]: 同僚のシフト
+                    # data_list[2]: 対応する時程表
                     
-                    if not time_dic:
-                        st.warning("Excelから時程表データを抽出できませんでした。")
-                    else:
-                        for loc, df_table in time_dic.items():
-                            with st.expander(f"⏰ Excel場所名: {loc}", expanded=False):
-                                st.dataframe(df_table)
+                    with st.expander(f"📍 勤務地: {loc} の統合データ", expanded=True):
+                        st.subheader(f"【{loc}】シフト情報")
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.write("👤 自分のシフト")
+                            st.dataframe(data_list[0])
+                        with col_b:
+                            st.write("👥 同僚のシフト")
+                            st.dataframe(data_list[1])
+                        
+                        st.divider()
+                        
+                        st.subheader(f"【{loc}】対応時程表 (Excelデータ)")
+                        st.dataframe(data_list[2])
 
 if __name__ == "__main__":
     main()
