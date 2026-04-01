@@ -6,6 +6,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 def get_sheets_service():
+    """Google Sheets API サービスを取得"""
     try:
         creds_info = st.secrets["gcp_service_account"]
         credentials = service_account.Credentials.from_service_account_info(
@@ -14,68 +15,91 @@ def get_sheets_service():
         )
         return build('sheets', 'v4', credentials=credentials)
     except Exception as e:
-        st.error(f"Google認証に失敗しました: {e}")
+        st.error(f"Google認証に失敗しました。Secretsの設定を確認してください: {e}")
         return None
 
 def main():
-    st.set_page_config(page_title="勤務地紐付け確認", layout="wide")
-    st.title("🔍 勤務地名・紐付け不一致の調査")
-
+    st.set_page_config(page_title="シフト・時程 統合システム", layout="wide")
+    
+    # サイドバー設定
+    st.sidebar.header("設定")
     target_staff = st.sidebar.text_input("検索する氏名", value="田坂 友愛")
-    pdf_file = st.file_uploader("勤務表PDFをアップロード", type="pdf")
-    spreadsheet_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    spreadsheet_id = st.sidebar.text_input("スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+    
+    st.title("📅 シフト・時程表 統合管理")
+    st.markdown(f"**検索対象:** `{target_staff}` さん")
+
+    # ファイルアップローダー
+    pdf_file = st.file_uploader("勤務表PDFをアップロードしてください", type="pdf")
 
     if pdf_file and target_staff:
-        if st.button("データ抽出を実行"):
+        if st.button("解析と紐付けを実行"):
             service = get_sheets_service()
             if not service: return
             
-            # 1. スプレッドシートから勤務地リストを取得
-            time_dic = p0.time_schedule_from_drive(service, spreadsheet_id)
-            
-            # 2. PDFから勤務地とシフトを取得
-            pdf_stream = io.BytesIO(pdf_file.read())
-            pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
+            with st.spinner("データを解析中..."):
+                # 1. スプレッドシートから時程表データを取得
+                # (A列をキーにした辞書形式: { "T1": {"raw_name": "T1", "df": df}, ... })
+                time_dic = p0.time_schedule_from_drive(service, spreadsheet_id)
+                
+                # 2. PDFから個人シフトを抽出
+                pdf_stream = io.BytesIO(pdf_file.read())
+                pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
 
-            # --- 確認用表示エリア ---
-            st.header("1. 読み取られた勤務地名の比較")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📄 PDFから抽出")
-                if pdf_dic:
-                    for key, val in pdf_dic.items():
-                        st.code(f"表示名: {val['raw_name']}\n(照合キー: {key})")
-                else:
-                    st.warning("氏名が見つからない、または勤務地を抽出できませんでした。")
+                if not pdf_dic:
+                    st.error(f"PDF内に「{target_staff}」さんのデータが見つかりませんでした。")
+                    return
 
-            with col2:
-                st.subheader("📊 スプレッドシートから抽出")
-                if time_dic:
-                    for key, val in time_dic.items():
-                        st.code(f"表示名: {val['raw_name']}\n(照合キー: {key})")
-                else:
-                    st.warning("スプレッドシートからデータを取得できませんでした。")
+                # 3. 紐付け処理
+                final_data = p0.data_integration(pdf_dic, time_dic)
+                
+                if not final_data:
+                    st.warning("⚠️ 勤務地の紐付けに失敗しました。")
+                    # デバッグ情報の表示
+                    with st.expander("紐付け失敗の調査用データ"):
+                        st.write("PDFから見つかった勤務地キー:", list(pdf_dic.keys()))
+                        st.write("シートから見つかった勤務地キー:", list(time_dic.keys()))
+                    return
 
-            # 3. 紐付け結果の表示
-            st.divider()
-            st.header("2. 紐付け結果の確認")
-            
-            final_data = p0.data_integration(pdf_dic, time_dic)
-            
-            if final_data:
-                for key, data in final_data.items():
-                    raw_name = pdf_dic[key]["raw_name"]
-                    st.success(f"✅ 紐付け成功: {raw_name}")
-                    with st.expander("詳細データを見る"):
-                        st.write("自分のシフト")
-                        st.dataframe(data[0])
-                        st.write("対応する時程表")
-                        st.dataframe(data[2])
-            else:
-                st.error("❌ 紐付けに失敗しました。")
-                st.info("上の「照合キー」を比較して、文字が微妙に違っていないか確認してください。")
-                st.info("例：PDFは『T1』、シートは『T1(羽田)』などの違いがあると紐付けできません。")
+                # 4. 結果の表示
+                st.divider()
+                for loc_key, content in final_data.items():
+                    my_df = content[0]        # 自分の2行シフト
+                    other_df = content[1]     # 同僚のシフト
+                    time_sched_df = content[2] # その場所の時程表
+                    
+                    st.header(f"📍 勤務地: {loc_key}")
+                    
+                    # タブで表示を切り替え
+                    tab1, tab2, tab3 = st.tabs(["📋 自分の今日の予定", "👥 同僚の動き", "⏱ 拠点時程表"])
+                    
+                    with tab1:
+                        st.subheader("あなたのシフト")
+                        st.dataframe(my_df, use_container_width=True)
+                        
+                        st.subheader("この場所の時程（詳細）")
+                        st.dataframe(time_sched_df, use_container_width=True)
+                        
+                        # ダウンロードボタン
+                        csv = my_df.to_csv(index=False).encode('utf_8_sig')
+                        st.download_button(
+                            label=f"{loc_key}のシフトをCSVで保存",
+                            data=csv,
+                            file_name=f"myshift_{loc_key}.csv",
+                            mime='text/csv',
+                        )
+
+                    with tab2:
+                        st.subheader("同じ勤務地のメンバー")
+                        st.dataframe(other_df, use_container_width=True)
+
+                    with tab3:
+                        st.subheader(f"{loc_key} 全体のタイムスケジュール")
+                        st.table(time_sched_df.iloc[:5, :]) # 冒頭だけ確認用
+                        st.write("※ 全データは「自分の今日の予定」タブの下部で確認できます。")
+
+    else:
+        st.info("左側のサイドバーで氏名を確認し、PDFファイルをアップロードしてください。")
 
 if __name__ == "__main__":
     main()
