@@ -3,146 +3,125 @@ import pdfplumber
 import re
 import io
 import unicodedata
+from googleapiclient.discovery import build
 
-# --- 1. 時間整形関数 (Excelの時間表示対応) ---
+# --- 1. 時間整形関数 ---
 def format_to_hhmm(val):
     try:
         if val == "" or str(val).lower() == "nan": 
             return ""
-        
-        # 数値(シリアル値含む)の場合
         if isinstance(val, (int, float)):
             num = float(val)
-            # 1未満は24時間換算(シリアル値)、それ以上はそのままの時間数
             h = int(num * 24 if num < 1 else num)
             m = int(round((num * 24 - h) * 60 if num < 1 else (num - h) * 60))
             if m >= 60: h += 1; m = 0
             return f"{h:02d}:{m:02d}"
-        
-        # 文字列の場合、不要な空白や改行を整理
-        s_val = str(val).strip().replace('\n', ' ')
-        # すでに HH:MM 形式ならそのまま、そうでなければ整形を試みる
-        return s_val
+        return str(val).strip()
     except:
         return str(val).strip()
 
 # --- 2. 文字列正規化 ---
 def normalize_text(text):
     if text is None or str(text).lower() == 'nan': return ""
-    # Unicode正規化 (全角半角、記号の統一)
     normalized = unicodedata.normalize('NFKC', str(text))
     return normalized.strip()
 
-# --- 3. 時程表（Excel）の読み込み ---
-def read_excel_schedule(file_stream):
+# --- 3. Google Drive / Sheets からの時程表取得 ---
+def time_schedule_from_drive(service, spreadsheet_id):
+    """
+    Google Sheetsから時程表を取得し、勤務地をキーとした辞書を返す。
+    A列=勤務地, B列=巡回区域, C列=ロッカ, D列以降=時間
+    """
     try:
-        # header=Noneで読み込み、後で1行目を整形する
-        full_df = pd.read_excel(file_stream, header=None).fillna('')
+        range_name = 'Sheet1!A:Z' # シート名は適宜調整
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=range_name).execute()
+        values = result.get('values', [])
+        
+        if not values:
+            return {}
+
+        full_df = pd.DataFrame(values).fillna('')
         location_data_dic = {}
         
-        # A列(iloc[:,0])が空でない行を勤務地の区切り(Key)とする
+        # A列が空でない行を勤務地の開始とする
         loc_idx = full_df[full_df.iloc[:, 0].astype(str).str.strip() != ""].index.tolist()
         
         for i, start_row in enumerate(loc_idx):
             raw_name = str(full_df.iloc[start_row, 0]).strip()
-            # 比較用に地名をクリーン化 (空白除去)
             norm_name = re.sub(r'\s+', '', unicodedata.normalize('NFKC', raw_name)).upper()
             if not norm_name: continue
             
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df_block = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 【重要】時程表の1行目（時間表示）をHH:MMに整形
-            # 通常3列目以降が時間軸であることを想定
+            # 1行目の時間を整形
             for col in range(3, df_block.shape[1]):
-                val = df_block.iloc[0, col]
-                df_block.iloc[0, col] = format_to_hhmm(val)
+                df_block.iloc[0, col] = format_to_hhmm(df_block.iloc[0, col])
                 
             location_data_dic[norm_name] = df_block
+            
         return location_data_dic
     except Exception as e:
-        print(f"Excel Read Error: {e}")
-        return None
+        print(f"Google Sheets Read Error: {e}")
+        return {}
 
-# --- 4. PDF読み込み関数 (本町2段構成・記号対応) ---
+# --- 4. PDF読み込み (打ち合わせ通りの勤務地判定) ---
 def pdf_reader(pdf_stream, target_staff):
     table_dictionary = {}
     clean_target = re.sub(r'\s+', '', unicodedata.normalize('NFKC', target_staff))
-    
-    # 判定対象キーワード
     location_keywords = ["T1", "T2", "札幌", "羽田", "本町"]
     
     try:
         with pdfplumber.open(pdf_stream) as pdf:
             for page in pdf.pages:
-                page_text = page.extract_text() or ""
-                norm_page_text = re.sub(r'\s+', '', unicodedata.normalize('NFKC', page_text)).upper()
-                
-                # ページデフォルトの勤務地を判定
-                page_default_loc = "UNKNOWN"
-                for kw in location_keywords:
-                    if kw in norm_page_text:
-                        page_default_loc = kw
-                        break
-                
                 tables = page.extract_tables()
                 for table in tables:
                     if not table: continue
                     
                     processed_table = []
                     for row in table:
-                        # 【重要】セル内の改行を「 / 」に置換して2段構成(開始/終了)を保持
-                        processed_row = [normalize_text(cell).replace('\n', ' / ') for cell in row]
+                        processed_row = [normalize_text(cell) for cell in row]
                         processed_table.append(processed_row)
                         
                     df = pd.DataFrame(processed_table).fillna('')
                     if df.empty or df.shape[1] < 2: continue
                     
-                    # 氏名検索用(0列目)
+                    # 勤務地の正確な読み込み (基本事項.docxのロジック参照)
+                    # パンダス読み込み時に iloc(0,0) を勤務地として扱う
+                    raw_val = str(df.iloc[0, 0])
+                    lines = raw_val.split('\n')
+                    target_index = raw_val.count('\n') // 2
+                    work_place = lines[target_index] if target_index < len(lines) else (lines[-1] if lines else "UNKNOWN")
+                    df.iloc[0, 0] = work_place
+                    
+                    norm_loc = re.sub(r'\s+', '', unicodedata.normalize('NFKC', work_place)).upper()
+                    
                     col_0_search = [re.sub(r'\s+', '', str(val)) for val in df.iloc[:, 0].tolist()]
                     
                     if clean_target in col_0_search:
                         idx = col_0_search.index(clean_target)
-                        
-                        # 勤務地の詳細特定 (氏名セル -> 1つ上 -> 左上 の優先順)
-                        specific_loc = page_default_loc
-                        check_cells = [df.iloc[idx, 0], df.iloc[max(0, idx-1), 0], df.iloc[0, 0]]
-                        for cell_val in check_cells:
-                            norm_val = re.sub(r'\s+', '', str(cell_val)).upper()
-                            found = False
-                            for kw in location_keywords:
-                                if kw in norm_val:
-                                    specific_loc = kw
-                                    found = True
-                                    break
-                            if found: break
-                        
-                        # 自分のシフト (氏名行とその下の行の2行1セットを維持)
-                        my_daily_shift = df.iloc[idx : idx+2].copy().reset_index(drop=True)
-                        
-                        # 同僚のシフト (自分以外)
+                        # 自分のシフト (2行)
+                        my_df = df.iloc[idx : idx+2].copy().reset_index(drop=True)
+                        # 同僚のシフト
                         other_indices = [i for i in range(len(df)) if i not in [idx, idx+1]]
-                        other_daily_shift = df.iloc[other_indices].copy().reset_index(drop=True)
+                        other_df = df.iloc[other_indices].copy().reset_index(drop=True)
                         
-                        table_dictionary[specific_loc] = [my_daily_shift, other_daily_shift]
+                        table_dictionary[norm_loc] = [my_df, other_df]
                         
     except Exception as e:
         print(f"PDF Reader Error: {e}")
-        
     return table_dictionary
 
-# --- 5. データ統合関数 ---
-def data_integration(pdf_dic, time_schedule_dic):
+# --- 5. データ統合 ---
+def data_integration(pdf_dic, time_dic):
     integrated_data = {}
-    for pdf_loc, pdf_data in pdf_dic.items():
+    for loc_key, pdf_data in pdf_dic.items():
         matched_key = None
-        # PDFの勤務地名とExcelの勤務地名を照合
-        for ex_key in time_schedule_dic.keys():
-            if pdf_loc == ex_key or pdf_loc in ex_key or ex_key in pdf_loc:
+        for ex_key in time_dic.keys():
+            if loc_key == ex_key or loc_key in ex_key or ex_key in loc_key:
                 matched_key = ex_key
                 break
-        
         if matched_key:
-            # 自分のシフト, 同僚のシフト, 対応する時程表
-            integrated_data[pdf_loc] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
+            integrated_data[loc_key] = [pdf_data[0], pdf_data[1], time_dic[matched_key]]
     return integrated_data
