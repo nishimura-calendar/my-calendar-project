@@ -4,100 +4,115 @@ import re
 import io
 import unicodedata
 
-def normalize_text(text):
-    """全角半角、空白、改行を統一して比較しやすくする"""
-    if not text or str(text).lower() == 'nan': return ""
-    normalized = unicodedata.normalize('NFKC', str(text))
-    return re.sub(r'[\s　\n\r]', '', normalized).strip()
-
+# --- 1. 時間整形関数 ---
 def format_to_hhmm(val):
-    """6.25 などの数値を HH:MM 形式に変換"""
     try:
-        if val == "" or str(val).lower() == "nan": return ""
+        if val == "" or str(val).lower() == "nan": 
+            return ""
         num = float(val)
-        h = int(num)
-        m = int(round((num - h) * 60))
+        h = int(num * 24 if num < 1 else num)
+        m = int(round((num * 24 - h) * 60 if num < 1 else (num - h) * 60))
         if m >= 60: h += 1; m = 0
         return f"{h:02d}:{m:02d}"
     except:
         return str(val).strip()
 
-def get_time_from_mark(text):
-    """
-    丸文字(①-⑨)を解析して時間を返す。基本事項に基づき@は考慮せず
-    丸文字に対応する時間を抽出（マッピングは現場運用に合わせて調整）
-    """
-    text = normalize_text(text)
-    # 代表的なマッピング（例）
-    mapping = {
-        "1": ("09:00", "18:00"), "2": ("10:00", "19:00"),
-        "3": ("11:00", "20:00"), "4": ("12:00", "21:00"),
-        "5": ("13:00", "22:00")
-    }
-    m = re.search(r'([1-9①-⑨])', text)
-    if m:
-        char = m.group(1)
-        # 丸数字を数字に置換
-        val = char.translate(str.maketrans("①②③④⑤⑥⑦⑧⑨", "123456789"))
-        if val in mapping:
-            return mapping[val][0], mapping[val][1], True
-    return "", "", False
+# --- 2. 文字列正規化 ---
+def normalize_text(text):
+    if text is None or str(text).lower() == 'nan': return ""
+    # 全角半角の統一と、不要な空白・改行の除去
+    normalized = unicodedata.normalize('NFKC', str(text))
+    return re.sub(r'[\s　\n\r]', '', normalized).strip()
 
+# --- 3. 時程表（Excel）の読み込み ---
 def read_excel_schedule(file_stream):
     """
-    基本事項：A列=勤務地をkeyとして辞書に登録
-    D列目以降の時間行(6.25等)をHH:MMに変換して保持
+    A列にある文字列を「勤務地」として動的に辞書化します。
+    「T1」「T2」だけでなく「札幌」「羽田」等、A列に記載があれば全て対応可能です。
     """
     try:
         full_df = pd.read_excel(file_stream, header=None).fillna('')
         location_data_dic = {}
         
-        # A列(index 0)に値がある行を場所の開始点とする
+        # A列(index 0)が空でない行のインデックスを抽出
         loc_idx = full_df[full_df.iloc[:, 0].astype(str).str.strip() != ""].index.tolist()
-
+        
         for i, start_row in enumerate(loc_idx):
             raw_name = str(full_df.iloc[start_row, 0]).strip()
             norm_name = normalize_text(raw_name)
             if not norm_name: continue
             
+            # 次の勤務地が出るまでを一つのブロックとする
             end_row = loc_idx[i+1] if i+1 < len(loc_idx) else len(full_df)
             df_block = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 1行目の時間ラベル(D列以降=index 3以降)をHH:MMに変換
+            # 時間ヘッダー行（ブロックの0行目）の整形
             for col in range(3, df_block.shape[1]):
                 df_block.iloc[0, col] = format_to_hhmm(df_block.iloc[0, col])
                 
             location_data_dic[norm_name] = df_block
         return location_data_dic
     except Exception as e:
-        print(f"Excel Error: {e}")
+        print(f"Excel Read Error: {e}")
         return None
 
+# --- 4. PDF読み込み関数 ---
 def pdf_reader(pdf_stream, target_staff):
     """
-    勤務表PDFから特定個人の2行を抽出
-    iloc(0,0)を勤務地として取得
+    PDF内の各ページから勤務地を動的に特定します。
     """
     table_dictionary = {}
     clean_target = normalize_text(target_staff)
-    with pdfplumber.open(pdf_stream) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                df = pd.DataFrame(table)
-                if df.empty or df.shape[1] < 2: continue
+    
+    try:
+        with pdfplumber.open(pdf_stream) as pdf:
+            for page in pdf.pages:
+                # テキスト抽出と勤務地の特定（中央値ロジック）
+                text = page.extract_text() or ""
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
                 
-                # iloc(0,0)に勤務地の表記がある
-                work_place = normalize_text(str(df.iloc[0, 0]))
+                target_index = len(lines) // 2
+                if target_index < len(lines):
+                    work_place_raw = lines[target_index]
+                else:
+                    work_place_raw = lines[-1] if lines else "unknown"
                 
-                matched_indices = df.index[df.apply(lambda r: clean_target in normalize_text("".join(r.astype(str))), axis=1)].tolist()
+                work_place = normalize_text(work_place_raw)
                 
-                if matched_indices:
-                    idx = matched_indices[0]
-                    # 自分(my_daily_shift)の2行
-                    my_daily_shift = df.iloc[idx : idx+2].reset_index(drop=True)
-                    # 他人(other_daily_shift)
-                    other_daily_shift = df[(df.index != idx) & (df.index != idx+1) & (df.index != 0)].reset_index(drop=True)
+                tables = page.extract_tables()
+                for table in tables:
+                    if not table: continue
+                    df = pd.DataFrame(table).fillna('')
+                    if df.empty or df.shape[1] < 2: continue
                     
-                    table_dictionary[work_place] = [my_daily_shift, other_daily_shift]
+                    # テーブルの左上に特定した勤務地（札幌、羽田など）をセット
+                    df.iloc[0, 0] = work_place
+                    
+                    # 氏名検索
+                    search_col = df.iloc[:, 0].apply(normalize_text)
+                    matched_indices = search_col[search_col == clean_target].index.tolist()
+                    
+                    if matched_indices:
+                        idx = matched_indices[0]
+                        # 自分(2行)と他人(ヘッダーと自分以外)
+                        my_daily_shift = df.iloc[idx : idx+2].copy().reset_index(drop=True)
+                        other_daily_shift = df.drop([0, idx, idx+1], errors='ignore').copy().reset_index(drop=True)
+                        
+                        # 勤務地名で辞書に格納
+                        table_dictionary[work_place] = [my_daily_shift, other_daily_shift]
+                        
+    except Exception as e:
+        print(f"PDF Reader Error: {e}")
+        
     return table_dictionary
+
+# --- 5. データ統合関数 ---
+def data_integration(pdf_dic, time_schedule_dic):
+    """
+    場所名が一致するもの同士を結合します。
+    """
+    integrated_data = {}
+    for loc_key, pdf_data in pdf_dic.items():
+        if loc_key in time_schedule_dic:
+            integrated_data[loc_key] = [pdf_data[0], pdf_data[1], time_schedule_dic[loc_key]]
+    return integrated_data
