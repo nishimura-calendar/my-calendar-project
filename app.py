@@ -6,7 +6,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 def get_sheets_service():
-    """Google Sheets API サービスを取得"""
+    """Secretsから認証情報を読み込み、Google Sheets APIサービスを作成"""
     try:
         creds_info = st.secrets["gcp_service_account"]
         credentials = service_account.Credentials.from_service_account_info(
@@ -15,91 +15,80 @@ def get_sheets_service():
         )
         return build('sheets', 'v4', credentials=credentials)
     except Exception as e:
-        st.error(f"Google認証に失敗しました。Secretsの設定を確認してください: {e}")
+        st.error(f"Google認証に失敗しました。Secretsの設定を確認してください。")
         return None
 
 def main():
-    st.set_page_config(page_title="シフト・時程 統合システム", layout="wide")
+    st.set_page_config(page_title="シフト・時程 統合管理", layout="wide")
     
-    # サイドバー設定
+    st.title("📅 シフト・時程表 統合表示")
+    st.markdown("ドライブ上のスプレッドシート(時程表)とPDF(勤務表)を紐付けます。")
+
+    # サイドバー：ユーザーが変更する項目
     st.sidebar.header("設定")
     target_staff = st.sidebar.text_input("検索する氏名", value="田坂 友愛")
     spreadsheet_id = st.sidebar.text_input("スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
     
-    st.title("📅 シフト・時程表 統合管理")
-    st.markdown(f"**検索対象:** `{target_staff}` さん")
-
-    # ファイルアップローダー
+    # ファイルアップロード
     pdf_file = st.file_uploader("勤務表PDFをアップロードしてください", type="pdf")
 
     if pdf_file and target_staff:
-        if st.button("解析と紐付けを実行"):
+        if st.button("解析を開始する"):
             service = get_sheets_service()
             if not service: return
             
-            with st.spinner("データを解析中..."):
-                # 1. スプレッドシートから時程表データを取得
-                # (A列をキーにした辞書形式: { "T1": {"raw_name": "T1", "df": df}, ... })
+            with st.spinner("データを取得・解析中..."):
+                # 1. スプレッドシートから情報を探す
                 time_dic = p0.time_schedule_from_drive(service, spreadsheet_id)
                 
-                # 2. PDFから個人シフトを抽出
+                # 2. PDFから情報を探す
                 pdf_stream = io.BytesIO(pdf_file.read())
                 pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
 
-                if not pdf_dic:
-                    st.error(f"PDF内に「{target_staff}」さんのデータが見つかりませんでした。")
-                    return
+                # --- 実行結果の確認用エリア ---
+                st.subheader("🔍 解析状況の確認")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write("**PDFから見つかった勤務地:**")
+                    if pdf_dic:
+                        for k in pdf_dic.keys(): st.success(f"✅ {k}")
+                    else:
+                        st.error("❌ 氏名が見つかりません")
+                
+                with col_b:
+                    st.write("**シートから見つかった勤務地:**")
+                    if time_dic:
+                        for k in time_dic.keys(): st.success(f"✅ {k}")
+                    else:
+                        st.error("❌ 勤務地(T1,T2等)が見つかりません")
 
-                # 3. 紐付け処理
+                # 3. 紐付けと表示
                 final_data = p0.data_integration(pdf_dic, time_dic)
                 
-                if not final_data:
-                    st.warning("⚠️ 勤務地の紐付けに失敗しました。")
-                    # デバッグ情報の表示
-                    with st.expander("紐付け失敗の調査用データ"):
-                        st.write("PDFから見つかった勤務地キー:", list(pdf_dic.keys()))
-                        st.write("シートから見つかった勤務地キー:", list(time_dic.keys()))
-                    return
-
-                # 4. 結果の表示
-                st.divider()
-                for loc_key, content in final_data.items():
-                    my_df = content[0]        # 自分の2行シフト
-                    other_df = content[1]     # 同僚のシフト
-                    time_sched_df = content[2] # その場所の時程表
-                    
-                    st.header(f"📍 勤務地: {loc_key}")
-                    
-                    # タブで表示を切り替え
-                    tab1, tab2, tab3 = st.tabs(["📋 自分の今日の予定", "👥 同僚の動き", "⏱ 拠点時程表"])
-                    
-                    with tab1:
-                        st.subheader("あなたのシフト")
-                        st.dataframe(my_df, use_container_width=True)
+                if final_data:
+                    st.divider()
+                    for loc_key, content in final_data.items():
+                        st.header(f"📍 拠点: {loc_key}")
                         
-                        st.subheader("この場所の時程（詳細）")
-                        st.dataframe(time_sched_df, use_container_width=True)
+                        # 統合表示
+                        tab1, tab2 = st.tabs(["📋 あなたの予定", "⏱ 全体時程"])
+                        with tab1:
+                            st.subheader("今日のシフト")
+                            st.dataframe(content[0], use_container_width=True)
+                            
+                            st.subheader("同じ拠点の同僚")
+                            st.dataframe(content[1], use_container_width=True)
                         
-                        # ダウンロードボタン
-                        csv = my_df.to_csv(index=False).encode('utf_8_sig')
-                        st.download_button(
-                            label=f"{loc_key}のシフトをCSVで保存",
-                            data=csv,
-                            file_name=f"myshift_{loc_key}.csv",
-                            mime='text/csv',
-                        )
-
-                    with tab2:
-                        st.subheader("同じ勤務地のメンバー")
-                        st.dataframe(other_df, use_container_width=True)
-
-                    with tab3:
-                        st.subheader(f"{loc_key} 全体のタイムスケジュール")
-                        st.table(time_sched_df.iloc[:5, :]) # 冒頭だけ確認用
-                        st.write("※ 全データは「自分の今日の予定」タブの下部で確認できます。")
+                        with tab2:
+                            st.subheader("拠点のタイムスケジュール")
+                            st.dataframe(content[2], use_container_width=True)
+                else:
+                    if pdf_dic and time_dic:
+                        st.warning("勤務地名が一致しないため紐付けできませんでした。")
+                        st.info("PDF側とシート側で名前（T1など）が同じか確認してください。")
 
     else:
-        st.info("左側のサイドバーで氏名を確認し、PDFファイルをアップロードしてください。")
+        st.info("サイドバーで名前を確認し、PDFをアップロードしてください。")
 
 if __name__ == "__main__":
     main()
