@@ -5,28 +5,26 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 def get_gcp_services():
-    """Drive APIのみを使用して認証（スプレッドシートもDrive経由で変換・取得）"""
+    """Drive API v3 を使用して認証"""
     try:
         creds_info = st.secrets["gcp_service_account"]
         credentials = service_account.Credentials.from_service_account_info(
             creds_info, 
             scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
-        # Drive API v3 を使用
-        drive_service = build('drive', 'v3', credentials=credentials)
-        return drive_service
+        return build('drive', 'v3', credentials=credentials)
     except Exception as e:
         st.error(f"GCP認証エラー: {e}")
         return None
 
 def main():
     st.set_page_config(page_title="シフト・時程統合システム", layout="wide")
-    st.title("📅 シフト・時程表 統合システム (Drive変換版)")
+    st.title("📅 シフト・時程表 統合システム")
 
     st.sidebar.header("設定")
     target_staff = st.sidebar.text_input("検索する氏名", value="田坂 友愛")
-    # スプレッドシートID または ExcelファイルID
-    file_id = st.sidebar.text_input("ファイルID (時程表)", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+    # スプレッドシートID (自動でExcel変換して読み込みます)
+    file_id = st.sidebar.text_input("時程表ファイルID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
     
     pdf_file = st.file_uploader("勤務表PDFを選択", type="pdf")
 
@@ -36,7 +34,7 @@ def main():
             if not drive_service: st.stop()
             
             with st.spinner("データを取得中..."):
-                # Drive API経由でSSをExcel変換ダウンロード
+                # SSかExcelかを自動判定してExcelとしてダウンロード
                 time_dic = p0.download_and_extract_schedule(drive_service, file_id)
                 
                 pdf_stream = io.BytesIO(pdf_file.read())
@@ -68,7 +66,7 @@ def main():
                         with tab2: st.dataframe(content["others"], use_container_width=True)
                         with tab3: st.dataframe(content["schedule"], use_container_width=True)
                 else:
-                    st.error("紐付けに失敗しました。IDや権限を確認してください。")
+                    st.error("紐付けに失敗しました。IDや共有設定を確認してください。")
 
 if __name__ == "__main__":
     main()
