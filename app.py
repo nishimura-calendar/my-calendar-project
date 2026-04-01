@@ -18,64 +18,62 @@ def get_gcp_services():
         return None
 
 def main():
-    st.set_page_config(page_title="Shift Integration", layout="wide")
-    st.title("📅 シフト・時程表 CSV出力")
+    st.set_page_config(page_title="Shift CSV Export", layout="wide")
+    st.title("📅 勤務データ抽出・CSV出力システム")
 
     with st.sidebar:
-        st.header("設定")
-        target_staff = st.text_input("検索する氏名", value="田坂 友愛")
-        target_date = st.date_input("対象の日付")
+        st.header("条件設定")
+        target_staff = st.text_input("検索氏名", value="田坂 友愛")
+        target_date = st.date_input("対象日")
         file_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
 
-    uploaded_pdf = st.file_uploader("勤務表PDFをアップロードしてください", type="pdf")
+    uploaded_pdf = st.file_uploader("勤務表PDFをアップロード", type="pdf")
 
     if uploaded_pdf and target_staff:
-        if st.button("🚀 実行してCSVを生成"):
+        if st.button("🚀 解析・CSV生成開始"):
             drive_service = get_gcp_services()
             if not drive_service: st.stop()
             
-            with st.spinner("データを解析しています..."):
-                # 1. 時程表取得
+            with st.spinner("データを解析中..."):
+                # 時程表（マスター）の取得
                 time_dic = p0.download_and_extract_schedule(drive_service, file_id)
-                # 2. PDF解析
+                # PDF（当日シフト）の解析
                 pdf_stream = io.BytesIO(uploaded_pdf.read())
                 pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-                # 3. データ統合・CSV生成
+                
+                # 3つのCSVデータの生成
                 shifts, holidays, events = p0.generate_all_csv_data(pdf_dic, time_dic, target_date)
                 
                 if shifts or holidays or events:
-                    st.success("解析が完了しました。")
+                    st.success("解析完了。以下のボタンから各CSVを取得してください。")
                     
-                    cols = st.columns(3)
+                    c1, c2, c3 = st.columns(3)
                     
-                    with cols[0]:
-                        st.subheader("シフト.csv")
+                    with c1:
+                        st.markdown("### 📋 シフト")
                         if shifts:
                             df_s = pd.DataFrame(shifts)
                             st.dataframe(df_s, hide_index=True)
-                            csv_s = df_s.to_csv(index=False, header=False).encode('utf-8-sig')
-                            st.download_button("📥 ダウンロード", csv_s, "シフト.csv", "text/csv")
-                        else: st.info("データなし")
+                            st.download_button("📥 シフト.csv を保存", df_s.to_csv(index=False, header=False).encode('utf-8-sig'), "シフト.csv", "text/csv")
+                        else: st.info("該当なし")
 
-                    with cols[1]:
-                        st.subheader("休日.csv")
+                    with c2:
+                        st.markdown("### 🏖️ 休日")
                         if holidays:
                             df_h = pd.DataFrame(holidays)
                             st.dataframe(df_h, hide_index=True)
-                            csv_h = df_h.to_csv(index=False, header=False).encode('utf-8-sig')
-                            st.download_button("📥 ダウンロード", csv_h, "休日.csv", "text/csv")
-                        else: st.info("データなし")
+                            st.download_button("📥 休日.csv を保存", df_h.to_csv(index=False, header=False).encode('utf-8-sig'), "休日.csv", "text/csv")
+                        else: st.info("該当なし")
 
-                    with cols[2]:
-                        st.subheader("イベント.csv")
+                    with c3:
+                        st.markdown("### 🎫 イベント")
                         if events:
                             df_e = pd.DataFrame(events)
                             st.dataframe(df_e, hide_index=True)
-                            csv_e = df_e.to_csv(index=False, header=False).encode('utf-8-sig')
-                            st.download_button("📥 ダウンロード", csv_e, "イベント.csv", "text/csv")
-                        else: st.info("データなし")
+                            st.download_button("📥 イベント.csv を保存", df_e.to_csv(index=False, header=False).encode('utf-8-sig'), "イベント.csv", "text/csv")
+                        else: st.info("該当なし")
                 else:
-                    st.warning("該当するデータが見つかりませんでした。条件を確認してください。")
+                    st.warning("解析結果が空です。氏名やファイルが正しいか確認してください。")
 
 if __name__ == "__main__":
     main()
