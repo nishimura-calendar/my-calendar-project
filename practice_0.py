@@ -13,10 +13,10 @@ def format_to_hhmm(val):
         s_val = str(val).strip()
         if s_val.replace('.', '').isdigit():
             num = float(s_val)
-            if 0 < num < 1:
+            if 0 < num < 1:  # Serial value
                 h = int(num * 24)
                 m = int(round((num * 24 - h) * 60))
-            else:
+            else:  # Hours like 6.25
                 h = int(num)
                 m = int(round((num - h) * 60))
             if m >= 60: h += 1; m = 0
@@ -33,21 +33,14 @@ def normalize_for_match(text):
 # --- 2. 時程表解析 ---
 def download_and_extract_schedule(drive_service, file_id):
     try:
-        file_metadata = drive_service.files().get(fileId=file_id).execute()
-        mime_type = file_metadata.get('mimeType', '')
         fh = io.BytesIO()
-        
-        if mime_type == 'application/vnd.google-apps.spreadsheet':
-            request = drive_service.files().export_media(
-                fileId=file_id,
-                mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-        else:
-            request = drive_service.files().get_media(fileId=file_id)
-
+        request = drive_service.files().export_media(
+            fileId=file_id,
+            mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
         downloader = MediaIoBaseDownload(fh, request)
         done = False
-        while done is False:
+        while not done:
             status, done = downloader.next_chunk()
         
         fh.seek(0)
@@ -58,9 +51,8 @@ def download_and_extract_schedule(drive_service, file_id):
 
         for r in range(len(df_all)):
             row = df_all.iloc[r]
-            a_val, b_val, c_val = str(row[0]).strip(), str(row[1]).strip(), str(row[2]).strip()
-            if a_val != "" and b_val == "" and c_val == "":
-                loc_indices.append((r, a_val))
+            if str(row[0]).strip() != "" and str(row[1]).strip() == "" and str(row[2]).strip() == "":
+                loc_indices.append((r, str(row[0]).strip()))
 
         for i, (start_row, raw_name) in enumerate(loc_indices):
             match_key = normalize_for_match(raw_name)
@@ -85,10 +77,10 @@ def download_and_extract_schedule(drive_service, file_id):
             }
         return location_data_dic
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Schedule Error: {e}")
         return {}
 
-# --- 3. PDF読み取り ---
+# --- 3. PDF解析 ---
 def pdf_reader(pdf_stream, target_staff):
     table_dictionary = {}
     clean_target = normalize_for_match(target_staff)
@@ -99,30 +91,34 @@ def pdf_reader(pdf_stream, target_staff):
                 for table in tables:
                     if not table or len(table) < 2: continue
                     df = pd.DataFrame(table).fillna('')
+                    
                     raw_text = str(df.iloc[0, 0])
-                    lines = raw_text.split('\n')
-                    work_place = lines[len(lines)//2].strip()
+                    lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+                    if not lines: continue
+                    work_place = lines[len(lines)//2]
+                    
                     match_key = normalize_for_match(work_place)
                     col_0_norm = [normalize_for_match(str(val)) for val in df.iloc[:, 0].tolist()]
                     
                     if clean_target in col_0_norm:
                         idx = col_0_norm.index(clean_target)
                         my_df = df.iloc[idx : idx+2].copy().reset_index(drop=True)
-                        other_df = df.iloc[[i for i in range(len(df)) if i not in [idx, idx+1]]].copy()
                         table_dictionary[match_key] = {
-                            "raw_name": work_place, "my_df": my_df, "other_df": other_df
+                            "raw_name": work_place, "my_df": my_df
                         }
     except Exception as e:
         print(f"PDF Error: {e}")
     return table_dictionary
 
-# --- 4. 判定とCSV用データ生成 ---
-def generate_calendar_data(pdf_dic, time_dic, target_date):
-    shift_csv_rows = []
-    holiday_csv_rows = []
-    event_csv_rows = []
+# --- 4. 判定と出力データ生成 ---
+def generate_all_csv_data(pdf_dic, time_dic, target_date):
+    shift_rows = []
+    holiday_rows = []
+    event_rows = []
     
     date_str = target_date.strftime("%Y-%m-%d")
+    # 休日キーワード
+    holiday_keywords = ["休", "公休", "休日", "有休", "有給", "特休"]
 
     for k, v in pdf_dic.items():
         matched_key = None
@@ -135,32 +131,29 @@ def generate_calendar_data(pdf_dic, time_dic, target_date):
         
         loc_name = v["raw_name"]
         areas_norm = time_dic[matched_key]["norm_areas"]
-        # PDFの2行目（詳細）を取得
-        details = v["my_df"].iloc[1].tolist()
         
-        for val in details:
-            val_str = str(val).strip()
-            if not val_str: continue
-            
-            # 休日判定
-            if val_str in ["休", "公休", "有休"]:
-                holiday_csv_rows.append([val_str, date_str])
+        shift_vals = []
+        for cell in v["my_df"].iloc[1].tolist():
+            for sub_val in str(cell).split('\n'):
+                if sub_val.strip(): shift_vals.append(sub_val.strip())
+
+        for val in shift_vals:
+            # A. 休日判定
+            if any(kw in val for kw in holiday_keywords):
+                holiday_rows.append([val, date_str])
                 continue
 
-            norm_val = normalize_for_match(val_str)
+            norm_val = normalize_for_match(val)
             
-            # 本町判定
-            if "本町" in val_str:
-                # 本町はイベント扱いとする例
-                event_csv_rows.append([val_str, date_str, "09:00", date_str, "18:00", "False", "", ""])
-            # 区域一致判定
-            elif norm_val in areas_norm:
-                shift_csv_rows.append([f"{loc_name}+{val_str}", date_str, "", date_str, "", "True", "", loc_name])
-            # デフォルト
+            # B. 巡回区域一致判定 (シフト扱い)
+            if norm_val in areas_norm:
+                shift_rows.append([f"{loc_name}+{val}", date_str, "", date_str, "", "True", "", loc_name])
+            
+            # C. それ以外（本町、その他すべて）はイベント扱い
             else:
-                shift_csv_rows.append([val_str, date_str, "", date_str, "", "True", "", ""])
+                event_rows.append([val, date_str, "", date_str, "", "True", "", ""])
                 
-        # 打ち合わせ通り
-        shift_csv_rows.append(["打ち合わせ通り", date_str, "打ち合わせ通り", date_str, "打ち合わせ通り", "False", "", ""])
+        # シフトの最後に「打ち合わせ通り」を挿入
+        shift_rows.append(["打ち合わせ通り", date_str, "打ち合わせ通り", date_str, "打ち合わせ通り", "False", "", ""])
 
-    return shift_csv_rows, holiday_csv_rows, event_csv_rows
+    return shift_rows, holiday_rows, event_rows
