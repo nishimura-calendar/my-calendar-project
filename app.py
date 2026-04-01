@@ -1,83 +1,94 @@
 import streamlit as st
 import pandas as pd
 import practice_0 as p0
+import io
 
 def main():
-    st.set_page_config(page_title="勤務シフト抽出", layout="wide")
-    st.title("🗓️ 勤務シフト連携システム（最新ロジック版）")
+    st.set_page_config(page_title="勤務連携システム", layout="wide")
+    st.title("🗓️ 勤務シフト・時程表連携システム")
 
     st.sidebar.header("設定")
-    target_staff = st.sidebar.text_input("抽出する名前", value="西村")
+    target_staff = st.sidebar.text_input("抽出名", value="西村")
     
     col1, col2 = st.columns(2)
     with col1:
-        pdf_file = st.file_uploader("1. 勤務表PDF", type="pdf")
+        pdf_file = st.file_uploader("勤務表PDF", type="pdf")
     with col2:
-        excel_file = st.file_uploader("2. 時程表エクセル", type=["xlsx", "xls"])
+        excel_file = st.file_uploader("時程表エクセル", type=["xlsx", "xls"])
 
     if pdf_file and excel_file and target_staff:
-        pdf_file.seek(0); y, m = p0.extract_year_month(pdf_file)
-        time_dic = p0.read_excel_schedule(excel_file)
-        pdf_file.seek(0); pdf_dic = p0.pdf_reader(pdf_file, target_staff)
+        # PDFから年月抽出
+        pdf_file.seek(0)
+        with io.BytesIO(pdf_file.read()) as pdf_stream:
+            with io.BytesIO(pdf_file.getvalue()) as pdf_stream2:
+                # 辞書化
+                time_dic = p0.read_excel_schedule(excel_file)
+                pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
+                
+                # 年月
+                import pdfplumber
+                with pdfplumber.open(pdf_stream2) as pdf:
+                    header_text = pdf.pages[0].extract_text() or ""
+                    m = pd.Series(re.findall(r'(20\d{2})年(\d{1,2})月', header_text))
+                    y, mo = ("2026", "1") if m.empty else m[0]
 
         if not pdf_dic:
             st.warning("データが見つかりませんでした。")
             st.stop()
 
-        for loc_key, my_s in pdf_dic.items():
+        for loc_key, data_list in pdf_dic.items():
+            my_daily_shift = data_list[0]
             final_rows = []
             
-            for col in range(1, my_s.shape[1]):
-                v1 = str(my_s.iloc[0, col]).strip() # my_daily_shift (記号)
-                v2 = str(my_s.iloc[1, col]).strip() # 特記/2段目
-                dt = f"{y}/{m}/{col}"
-                if v1 == "" or "nan" in v1.lower(): continue
-
-                norm_v1 = p0.normalize_text(v1)
+            for col in range(1, my_daily_shift.shape[1]):
+                shift_code = str(my_daily_shift.iloc[0, col]).strip()
+                second_row_val = str(my_daily_shift.iloc[1, col]).strip()
+                dt = f"{y}/{mo}/{col}"
+                
+                if shift_code == "" or "nan" in shift_code.lower(): continue
+                norm_code = p0.normalize_text(shift_code)
                 norm_target = p0.normalize_text(target_staff)
 
-                # 1. 休日処理
-                if "休" in v1:
-                    final_rows.append([v1, dt, "", dt, "", "True", "", loc_key])
+                # 1. 休日判定
+                if "休" in norm_code:
+                    final_rows.append([shift_code, dt, "", dt, "", "True", "", loc_key])
                     continue
 
-                # 2. 本町処理
-                if "本町" in v1:
-                    # 終日予定を追加
+                # 2. 本町判定
+                if "本町" in norm_code:
                     final_rows.append(["本町", dt, "", dt, "", "True", "", loc_key])
-                    # 2段目から時間を抽出して時間指定予定を追加
-                    st_t, en_t, found = p0.get_time_from_mark(v2)
-                    if found:
-                        final_rows.append(["本町", dt, st_t, dt, en_t, "False", v2, loc_key])
+                    # 2段目を確認して時間指定作成
+                    st_t, en_t, ok = p0.get_time_from_mark(second_row_val)
+                    if ok:
+                        final_rows.append(["本町", dt, st_t, dt, en_t, "False", second_row_val, loc_key])
                     continue
 
                 # 3. 時程表（time_schedule）の確認
                 found_in_excel = False
                 if loc_key in time_dic:
                     df_block = time_dic[loc_key]
-                    # B列に記号があるか確認
-                    match_rows = df_block[df_block.iloc[:, 1].apply(p0.normalize_text) == norm_v1].index.tolist()
+                    # B列(index 1)が記号と一致するか
+                    match_df = df_block[df_block.iloc[:, 1].apply(p0.normalize_text) == norm_code]
                     
-                    if match_rows:
-                        # Subject = Key + 勤務コード、終日=True
-                        final_rows.append([f"{loc_key}_{v1}", dt, "", dt, "", "True", "", loc_key])
+                    if not match_df.empty:
+                        # Subject=Key+勤務コード、1日の予定=True
+                        final_rows.append([f"{loc_key}_{shift_code}", dt, "", dt, "", "True", "", loc_key])
                         found_in_excel = True
                         
-                        # 詳細な時間別シフトの作成 (shift_cal相当のロジック)
-                        for r_idx in match_rows:
-                            for c_idx in range(2, df_block.shape[1]):
+                        # 自分の名前が入っている列をスキャンして時間を抽出
+                        for _, row_data in match_df.iterrows():
+                            for c_idx in range(3, df_block.shape[1]):
                                 time_label = str(df_block.iloc[0, c_idx])
-                                cell_val = p0.normalize_text(str(df_block.iloc[r_idx, c_idx]))
+                                cell_val = p0.normalize_text(str(row_data.iloc[c_idx]))
                                 if norm_target in cell_val and ":" in time_label:
-                                    final_rows.append([f"{v1}勤務", dt, time_label, dt, "", "False", "", loc_key])
+                                    final_rows.append([f"{shift_code}勤務", dt, time_label, dt, "", "False", "", loc_key])
 
-                # 4. 時程表になかった場合、またはその他の場合
+                # 4. 時程表になければ my_daily_shift 通り
                 if not found_in_excel:
-                    # Subject = my_daily_shiftの記載通り、終日=True
-                    final_rows.append([v1, dt, "", dt, "", "True", v2, loc_key])
+                    final_rows.append([shift_code, dt, "", dt, "", "True", second_row_val, loc_key])
 
             if final_rows:
-                st.subheader(f"📍 場所: {loc_key}")
+                st.subheader(f"📍 {loc_key}")
                 df_res = pd.DataFrame(final_rows, columns=['Subject','Start Date','Start Time','End Date','End Time','All Day Event','Description','Location']).drop_duplicates()
                 st.dataframe(df_res)
                 csv = df_res.to_csv(index=False, encoding='utf-8-sig')
