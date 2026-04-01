@@ -34,26 +34,24 @@ def normalize_for_match(text):
     normalized = unicodedata.normalize('NFKC', str(text))
     return re.sub(r'[^a-zA-Z0-9ぁ-んァ-ヶ亜-熙]', '', normalized).strip().upper()
 
-# --- 3. Google Driveから時程表(SS含む)をExcelとしてダウンロード ---
+# --- 3. Google Driveから時程表(SS)をExcelとしてダウンロードして解析 ---
 def download_and_extract_schedule(drive_service, file_id):
     """
-    スプレッドシートIDを受け取った場合でも、Excel形式にエクスポートしてダウンロードします。
+    基本事項に準拠:
+    A列=勤務地, B列=巡回区域, C列=ロッカ
+    勤務地行: B,C列が空白。D列以降が時間行(6.25, 7.0...)
     """
     try:
-        # メタデータを取得してファイル種別を確認
         file_metadata = drive_service.files().get(fileId=file_id).execute()
         mime_type = file_metadata.get('mimeType', '')
-
         fh = io.BytesIO()
         
         if mime_type == 'application/vnd.google-apps.spreadsheet':
-            # スプレッドシートの場合は .xlsx に変換してエクスポート
             request = drive_service.files().export_media(
                 fileId=file_id,
                 mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
         else:
-            # すでにExcelファイルの場合はそのままダウンロード
             request = drive_service.files().get_media(fileId=file_id)
 
         downloader = MediaIoBaseDownload(fh, request)
@@ -62,17 +60,17 @@ def download_and_extract_schedule(drive_service, file_id):
             status, done = downloader.next_chunk()
         
         fh.seek(0)
-        # 読み込み
         df_all = pd.read_excel(fh, header=None).fillna('')
         
         location_data_dic = {}
         loc_indices = []
 
-        # A列=勤務地、B,C列は空白
+        # 勤務地行の特定 (A列あり、B,C列なし)
         for r in range(len(df_all)):
-            a_val = str(df_all.iloc[r, 0]).strip()
-            b_val = str(df_all.iloc[r, 1]).strip() if df_all.shape[1] > 1 else ""
-            c_val = str(df_all.iloc[r, 2]).strip() if df_all.shape[1] > 2 else ""
+            row = df_all.iloc[r]
+            a_val = str(row[0]).strip()
+            b_val = str(row[1]).strip() if len(row) > 1 else ""
+            c_val = str(row[2]).strip() if len(row) > 2 else ""
             
             if a_val != "" and b_val == "" and c_val == "":
                 loc_indices.append((r, a_val))
@@ -82,16 +80,24 @@ def download_and_extract_schedule(drive_service, file_id):
             end_row = loc_indices[i+1][0] if i+1 < len(loc_indices) else len(df_all)
             df_block = df_all.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時間行(1行目)の整形
+            # 時間行(D列以降)の整形
             for col in range(3, df_block.shape[1]):
                 val = df_block.iloc[0, col]
                 if val != "":
                     df_block.iloc[0, col] = format_to_hhmm(val)
             
+            # B列(巡回区域)のリスト化
+            areas_list = []
+            for r_idx in range(1, len(df_block)):
+                area_val = str(df_block.iloc[r_idx, 1]).strip()
+                if area_val:
+                    areas_list.append(area_val)
+
             location_data_dic[match_key] = {
                 "raw_name": raw_name,
                 "df": df_block,
-                "patrol_areas": [normalize_for_match(str(x)) for x in df_block.iloc[:, 1].tolist() if str(x).strip()]
+                "patrol_areas": areas_list, # 生の文字リスト
+                "norm_areas": [normalize_for_match(a) for a in areas_list]
             }
         return location_data_dic
     except Exception as e:
@@ -153,6 +159,9 @@ def data_integration(pdf_dic, time_dic):
                 "my_shift": v["my_df"],
                 "others": v["other_df"],
                 "schedule": time_dic[matched_key]["df"],
-                "patrol_areas": time_dic[matched_key]["patrol_areas"]
+                "areas_info": {
+                    "raw": time_dic[matched_key]["patrol_areas"],
+                    "norm": time_dic[matched_key]["norm_areas"]
+                }
             }
     return integrated
