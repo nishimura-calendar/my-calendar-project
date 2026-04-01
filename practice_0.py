@@ -11,7 +11,6 @@ def format_to_hhmm(val):
         return ""
     try:
         s_val = str(val).strip()
-        # 数値（時間数）の判定
         if s_val.replace('.', '').isdigit():
             num = float(s_val)
             if 0 < num < 1:  # シリアル値
@@ -32,13 +31,12 @@ def normalize_for_match(text):
     normalized = unicodedata.normalize('NFKC', str(text))
     return re.sub(r'[^a-zA-Z0-9ぁ-んァ-ヶ亜-熙]', '', normalized).strip().upper()
 
-# --- 3. 時程表の解析 (基本事項厳守) ---
+# --- 3. 時程表の解析 (時間軸の範囲を制限) ---
 def download_and_extract_schedule(drive_service, file_id):
     """
-    A列=勤務地
-    B列=巡回区域
-    C列=ロッカ
-    勤務地行：B,C列は空白。D列目以降が時間軸。
+    A列=勤務地, B列=巡回区域, C列=ロッカ
+    勤務地行：D列以降が時間軸。
+    「出勤」という文字列が出現する列の前までを有効な時間範囲とする。
     """
     try:
         file_metadata = drive_service.files().get(fileId=file_id).execute()
@@ -64,7 +62,7 @@ def download_and_extract_schedule(drive_service, file_id):
         location_data_dic = {}
         loc_indices = []
 
-        # 1. 勤務地行の特定 (A列のみ値あり、B,C空白)
+        # 勤務地行の特定
         for r in range(len(df_all)):
             row = df_all.iloc[r]
             a_val = str(row[0]).strip()
@@ -76,25 +74,34 @@ def download_and_extract_schedule(drive_service, file_id):
 
         for i, (start_row, raw_name) in enumerate(loc_indices):
             match_key = normalize_for_match(raw_name)
-            end_row = loc_indices[i+1][0] if i+1 < len(loc_indices) else len(df_all)
+            next_loc_row = loc_indices[i+1][0] if i+1 < len(loc_indices) else len(df_all)
             
-            # 勤務地ごとのブロックを取得
-            df_block = df_all.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+            # ブロック切り出し
+            df_block = df_all.iloc[start_row:next_loc_row, :].copy().reset_index(drop=True)
             
-            # 2. 勤務地行（1行目）の時間軸（D列[index 3]以降）を整形
+            # 時間軸の終端（「出勤」列）を探す
+            end_col = df_block.shape[1]
+            for col in range(3, df_block.shape[1]):
+                if "出勤" in str(df_block.iloc[0, col]):
+                    end_col = col
+                    break
+            
+            # 有効な列範囲に絞る (A, B, C列 + D列から終端まで)
+            df_block = df_block.iloc[:, :end_col]
+
+            # 勤務地行（1行目）の時間軸（D列目以降）のみ整形
             for col in range(3, df_block.shape[1]):
                 time_val = df_block.iloc[0, col]
                 if time_val != "":
                     df_block.iloc[0, col] = format_to_hhmm(time_val)
             
-            # 3. 巡回区域リスト（B列の2行目以降）を抽出
+            # 巡回区域リスト（B列の2行目以降）
             areas_list = []
             for r_idx in range(1, len(df_block)):
                 area_val = str(df_block.iloc[r_idx, 1]).strip()
                 if area_val:
                     areas_list.append(area_val)
 
-            # シフトコード行（2行目以降のD列以降）は「そのまま」保持される
             location_data_dic[match_key] = {
                 "raw_name": raw_name,
                 "df": df_block,
