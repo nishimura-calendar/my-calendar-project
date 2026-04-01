@@ -5,12 +5,13 @@ import io
 import unicodedata
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- 1. 時間整形関数 (6.25等の数値を HH:MM に変換) ---
+# --- 1. 時間軸の整形 (数値 6.25 等を 06:15 に変換) ---
 def format_to_hhmm(val):
     if val is None or str(val).lower() == "nan" or str(val).strip() == "":
         return ""
     try:
         s_val = str(val).strip()
+        # 数値（時間数）の判定
         if s_val.replace('.', '').isdigit():
             num = float(s_val)
             if 0 < num < 1:  # シリアル値
@@ -21,12 +22,9 @@ def format_to_hhmm(val):
                 m = int(round((num - h) * 60))
             if m >= 60: h += 1; m = 0
             return f"{h:02d}:{m:02d}"
-        if ":" in s_val:
-            parts = s_val.split(":")
-            return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
         return s_val
     except:
-        return str(val).strip()
+        return s_val
 
 # --- 2. 文字列正規化 ---
 def normalize_for_match(text):
@@ -34,12 +32,13 @@ def normalize_for_match(text):
     normalized = unicodedata.normalize('NFKC', str(text))
     return re.sub(r'[^a-zA-Z0-9ぁ-んァ-ヶ亜-熙]', '', normalized).strip().upper()
 
-# --- 3. Google Driveから時程表(SS)をExcelとしてダウンロードして解析 ---
+# --- 3. 時程表の解析 (基本事項厳守) ---
 def download_and_extract_schedule(drive_service, file_id):
     """
-    基本事項に準拠:
-    A列=勤務地, B列=巡回区域, C列=ロッカ
-    勤務地行: B,C列が空白。D列以降が時間行(6.25, 7.0...)
+    A列=勤務地
+    B列=巡回区域
+    C列=ロッカ
+    勤務地行：B,C列は空白。D列目以降が時間軸。
     """
     try:
         file_metadata = drive_service.files().get(fileId=file_id).execute()
@@ -65,7 +64,7 @@ def download_and_extract_schedule(drive_service, file_id):
         location_data_dic = {}
         loc_indices = []
 
-        # 勤務地行の特定 (A列あり、B,C列なし)
+        # 1. 勤務地行の特定 (A列のみ値あり、B,C空白)
         for r in range(len(df_all)):
             row = df_all.iloc[r]
             a_val = str(row[0]).strip()
@@ -78,30 +77,33 @@ def download_and_extract_schedule(drive_service, file_id):
         for i, (start_row, raw_name) in enumerate(loc_indices):
             match_key = normalize_for_match(raw_name)
             end_row = loc_indices[i+1][0] if i+1 < len(loc_indices) else len(df_all)
+            
+            # 勤務地ごとのブロックを取得
             df_block = df_all.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時間行(D列以降)の整形
+            # 2. 勤務地行（1行目）の時間軸（D列[index 3]以降）を整形
             for col in range(3, df_block.shape[1]):
-                val = df_block.iloc[0, col]
-                if val != "":
-                    df_block.iloc[0, col] = format_to_hhmm(val)
+                time_val = df_block.iloc[0, col]
+                if time_val != "":
+                    df_block.iloc[0, col] = format_to_hhmm(time_val)
             
-            # B列(巡回区域)のリスト化
+            # 3. 巡回区域リスト（B列の2行目以降）を抽出
             areas_list = []
             for r_idx in range(1, len(df_block)):
                 area_val = str(df_block.iloc[r_idx, 1]).strip()
                 if area_val:
                     areas_list.append(area_val)
 
+            # シフトコード行（2行目以降のD列以降）は「そのまま」保持される
             location_data_dic[match_key] = {
                 "raw_name": raw_name,
                 "df": df_block,
-                "patrol_areas": areas_list, # 生の文字リスト
+                "patrol_areas": areas_list,
                 "norm_areas": [normalize_for_match(a) for a in areas_list]
             }
         return location_data_dic
     except Exception as e:
-        print(f"Drive Download Error: {e}")
+        print(f"Schedule extraction error: {e}")
         return {}
 
 # --- 4. PDF読み取り ---
@@ -116,7 +118,6 @@ def pdf_reader(pdf_stream, target_staff):
                     if not table or len(table) < 2: continue
                     df = pd.DataFrame(table).fillna('')
                     
-                    # 勤務地取得 (改行の中央)
                     raw_text = str(df.iloc[0, 0])
                     lines = raw_text.split('\n')
                     target_index = raw_text.count('\n') // 2
@@ -143,7 +144,7 @@ def pdf_reader(pdf_stream, target_staff):
         print(f"PDF Analysis Error: {e}")
     return table_dictionary
 
-# --- 5. 統合 ---
+# --- 5. データの紐付け ---
 def data_integration(pdf_dic, time_dic):
     integrated = {}
     for k, v in pdf_dic.items():
@@ -159,9 +160,6 @@ def data_integration(pdf_dic, time_dic):
                 "my_shift": v["my_df"],
                 "others": v["other_df"],
                 "schedule": time_dic[matched_key]["df"],
-                "areas_info": {
-                    "raw": time_dic[matched_key]["patrol_areas"],
-                    "norm": time_dic[matched_key]["norm_areas"]
-                }
+                "areas": time_dic[matched_key]["norm_areas"]
             }
     return integrated
