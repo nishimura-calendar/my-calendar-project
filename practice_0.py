@@ -3,6 +3,7 @@ import pdfplumber
 import re
 import io
 import unicodedata
+from googleapiclient.http import MediaIoBaseDownload
 
 # --- 1. 時間整形関数 ---
 def format_to_hhmm(val):
@@ -10,13 +11,12 @@ def format_to_hhmm(val):
         return ""
     try:
         s_val = str(val).strip()
-        # 6.25 などの数値やシリアル値の判定
         if s_val.replace('.', '').isdigit():
             num = float(s_val)
-            if 0 < num < 1:  # シリアル値
+            if 0 < num < 1: 
                 h = int(num * 24)
                 m = int(round((num * 24 - h) * 60))
-            else:  # 6.25 などの時間数
+            else:
                 h = int(num)
                 m = int(round((num - h) * 60))
             if m >= 60: h += 1; m = 0
@@ -34,34 +34,46 @@ def normalize_for_match(text):
     normalized = unicodedata.normalize('NFKC', str(text))
     return re.sub(r'[^a-zA-Z0-9ぁ-んァ-ヶ亜-熙]', '', normalized).strip().upper()
 
-# --- 3. Googleスプレッドシートからデータを取得 (NEW) ---
-def get_schedule_from_sheets(sheets_service, spreadsheet_id):
+# --- 3. Google Driveから時程表(Excel/SS)をダウンロードして解析 ---
+def download_and_extract_schedule(drive_service, file_id):
     """
-    Excelダウンロードではなく、スプレッドシートAPIで直接値を読み取ります。
+    IDがスプレッドシートの場合はExcel形式にエクスポートしてダウンロード、
+    Excelファイルの場合はそのままダウンロードします。
     """
     try:
-        # シート全体の値を読み取り (シート名は'シート1'を想定、または全体)
-        range_name = 'A:Z' 
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id, range=range_name).execute()
-        values = result.get('values', [])
-        
-        if not values:
-            return {}
+        # ファイルのメタデータを取得して種類を確認
+        file_metadata = drive_service.files().get(fileId=file_id).execute()
+        mime_type = file_metadata.get('mimeType', '')
 
-        # Pandas DataFrameに変換
-        df_all = pd.DataFrame(values).fillna('')
+        fh = io.BytesIO()
+        
+        if mime_type == 'application/vnd.google-apps.spreadsheet':
+            # スプレッドシートの場合はExcel(xlsx)としてエクスポート
+            request = drive_service.files().export_media(
+                fileId=file_id,
+                mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+        else:
+            # すでにExcelファイル等の場合はそのまま取得
+            request = drive_service.files().get_media(fileId=file_id)
+
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+        
+        fh.seek(0)
+        # Excelとして読み込み
+        df_all = pd.read_excel(fh, header=None).fillna('')
         
         location_data_dic = {}
         loc_indices = []
 
         # 基本事項：A列=勤務地、B,C列は空白
         for r in range(len(df_all)):
-            # 列が足りない場合を考慮
-            row = list(df_all.iloc[r])
-            a_val = str(row[0]).strip() if len(row) > 0 else ""
-            b_val = str(row[1]).strip() if len(row) > 1 else ""
-            c_val = str(row[2]).strip() if len(row) > 2 else ""
+            a_val = str(df_all.iloc[r, 0]).strip()
+            b_val = str(df_all.iloc[r, 1]).strip() if len(df_all.columns) > 1 else ""
+            c_val = str(df_all.iloc[r, 2]).strip() if len(df_all.columns) > 2 else ""
             
             if a_val != "" and b_val == "" and c_val == "":
                 loc_indices.append((r, a_val))
@@ -71,7 +83,7 @@ def get_schedule_from_sheets(sheets_service, spreadsheet_id):
             end_row = loc_indices[i+1][0] if i+1 < len(loc_indices) else len(df_all)
             df_block = df_all.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時間行の整形 (D列目以降)
+            # 時間行の整形
             for col in range(3, df_block.shape[1]):
                 val = df_block.iloc[0, col]
                 if val != "":
@@ -84,7 +96,7 @@ def get_schedule_from_sheets(sheets_service, spreadsheet_id):
             }
         return location_data_dic
     except Exception as e:
-        print(f"Sheets API Error: {e}")
+        print(f"Drive Download Error: {e}")
         return {}
 
 # --- 4. PDF読み取り ---
