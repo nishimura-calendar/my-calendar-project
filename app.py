@@ -1,91 +1,76 @@
 import streamlit as st
 import practice_0 as p0
 import io
-import pandas as pd
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 def get_gcp_services():
-    """GCPサービス（Drive）の構築"""
     try:
         creds_info = st.secrets["gcp_service_account"]
         credentials = service_account.Credentials.from_service_account_info(
-            creds_info,
+            creds_info, 
             scopes=[
+                'https://www.googleapis.com/auth/spreadsheets.readonly',
                 'https://www.googleapis.com/auth/drive.readonly'
             ]
         )
-        # バージョン指定を '3' から 'v3' に修正
-        drive_service = build('drive', 'v3', credentials=credentials)
-        return drive_service
+        # Sheets API と Drive API 両方を構築
+        sheets_service = build('sheets', '4', credentials=credentials)
+        return sheets_service
     except Exception as e:
         st.error(f"GCP認証エラー: {e}")
         return None
 
 def main():
-    st.set_page_config(page_title="シフト・時程 統合システム", layout="wide")
-    
-    st.title("📅 シフト・時程表 統合表示 (Drive Excel版)")
-    st.info("ドライブ上の「時程表.xlsx」を自動取得し、アップロードされたPDFと紐付けます。")
+    st.set_page_config(page_title="シフト・時程統合システム", layout="wide")
+    st.title("📅 シフト・時程表 統合システム (スプレッドシート版)")
 
-    # サイドバー設定
     st.sidebar.header("設定")
     target_staff = st.sidebar.text_input("検索する氏名", value="田坂 友愛")
-    # 基本事項に記載のExcelファイルID
-    excel_file_id = st.sidebar.text_input("ExcelファイルID", value="1diDgaB--1vn5amCMmDGPv-Ld3IIIF-nK")
+    # 基本事項にあるスプレッドシートID
+    sheet_id = st.sidebar.text_input("スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
     
-    pdf_file = st.file_uploader("勤務表PDFをアップロードしてください", type="pdf")
+    pdf_file = st.file_uploader("勤務表PDFを選択", type="pdf")
 
-    if pdf_file and target_staff and excel_file_id:
-        if st.button("解析と紐付けを実行"):
-            drive_service = get_gcp_services()
-            if not drive_service: return
+    if pdf_file and target_staff:
+        if st.button("🚀 解析と紐付けを実行"):
+            sheets_service = get_gcp_services()
+            if not sheets_service: st.stop()
             
-            with st.spinner("データを取得・解析中..."):
-                # 1. Google Driveから時程表Excelをダウンロード・解析
-                time_dic = p0.download_and_extract_excel(drive_service, excel_file_id)
+            with st.spinner("スプレッドシートからデータを取得中..."):
+                # ExcelではなくSheets APIから取得
+                time_dic = p0.get_schedule_from_sheets(sheets_service, sheet_id)
                 
-                # 2. PDF解析
                 pdf_stream = io.BytesIO(pdf_file.read())
                 pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-
-                # 解析状況の表示
-                st.subheader("🔍 解析状況の確認")
-                c_pdf, c_xls = st.columns(2)
-                with c_pdf:
-                    st.write("**PDFから抽出した勤務地:**")
-                    if pdf_dic:
-                        for k in pdf_dic.keys(): st.success(f"✅ {k}")
-                    else: st.error("PDF内に指定の氏名が見つかりません")
-                with c_xls:
-                    st.write("**Excel(Drive)から抽出した勤務地:**")
-                    if time_dic:
-                        for k in time_dic.keys(): st.success(f"✅ {k}")
-                    else: st.error("Excel内に勤務地(T1, T2等)が見つかりません。")
-
-                # 3. 紐付け処理
-                final_data = p0.data_integration(pdf_dic, time_dic)
                 
+                final_data = p0.data_integration(pdf_dic, time_dic)
+
                 if final_data:
                     for loc_key, content in final_data.items():
-                        st.divider()
-                        st.header(f"📍 拠点: {loc_key}")
+                        st.success(f"📍 拠点: {loc_key}")
                         
-                        tab1, tab2 = st.tabs(["📋 あなたの予定", "⏱ 全体時程"])
-                        with tab1:
-                            st.subheader("本日のシフト詳細")
-                            st.dataframe(content[0], use_container_width=True)
-                            st.subheader("同じ拠点の同僚")
-                            st.dataframe(content[1], use_container_width=True)
-                        with tab2:
-                            st.subheader("拠点タイムスケジュール (時程表)")
-                            st.dataframe(content[2], use_container_width=True)
-                else:
-                    if pdf_dic and time_dic:
-                        st.warning("勤務地名（T1, T2等）がPDFとExcelで一致しないため紐付けできませんでした。")
+                        my_shift = content["my_shift"]
+                        areas = content["patrol_areas"]
+                        details = my_shift.iloc[1].tolist()
+                        
+                        st.subheader("💡 シフト内容の解析")
+                        cols = st.columns(len(details))
+                        for i, val in enumerate(details):
+                            val_str = str(val).strip()
+                            clean_val = p0.normalize_for_match(val_str)
+                            with cols[i]:
+                                if not clean_val: st.write("-")
+                                elif "本町" in val_str: st.info(f"**{val_str}**\n\n特殊(本町)")
+                                elif clean_val in areas: st.success(f"**{val_str}**\n\n時程表一致")
+                                else: st.warning(f"**{val_str}**\n\nデフォルト")
 
-    else:
-        st.info("サイドバーで名前を確認し、PDFをアップロードしてから「解析」ボタンを押してください。")
+                        tab1, tab2, tab3 = st.tabs(["👤 個人シフト", "👥 同僚の動き", "⏱ 拠点時程表"])
+                        with tab1: st.dataframe(my_shift, use_container_width=True)
+                        with tab2: st.dataframe(content["others"], use_container_width=True)
+                        with tab3: st.dataframe(content["schedule"], use_container_width=True)
+                else:
+                    st.error("紐付けに失敗しました。IDまたは勤務地名を確認してください。")
 
 if __name__ == "__main__":
     main()
