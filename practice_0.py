@@ -7,7 +7,6 @@ from datetime import datetime
 
 # --- 1. 比較・整形用共通関数 ---
 def normalize_for_match(text):
-    """全角半角、空白、大文字小文字を統一して比較可能な状態にする"""
     if text is None or str(text).lower() == 'nan': 
         return ""
     normalized = unicodedata.normalize('NFKC', str(text))
@@ -15,7 +14,6 @@ def normalize_for_match(text):
 
 # --- 2. 詳細シフト計算 ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
     shift_code = my_daily_shift.iloc[0, col]
     sched_clean = time_schedule.fillna("").astype(str)
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
@@ -31,7 +29,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     mask_handing_over = (sched_clean.iloc[:, t_col] == prev_val) & (sched_clean.iloc[:, 1] != shift_code)
                     mask_taking_over = (sched_clean.iloc[:, t_col] == current_val) & (sched_clean.iloc[:, 1] != shift_code)
                     
-                    # 交代判定
                     if mask_handing_over.any():
                         handing_over_department = "(交代)"
                     else:
@@ -68,18 +65,19 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
 
 # --- 3. PDF解析：年月取得と拠点別データ抽出 ---
 def pdf_reader(file_stream, target_staff):
-    """
-    PDFから年月を読み取り、本人のいる拠点を特定して辞書化する。
-    戻り値: (年月辞書{"year": YYYY, "month": MM}, 拠点データ辞書)
-    """
     table_dictionary = {}
     date_info = {"year": None, "month": None}
     clean_target = normalize_for_match(target_staff)
 
+    # 拠点名として認めないキーワードリスト
+    ignore_keywords = ["氏名", "名前", "担当", "ランク", "NO", "番号", "区分", "合計", "備考"]
+
     with pdfplumber.open(file_stream) as pdf:
-        # 1ページ目のテキストから年月を探す
-        first_page_text = pdf.pages[0].extract_text() or ""
-        date_match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', first_page_text)
+        full_text = ""
+        for page in pdf.pages[:2]:
+            full_text += page.extract_text() or ""
+        
+        date_match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', full_text)
         if date_match:
             date_info["year"] = int(date_match.group(1))
             date_info["month"] = int(date_match.group(2))
@@ -95,19 +93,27 @@ def pdf_reader(file_stream, target_staff):
                 if clean_target in search_col.values:
                     indices = search_col[search_col == clean_target].index
                     for idx in indices:
+                        # --- 拠点名(勤務地)抽出の安定化ロジック (改良版) ---
                         work_place = ""
-                        for col_idx in [1, 2]:
+                        # 1列目〜4列目をスキャン
+                        for col_idx in range(1, min(5, len(df.columns))):
                             val = str(df.iloc[idx, col_idx]).strip()
-                            if val and len(val) > 1:
+                            
+                            # 判定条件：
+                            # 1. 2文字以上
+                            # 2. 数字のみではない
+                            # 3. 除外キーワードを含まない
+                            is_ignored = any(kw in val for kw in ignore_keywords)
+                            
+                            if val and len(val) >= 2 and not val.isdigit() and not is_ignored:
                                 work_place = val
                                 break
                         
-                        if not work_place:
-                            work_place = str(df.iloc[idx, 1]).strip()
-                        
+                        # 適切な拠点名が見つかった場合のみ処理を続行
                         if work_place:
                             my_data = df.iloc[[idx]].copy()
-                            others_data = df[(df.iloc[:, 1] == work_place) & (search_col != clean_target)].copy()
+                            # 同拠点スタッフの抽出 (拠点名が見つかった列 col_idx を基準に判定)
+                            others_data = df[(df.iloc[:, col_idx] == work_place) & (search_col != clean_target)].copy()
                             
                             table_dictionary[work_place] = [
                                 my_data.reset_index(drop=True), 
@@ -118,38 +124,37 @@ def pdf_reader(file_stream, target_staff):
 # --- 4. データ統合関数 ---
 def data_integration(pdf_dic, time_schedule_dic):
     integrated_dic = {}
+    if not pdf_dic: return integrated_dic
+    
     for place_name, pdf_data in pdf_dic.items():
         norm_place = normalize_for_match(place_name)
-        matched_key = next((k for k in time_schedule_dic.keys() if normalize_for_match(k) in norm_place or norm_place in normalize_for_match(k)), None)
+        matched_key = None
+        for k in time_schedule_dic.keys():
+            norm_k = normalize_for_match(k)
+            if norm_k in norm_place or norm_place in norm_k:
+                matched_key = k
+                break
         
         if matched_key:
             integrated_dic[place_name] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
     return integrated_dic
 
-# --- 5. CSV行生成：年月と列番号から日付を自動生成 ---
+# --- 5. CSV行生成 ---
 def process_integrated_data(integrated_dic, date_info, current_col):
-    """
-    date_infoから年月を取得し、current_colを「日」として日付文字列を作成する。
-    """
     all_final_rows = []
     
-    # 日付の特定: current_colが「日」に対応していると仮定 (例: 3列目が1日なら day = col - 2)
-    # 運用のルールに合わせてオフセットを調整してください。
-    # ここではPDFの構造上、col番号がそのまま「日」を指すように指示があったため、
-    # シンプルに current_col - (日付が始まる前の列数) を日とします。
-    # ※仮に col=5 が 3日 を指すなら offset=2
+    # 日付オフセット（PDFの構造により調整が必要な場合があります）
+    # 氏名(0), 拠点(1), ランク(2) と続く場合、1日は4列目(3)から。
     offset = 2 
     day = current_col - offset 
     
     if date_info["year"] and date_info["month"] and day > 0:
         target_date_str = f"{date_info['year']}-{date_info['month']:02d}-{day:02d}"
     else:
-        # 読み取れなかった場合のフォールバック（今日の日付など）
         target_date_str = datetime.now().strftime("%Y-%m-%d")
 
     for place_key, data_list in integrated_dic.items():
         my_shift, other_shift, time_sched = data_list
-        
         if current_col >= len(my_shift.columns): continue
         
         raw_val = str(my_shift.iloc[0, current_col])
@@ -163,13 +168,4 @@ def process_integrated_data(integrated_dic, date_info, current_col):
                 shift_cal(place_key, target_date_str, current_col, item, my_shift, other_shift, time_sched, all_final_rows)
             else:
                 all_final_rows.append([item, target_date_str, "", target_date_str, "", "True", "", ""])
-
-            if "本町" in item:
-                try:
-                    start_t = time_sched.iloc[0, 3] 
-                    end_t = time_sched.iloc[0, -1]
-                except:
-                    start_t, end_t = "09:00", "17:00"
-                all_final_rows.append([item, target_date_str, start_t, target_date_str, end_t, "False", "", ""])
-                
     return all_final_rows
