@@ -63,20 +63,17 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             
             prev_val = current_val
 
-# --- 3. PDF解析：年月取得と拠点別データ抽出 ---
+# --- 3. PDF解析：昨日と同じシンプルな抽出(1列目拠点) ＋ 年月取得 ---
 def pdf_reader(file_stream, target_staff):
     table_dictionary = {}
     date_info = {"year": None, "month": None}
     clean_target = normalize_for_match(target_staff)
 
-    # 拠点名として認めないキーワードリスト
-    ignore_keywords = ["氏名", "名前", "担当", "ランク", "NO", "番号", "区分", "合計", "備考"]
-
     with pdfplumber.open(file_stream) as pdf:
+        # 年月の読み取り
         full_text = ""
         for page in pdf.pages[:2]:
             full_text += page.extract_text() or ""
-        
         date_match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', full_text)
         if date_match:
             date_info["year"] = int(date_match.group(1))
@@ -93,27 +90,12 @@ def pdf_reader(file_stream, target_staff):
                 if clean_target in search_col.values:
                     indices = search_col[search_col == clean_target].index
                     for idx in indices:
-                        # --- 拠点名(勤務地)抽出の安定化ロジック (改良版) ---
-                        work_place = ""
-                        # 1列目〜4列目をスキャン
-                        for col_idx in range(1, min(5, len(df.columns))):
-                            val = str(df.iloc[idx, col_idx]).strip()
-                            
-                            # 判定条件：
-                            # 1. 2文字以上
-                            # 2. 数字のみではない
-                            # 3. 除外キーワードを含まない
-                            is_ignored = any(kw in val for kw in ignore_keywords)
-                            
-                            if val and len(val) >= 2 and not val.isdigit() and not is_ignored:
-                                work_place = val
-                                break
+                        # 昨日と同様に、1列目(index 1)を拠点名として固定で取得
+                        work_place = str(df.iloc[idx, 1]).strip()
                         
-                        # 適切な拠点名が見つかった場合のみ処理を続行
                         if work_place:
                             my_data = df.iloc[[idx]].copy()
-                            # 同拠点スタッフの抽出 (拠点名が見つかった列 col_idx を基準に判定)
-                            others_data = df[(df.iloc[:, col_idx] == work_place) & (search_col != clean_target)].copy()
+                            others_data = df[(df.iloc[:, 1] == work_place) & (search_col != clean_target)].copy()
                             
                             table_dictionary[work_place] = [
                                 my_data.reset_index(drop=True), 
@@ -139,12 +121,12 @@ def data_integration(pdf_dic, time_schedule_dic):
             integrated_dic[place_name] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
     return integrated_dic
 
-# --- 5. CSV行生成 ---
+# --- 5. CSV行生成：年月と列番号から日付を自動生成 ---
 def process_integrated_data(integrated_dic, date_info, current_col):
     all_final_rows = []
     
-    # 日付オフセット（PDFの構造により調整が必要な場合があります）
-    # 氏名(0), 拠点(1), ランク(2) と続く場合、1日は4列目(3)から。
+    # 1日がPDFの3列目(index 2)から始まると仮定して offset=2
+    # target_date.day (1〜31) に 2 を足すと正しい列番号になる
     offset = 2 
     day = current_col - offset 
     
