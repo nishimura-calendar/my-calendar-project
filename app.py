@@ -20,19 +20,15 @@ def main():
     current_col = target_date.day + 2 
 
     if uploaded_pdf:
-        # A. PDF解析 (修正点: 戻り値を2つ受け取る)
-        date_info, pdf_dic = p0.pdf_reader(uploaded_pdf, target_staff)
+        # A. PDF解析 (昨日と同じ戻り値1つの形式)
+        pdf_dic = p0.pdf_reader(uploaded_pdf, target_staff)
         
         if not pdf_dic:
             st.error(f"PDFから「{target_staff}」が見つかりませんでした。")
             return
 
-        if date_info["year"] and date_info["month"]:
-            st.success(f"PDFから年月を読み取りました: {date_info['year']}年{date_info['month']}月")
-        else:
-            st.warning("PDFから年月を読み取れませんでした。手動設定の日付を使用します。")
-
         # B. 時程表の取得 (デモデータ)
+        # 実際にはここに Google Drive 連携コードが入ります
         time_dic = {
             "大阪拠点": pd.DataFrame([
                 ["", "", "", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"],
@@ -49,8 +45,9 @@ def main():
                 st.write("PDFから検出された拠点:", list(pdf_dic.keys()))
                 return
 
-            # D. CSV行の生成 (修正点: date_infoを渡す)
-            final_rows = p0.process_integrated_data(integrated_data, date_info, current_col)
+            # D. CSV行の生成 (UIで選択した日付を使用)
+            target_date_str = target_date.strftime("%Y-%m-%d")
+            final_rows = p0.process_integrated_data(integrated_data, target_date_str, current_col)
             
             df_final = pd.DataFrame(final_rows, columns=[
                 'Subject', 'Start Date', 'Start Time', 'End Date', 'End Time', 
