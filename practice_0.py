@@ -18,23 +18,18 @@ def get_gdrive_service(secrets):
 
 def time_schedule_from_drive(service, file_id):
     """
-    プログラム上の訂正: 
     Googleスプレッドシート（エディタ形式）をダウンロードするための export_media を使用。
     """
     try:
-        # ファイルのMIMEタイプを確認
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         mime_type = file_metadata.get('mimeType')
 
-        # Googleスプレッドシート形式の場合
         if mime_type == 'application/vnd.google-apps.spreadsheet':
-            # Excel形式にエクスポートして取得
             request = service.files().export_media(
                 fileId=file_id,
                 mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             )
         else:
-            # 通常のバイナリファイル（.xlsx等）の場合
             request = service.files().get_media(fileId=file_id)
         
         fh = io.BytesIO()
@@ -44,7 +39,6 @@ def time_schedule_from_drive(service, file_id):
             status, done = downloader.next_chunk()
         
         fh.seek(0)
-        # 全シートをオブジェクト形式で読み込み
         all_sheets = pd.read_excel(fh, sheet_name=None, header=None, dtype=object)
         
         time_dic = {}
@@ -53,7 +47,6 @@ def time_schedule_from_drive(service, file_id):
             def clean_format(x):
                 s = str(x)
                 return s[:-2] if s.endswith('.0') else s
-            # pandasのバージョンに合わせ、mapまたはapplymapを使用
             df = df.map(clean_format) if hasattr(df, 'map') else df.applymap(clean_format)
             time_dic[sheet_name] = df
         return time_dic
@@ -80,10 +73,7 @@ def extract_workplace_from_header(header_text):
     except: return "解析エラー"
 
 def pdf_reader(file_stream, target_staff):
-    """
-    PDF解析。
-    プログラム上の訂正: セル結合時の TypeError を防ぐため、明示的に str() 型変換を適用。
-    """
+    """PDF解析。セルの結合処理を含む。"""
     table_dictionary = {}
     clean_target = normalize_for_match(target_staff)
     with pdfplumber.open(file_stream) as pdf:
@@ -99,16 +89,12 @@ def pdf_reader(file_stream, target_staff):
                 search_col = df.iloc[:, 0]
                 found_indices = []
                 for i in range(len(search_col)):
-                    # 現在のセルを文字列として正規化
                     current_val = str(search_col.iloc[i]) if search_col.iloc[i] is not None else ""
                     if clean_target in normalize_for_match(current_val):
                         found_indices.append(i)
                     elif i > 0:
-                        # プログラム上の訂正: 
-                        # 前のセルと現在のセルを明示的に str() に変換してから結合することで TypeError を回避。
                         prev_val = str(search_col.iloc[i-1]) if search_col.iloc[i-1] is not None else ""
                         combined = normalize_for_match(prev_val + current_val)
-                        
                         if clean_target in combined and clean_target not in normalize_for_match(prev_val):
                             found_indices.append(i)
 
@@ -146,8 +132,13 @@ def data_integration(pdf_dic, time_schedule_dic):
     return integrated_dic, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """打合.pyのロジックを忠実に再現"""
+    """
+    打合.pyのロジックを修正。
+    CSV列定義: [Subject, Start Date, Start Time, End Date, End Time, All Day Event, Description, Location]
+    """
+    # シフト記号自体の終日予定（例: T2_C）
     if (time_schedule.iloc[:, 1].astype(str) == shift_info).any():
+        # Subject, StartDate, StartTime, EndDate, EndTime, AllDay, Desc, Loc
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
     sched_clean = time_schedule.copy()
@@ -157,8 +148,11 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         prev_val = ""
         for t_col in range(2, sched_clean.shape[1]):
             current_val = str(my_time_shift.iloc[0, t_col])
+            
+            # 値が変化したタイミングで予定を作成
             if current_val != prev_val:
                 if current_val != "":
+                    # 交代相手の特定ロジック
                     mask_handing_over = (sched_clean.iloc[:, t_col].astype(str) == prev_val) & (sched_clean.iloc[:, 1] != shift_info)
                     mask_taking_over = (sched_clean.iloc[:, t_col].astype(str) == current_val) & (sched_clean.iloc[:, 1] != shift_info)
                     
@@ -167,22 +161,28 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                         mask = mask_handing_over if i == 0 else mask_taking_over
                         search_keys = sched_clean.loc[mask, sched_clean.columns[1]]
                         target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
-                        
                         names_raw = target_rows.iloc[:, 0].dropna()
-                        # 空白やNone、改行後のゴミを除去
                         names_list = [str(n).split('\n')[0].strip() for n in names_raw.unique() if n and str(n).lower() != 'none']
                         
                         if i == 0:
-                            staff_names = f"to {'・'.join(names_list)}" if names_list else ""
-                            handing_over = f"{staff_names}"
+                            handing_over = f"to {'・'.join(names_list)}" if names_list else ""
                         else:
-                            staff_names = f"from {'・'.join(names_list)}" if names_list else ""
-                            taking_over = f"【{current_val}】{staff_names}"
+                            taking_over = f"【{current_val}】from {'・'.join(names_list)}" if names_list else f"【{current_val}】"
                     
-                    final_rows.append([f"{handing_over}=>{taking_over}", target_date, sched_clean.iloc[0, t_col], target_date, "", "False", "", key])
+                    # 件名を構築（例: to Aさん => 【北】from Bさん）
+                    subject = f"{handing_over} => {taking_over}".strip(" => ")
+                    # 時刻取得 (1行目が時刻ヘッダーと想定)
+                    start_t = str(sched_clean.iloc[0, t_col])
+                    
+                    # final_rowsに格納 (EndTimeは次のループまたは終了時に埋める)
+                    # [Subject, StartDate, StartTime, EndDate, EndTime, AllDay, Desc, Loc]
+                    final_rows.append([subject, target_date, start_t, target_date, "", "False", "", key])
+                
                 else:
+                    # current_valが空（休憩や終了）になった場合、直前の予定のEndTimeを埋める
                     if len(final_rows) > 0 and final_rows[-1][5] == "False":
-                        final_rows[-1][4] = sched_clean.iloc[0, t_col]
+                        final_rows[-1][4] = str(sched_clean.iloc[0, t_col])
+            
             prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
@@ -199,11 +199,13 @@ def process_full_month(integrated_dic, year, month):
             
             if not raw_val or raw_val.lower() == 'nan' or raw_val.strip() == "": continue
             
+            # カンマや改行で区切られた複数のシフト記号に対応
             items = [i.strip() for i in re.split(r'[,、\s\n]+', raw_val) if i.strip()]
             master_codes = time_sched.iloc[:, 1].astype(str).tolist()
             for item in items:
                 if item in master_codes:
                     shift_cal(place_key, target_date_str, current_col, item, my_shift, other_shift, time_sched, all_final_rows)
                 else:
+                    # 時程表にない記号（「休」「本町」など）は終日予定として追加
                     all_final_rows.append([item, target_date_str, "", target_date_str, "", "True", "", place_key])
     return all_final_rows
