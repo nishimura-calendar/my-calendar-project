@@ -62,8 +62,8 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     # 空白になった場合は前のイベントの終了時間をセット
                     if len(final_rows) > 0 and final_rows[-1][5] == "False":
                         final_rows[-1][4] = time_schedule.iloc[0, t_col]
-                
-                prev_val = current_val
+            
+            prev_val = current_val
 
 # --- メインの振り分け・生成ロジック ---
 def process_daily_shift(items, loc_name, date_str, master_df, master_areas_norm, my_daily_shift, other_staff_shift, current_col):
