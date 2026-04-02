@@ -3,7 +3,6 @@ import pdfplumber
 import unicodedata
 import re
 import io
-from datetime import datetime
 
 # --- 1. 比較・整形用共通関数 ---
 def normalize_for_match(text):
@@ -63,34 +62,25 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             
             prev_val = current_val
 
-# --- 3. PDF解析：昨日と同じシンプルな抽出(1列目拠点) ＋ 年月取得 ---
+# --- 3. PDF解析：昨日と同じシンプルな抽出 (戻り値は辞書のみ) ---
 def pdf_reader(file_stream, target_staff):
     table_dictionary = {}
-    date_info = {"year": None, "month": None}
     clean_target = normalize_for_match(target_staff)
 
     with pdfplumber.open(file_stream) as pdf:
-        # 年月の読み取り
-        full_text = ""
-        for page in pdf.pages[:2]:
-            full_text += page.extract_text() or ""
-        date_match = re.search(r'(\d{4})\s*年\s*(\d{1,2})\s*月', full_text)
-        if date_match:
-            date_info["year"] = int(date_match.group(1))
-            date_info["month"] = int(date_match.group(2))
-
         for page in pdf.pages:
             tables = page.extract_tables()
             for table in tables:
                 df = pd.DataFrame(table)
                 if df.empty: continue
                 
+                # 0列目を氏名として検索
                 search_col = df.iloc[:, 0].apply(normalize_for_match)
                 
                 if clean_target in search_col.values:
                     indices = search_col[search_col == clean_target].index
                     for idx in indices:
-                        # 昨日と同様に、1列目(index 1)を拠点名として固定で取得
+                        # 1列目を拠点名として取得 (昨日と同じ)
                         work_place = str(df.iloc[idx, 1]).strip()
                         
                         if work_place:
@@ -101,7 +91,7 @@ def pdf_reader(file_stream, target_staff):
                                 my_data.reset_index(drop=True), 
                                 others_data.reset_index(drop=True)
                             ]
-    return date_info, table_dictionary
+    return table_dictionary
 
 # --- 4. データ統合関数 ---
 def data_integration(pdf_dic, time_schedule_dic):
@@ -121,20 +111,10 @@ def data_integration(pdf_dic, time_schedule_dic):
             integrated_dic[place_name] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
     return integrated_dic
 
-# --- 5. CSV行生成：年月と列番号から日付を自動生成 ---
-def process_integrated_data(integrated_dic, date_info, current_col):
+# --- 5. CSV行生成：外部から日付文字列を受け取る形式に戻す ---
+def process_integrated_data(integrated_dic, target_date_str, current_col):
     all_final_rows = []
     
-    # 1日がPDFの3列目(index 2)から始まると仮定して offset=2
-    # target_date.day (1〜31) に 2 を足すと正しい列番号になる
-    offset = 2 
-    day = current_col - offset 
-    
-    if date_info["year"] and date_info["month"] and day > 0:
-        target_date_str = f"{date_info['year']}-{date_info['month']:02d}-{day:02d}"
-    else:
-        target_date_str = datetime.now().strftime("%Y-%m-%d")
-
     for place_key, data_list in integrated_dic.items():
         my_shift, other_shift, time_sched = data_list
         if current_col >= len(my_shift.columns): continue
