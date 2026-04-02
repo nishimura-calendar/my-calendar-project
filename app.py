@@ -2,40 +2,37 @@ import streamlit as st
 import pandas as pd
 import practice_0 as p0
 from datetime import datetime
-import re
 
 def main():
     st.set_page_config(page_title="勤務シフトCSV出力システム", layout="wide")
     st.title("勤務シフトCSV出力システム")
 
-    # 1. サイドバーでの基本設定
     st.sidebar.header("ユーザー設定")
-    target_staff = st.sidebar.text_input("本人の氏名 (PDF内と一致させる)", value="本人氏名")
+    target_staff = st.sidebar.text_input("本人の氏名", value="本人氏名")
     
-    # 2. ファイルアップロード
     st.subheader("1. 勤務表PDFのアップロード")
     uploaded_pdf = st.file_uploader("PDFファイルを選択", type="pdf")
     
-    # 3. 日付選択と列特定
     st.subheader("2. 対象日の設定")
-    target_date = st.date_input("解析する日付", datetime(2026, 4, 2))
-    date_str = target_date.strftime("%Y-%m-%d")
+    target_date = st.date_input("解析する日付（列特定用）", datetime(2026, 4, 2))
     
-    # PDF内の日付列を特定 (例: 1日が3列目から始まる等のルール)
+    # 日付列を特定 (例: 1日=3列目なら day + 2)
     current_col = target_date.day + 2 
 
     if uploaded_pdf:
-        # A. PDF解析 (practice_0の関数を使用)
-        pdf_dic = p0.pdf_reader(uploaded_pdf, target_staff)
+        # A. PDF解析 (修正点: 戻り値を2つ受け取る)
+        date_info, pdf_dic = p0.pdf_reader(uploaded_pdf, target_staff)
         
         if not pdf_dic:
-            st.error(f"PDFから「{target_staff}」が見つかりませんでした。氏名を確認してください。")
+            st.error(f"PDFから「{target_staff}」が見つかりませんでした。")
             return
 
-        # B. 時程表の取得 (本来はGoogle Drive連携。ここではデモデータを生成)
-        # 実際にはここで drive 連携ロジックを呼び出し、{拠点名: DF} の辞書を作る
-        st.info("時程表（Excel/Google Sheets）を読み込み中...")
-        # デモ用時程表辞書
+        if date_info["year"] and date_info["month"]:
+            st.success(f"PDFから年月を読み取りました: {date_info['year']}年{date_info['month']}月")
+        else:
+            st.warning("PDFから年月を読み取れませんでした。手動設定の日付を使用します。")
+
+        # B. 時程表の取得 (デモデータ)
         time_dic = {
             "大阪拠点": pd.DataFrame([
                 ["", "", "", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"],
@@ -43,33 +40,30 @@ def main():
             ])
         }
 
-        # 4. 実行ボタン
         if st.button("CSVデータを生成"):
-            # C. データの紐付け (data_integration)
+            # C. データの紐付け
             integrated_data = p0.data_integration(pdf_dic, time_dic)
             
             if not integrated_data:
-                st.warning("時程表との紐付けに失敗しました。拠点名が一致しているか確認してください。")
+                st.warning("時程表との紐付けに失敗しました。")
                 st.write("PDFから検出された拠点:", list(pdf_dic.keys()))
                 return
 
-            # D. CSV行の生成
-            final_rows = p0.process_integrated_data(integrated_data, date_str, current_col)
+            # D. CSV行の生成 (修正点: date_infoを渡す)
+            final_rows = p0.process_integrated_data(integrated_data, date_info, current_col)
             
-            # E. 結果表示とダウンロード
             df_final = pd.DataFrame(final_rows, columns=[
                 'Subject', 'Start Date', 'Start Time', 'End Date', 'End Time', 
                 'All Day Event', 'Description', 'Location'
             ])
             
-            st.success(f"{len(df_final)}件の予定を生成しました。")
             st.dataframe(df_final)
             
             csv_binary = df_final.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             st.download_button(
                 label="📥 月間.csv をダウンロード",
                 data=csv_binary,
-                file_name=f"月間_{date_str.replace('-','')}.csv",
+                file_name="月間.csv",
                 mime="text/csv"
             )
 
