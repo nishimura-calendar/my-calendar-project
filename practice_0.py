@@ -6,6 +6,7 @@ import io
 
 # --- 1. 比較・整形用共通関数 ---
 def normalize_for_match(text):
+    """全角半角、空白を統一して比較可能な状態にする"""
     if text is None or str(text).lower() == 'nan': 
         return ""
     normalized = unicodedata.normalize('NFKC', str(text))
@@ -13,6 +14,7 @@ def normalize_for_match(text):
 
 # --- 2. 詳細シフト計算 ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
     shift_code = my_daily_shift.iloc[0, col]
     sched_clean = time_schedule.fillna("").astype(str)
     my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_code]
@@ -62,8 +64,11 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             
             prev_val = current_val
 
-# --- 3. PDF解析：昨日と同じシンプルな抽出 (戻り値は辞書のみ) ---
+# --- 3. PDF解析：昨日と同じシンプルな抽出 ---
 def pdf_reader(file_stream, target_staff):
+    """
+    PDFから本人のデータを探し、拠点名を取得して辞書化する。
+    """
     table_dictionary = {}
     clean_target = normalize_for_match(target_staff)
 
@@ -80,8 +85,13 @@ def pdf_reader(file_stream, target_staff):
                 if clean_target in search_col.values:
                     indices = search_col[search_col == clean_target].index
                     for idx in indices:
-                        # 1列目を拠点名として取得 (昨日と同じ)
+                        # 拠点名の取得列を調整してください。
+                        # もし「C」が1列目(index 1)にあるなら、2列目(index 2)が拠点名かもしれません。
+                        # 昨日の成功時に合わせて 1 または 2 に設定します。
                         work_place = str(df.iloc[idx, 1]).strip()
+                        
+                        # もし work_place が "C" などの1文字で、本来の拠点が隣にあるなら
+                        # ここを df.iloc[idx, 2] に変える必要があります。
                         
                         if work_place:
                             my_data = df.iloc[[idx]].copy()
@@ -111,7 +121,7 @@ def data_integration(pdf_dic, time_schedule_dic):
             integrated_dic[place_name] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
     return integrated_dic
 
-# --- 5. CSV行生成：外部から日付文字列を受け取る形式に戻す ---
+# --- 5. CSV行生成 ---
 def process_integrated_data(integrated_dic, target_date_str, current_col):
     all_final_rows = []
     
