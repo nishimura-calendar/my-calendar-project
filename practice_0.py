@@ -80,7 +80,10 @@ def extract_workplace_from_header(header_text):
     except: return "解析エラー"
 
 def pdf_reader(file_stream, target_staff):
-    """PDF解析。2行表示（名字・名前の分断）に対応した検索ロジックを含む"""
+    """
+    PDF解析。
+    プログラム上の訂正: セル結合時の TypeError を防ぐため、明示的に str() 型変換を適用。
+    """
     table_dictionary = {}
     clean_target = normalize_for_match(target_staff)
     with pdfplumber.open(file_stream) as pdf:
@@ -93,15 +96,20 @@ def pdf_reader(file_stream, target_staff):
                 header_val = df.iloc[0, 0]
                 current_workplace = extract_workplace_from_header(header_val)
                 
-                search_col = df.iloc[:, 0].astype(str)
+                search_col = df.iloc[:, 0]
                 found_indices = []
                 for i in range(len(search_col)):
-                    if clean_target in normalize_for_match(search_col.iloc[i]):
+                    # 現在のセルを文字列として正規化
+                    current_val = str(search_col.iloc[i]) if search_col.iloc[i] is not None else ""
+                    if clean_target in normalize_for_match(current_val):
                         found_indices.append(i)
                     elif i > 0:
-                        # 上下の行を合体させて再判定
-                        combined = normalize_for_match(search_col.iloc[i-1] + search_col.iloc[i])
-                        if clean_target in combined and clean_target not in normalize_for_match(search_col.iloc[i-1]):
+                        # プログラム上の訂正: 
+                        # 前のセルと現在のセルを明示的に str() に変換してから結合することで TypeError を回避。
+                        prev_val = str(search_col.iloc[i-1]) if search_col.iloc[i-1] is not None else ""
+                        combined = normalize_for_match(prev_val + current_val)
+                        
+                        if clean_target in combined and clean_target not in normalize_for_match(prev_val):
                             found_indices.append(i)
 
                 if not found_indices: continue
