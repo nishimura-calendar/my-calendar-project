@@ -9,6 +9,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
 def get_gdrive_service(secrets):
+    """Google Drive APIへのサービスオブジェクトを作成"""
     creds = service_account.Credentials.from_service_account_info(
         secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/drive.readonly"]
@@ -16,8 +17,26 @@ def get_gdrive_service(secrets):
     return build('drive', 'v3', credentials=creds)
 
 def time_schedule_from_drive(service, file_id):
+    """
+    プログラム上の訂正: 
+    Googleスプレッドシート（エディタ形式）をダウンロードするための export_media を使用。
+    """
     try:
-        request = service.files().get_media(fileId=file_id)
+        # ファイルのMIMEタイプを確認
+        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
+        mime_type = file_metadata.get('mimeType')
+
+        # Googleスプレッドシート形式の場合
+        if mime_type == 'application/vnd.google-apps.spreadsheet':
+            # Excel形式にエクスポートして取得
+            request = service.files().export_media(
+                fileId=file_id,
+                mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+        else:
+            # 通常のバイナリファイル（.xlsx等）の場合
+            request = service.files().get_media(fileId=file_id)
+        
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -25,6 +44,7 @@ def time_schedule_from_drive(service, file_id):
             status, done = downloader.next_chunk()
         
         fh.seek(0)
+        # 全シートをオブジェクト形式で読み込み
         all_sheets = pd.read_excel(fh, sheet_name=None, header=None, dtype=object)
         
         time_dic = {}
@@ -33,6 +53,7 @@ def time_schedule_from_drive(service, file_id):
             def clean_format(x):
                 s = str(x)
                 return s[:-2] if s.endswith('.0') else s
+            # pandasのバージョンに合わせ、mapまたはapplymapを使用
             df = df.map(clean_format) if hasattr(df, 'map') else df.applymap(clean_format)
             time_dic[sheet_name] = df
         return time_dic
@@ -40,12 +61,14 @@ def time_schedule_from_drive(service, file_id):
         raise Exception(f"時程表取得失敗: {e}")
 
 def normalize_for_match(text):
+    """改行・空白を除去し、比較を安定させる"""
     if text is None or str(text).lower() == 'nan': return ""
     text_clean = str(text).replace('\n', '').replace('\r', '')
     normalized = unicodedata.normalize('NFKC', text_clean)
     return re.sub(r'[\s\u3000]+', '', normalized).strip().upper()
 
 def extract_workplace_from_header(header_text):
+    """ヘッダーから拠点名を抽出"""
     if not header_text: return "不明な拠点"
     text_str = str(header_text)
     lines = text_str.split('\n')
@@ -57,24 +80,15 @@ def extract_workplace_from_header(header_text):
     except: return "解析エラー"
 
 def pdf_reader(file_stream, target_staff):
-    """
-    デバッグ機能付き: PDFから抽出した生のDataFrameを保持するように変更
-    """
+    """PDF解析。2行表示（名字・名前の分断）に対応した検索ロジックを含む"""
     table_dictionary = {}
-    raw_dfs = [] # デバッグ用：抽出した全テーブルを保存
     clean_target = normalize_for_match(target_staff)
-    
     with pdfplumber.open(file_stream) as pdf:
-        for page_idx, page in enumerate(pdf.pages):
+        for page in pdf.pages:
             tables = page.extract_tables()
-            for table_idx, table in enumerate(tables):
+            for table in tables:
                 df = pd.DataFrame(table)
-                if df.empty: continue
-                
-                # デバッグ用に生の表をリストに追加（後でapp.pyで表示させるため）
-                raw_dfs.append({"page": page_idx+1, "table": table_idx+1, "df": df})
-                
-                if df.shape[1] < 2: continue
+                if df.empty or df.shape[1] < 2: continue
                 
                 header_val = df.iloc[0, 0]
                 current_workplace = extract_workplace_from_header(header_val)
@@ -85,6 +99,7 @@ def pdf_reader(file_stream, target_staff):
                     if clean_target in normalize_for_match(search_col.iloc[i]):
                         found_indices.append(i)
                     elif i > 0:
+                        # 上下の行を合体させて再判定
                         combined = normalize_for_match(search_col.iloc[i-1] + search_col.iloc[i])
                         if clean_target in combined and clean_target not in normalize_for_match(search_col.iloc[i-1]):
                             found_indices.append(i)
@@ -99,10 +114,10 @@ def pdf_reader(file_stream, target_staff):
                     while key_name in table_dictionary:
                         key_name = f"{current_workplace}_{cnt}"; cnt += 1
                     table_dictionary[key_name] = [my_data.reset_index(drop=True), others_data.reset_index(drop=True)]
-                    
-    return table_dictionary, raw_dfs
+    return table_dictionary
 
 def data_integration(pdf_dic, time_schedule_dic):
+    """拠点ごとの時程表紐付け"""
     integrated_dic = {}
     logs = []
     for place_name, pdf_data in pdf_dic.items():
@@ -123,9 +138,7 @@ def data_integration(pdf_dic, time_schedule_dic):
     return integrated_dic, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    TypeError修正済み。
-    """
+    """打合.pyのロジックを忠実に再現"""
     if (time_schedule.iloc[:, 1].astype(str) == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
@@ -148,6 +161,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                         target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
                         
                         names_raw = target_rows.iloc[:, 0].dropna()
+                        # 空白やNone、改行後のゴミを除去
                         names_list = [str(n).split('\n')[0].strip() for n in names_raw.unique() if n and str(n).lower() != 'none']
                         
                         if i == 0:
@@ -164,6 +178,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
+    """月間全日程の処理"""
     all_final_rows = []
     num_days = calendar.monthrange(year, month)[1]
     for day in range(1, num_days + 1):
