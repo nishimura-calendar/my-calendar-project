@@ -9,7 +9,6 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
 def get_gdrive_service(secrets):
-    """Google Drive APIへのサービスオブジェクトを作成"""
     creds = service_account.Credentials.from_service_account_info(
         secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/drive.readonly"]
@@ -17,14 +16,8 @@ def get_gdrive_service(secrets):
     return build('drive', 'v3', credentials=creds)
 
 def time_schedule_from_drive(service, file_id):
-    """
-    Googleスプレッドシートを .xlsx としてダウンロードし、Excelとして読み込む。
-    自動で変換される機能を利用し、APIでの複雑な変換を避けスピードアップを図る。
-    """
     try:
-        # get_mediaで直接ダウンロード（スプレッドシートでもxlsxとして降ってくる挙動を利用）
         request = service.files().get_media(fileId=file_id)
-        
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -32,45 +25,27 @@ def time_schedule_from_drive(service, file_id):
             status, done = downloader.next_chunk()
         
         fh.seek(0)
-        # Excelとして全シートを読み込み
         all_sheets = pd.read_excel(fh, sheet_name=None, header=None, dtype=object)
         
         time_dic = {}
         for sheet_name, df in all_sheets.items():
             df = df.fillna("")
-            # 数値の末尾 .0 を除去
             def clean_format(x):
                 s = str(x)
                 return s[:-2] if s.endswith('.0') else s
             df = df.map(clean_format) if hasattr(df, 'map') else df.applymap(clean_format)
             time_dic[sheet_name] = df
-                
         return time_dic
     except Exception as e:
-        # もしget_mediaで失敗した場合はexport_mediaにフォールバック（保険）
-        try:
-            request = service.files().export_media(
-                fileId=file_id,
-                mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while done is False:
-                status, done = downloader.next_chunk()
-            fh.seek(0)
-            all_sheets = pd.read_excel(fh, sheet_name=None, header=None, dtype=object)
-            return {k: v.fillna("").astype(str) for k, v in all_sheets.items()}
-        except:
-            raise Exception(f"時程表のダウンロードに失敗しました: {e}")
+        raise Exception(f"時程表取得失敗: {e}")
 
 def normalize_for_match(text):
     if text is None or str(text).lower() == 'nan': return ""
-    normalized = unicodedata.normalize('NFKC', str(text))
-    return re.sub(r'[\s\n\u3000]+', '', normalized).strip().upper()
+    text_clean = str(text).replace('\n', '').replace('\r', '')
+    normalized = unicodedata.normalize('NFKC', text_clean)
+    return re.sub(r'[\s\u3000]+', '', normalized).strip().upper()
 
 def extract_workplace_from_header(header_text):
-    """PDFの(0,0)セルから勤務地名を抽出。失敗しても『不明』を返して処理を止めない。"""
     if not header_text: return "不明な拠点"
     text_str = str(header_text)
     lines = text_str.split('\n')
@@ -78,83 +53,79 @@ def extract_workplace_from_header(header_text):
     target_index = num_newlines // 2
     try:
         work_place = lines[target_index].strip() if target_index < len(lines) else lines[-1].strip()
-        if not work_place:
-            non_empty = [e.strip() for e in lines if e.strip()]
-            work_place = non_empty[0] if non_empty else "不明"
-        return work_place
-    except:
-        return "解析エラー"
+        return work_place if work_place else "不明"
+    except: return "解析エラー"
 
 def pdf_reader(file_stream, target_staff):
     """
-    原因解決策: まず勤務地を取得し、その後に本人がいるかチェックする。
+    デバッグ機能付き: PDFから抽出した生のDataFrameを保持するように変更
     """
     table_dictionary = {}
+    raw_dfs = [] # デバッグ用：抽出した全テーブルを保存
     clean_target = normalize_for_match(target_staff)
     
     with pdfplumber.open(file_stream) as pdf:
-        for page in pdf.pages:
+        for page_idx, page in enumerate(pdf.pages):
             tables = page.extract_tables()
-            for table in tables:
+            for table_idx, table in enumerate(tables):
                 df = pd.DataFrame(table)
-                if df.empty or df.shape[1] < 2: continue
+                if df.empty: continue
                 
-                # --- 手順1: まず勤務地を特定する ---
+                # デバッグ用に生の表をリストに追加（後でapp.pyで表示させるため）
+                raw_dfs.append({"page": page_idx+1, "table": table_idx+1, "df": df})
+                
+                if df.shape[1] < 2: continue
+                
                 header_val = df.iloc[0, 0]
                 current_workplace = extract_workplace_from_header(header_val)
                 
-                # --- 手順2: その勤務地テーブル内に本人がいるか探す ---
-                search_col = df.iloc[:, 0].astype(str).apply(normalize_for_match)
-                found_indices = [i for i, val in enumerate(search_col) if clean_target in val]
+                search_col = df.iloc[:, 0].astype(str)
+                found_indices = []
+                for i in range(len(search_col)):
+                    if clean_target in normalize_for_match(search_col.iloc[i]):
+                        found_indices.append(i)
+                    elif i > 0:
+                        combined = normalize_for_match(search_col.iloc[i-1] + search_col.iloc[i])
+                        if clean_target in combined and clean_target not in normalize_for_match(search_col.iloc[i-1]):
+                            found_indices.append(i)
+
+                if not found_indices: continue
                 
-                if not found_indices:
-                    continue # 本人がいない勤務地テーブルは無視して次へ
-                
-                # 本人が見つかった場合のみ辞書に登録
                 for idx in found_indices:
                     my_data = df.iloc[[idx]].copy()
                     others_data = df[df.index != idx].copy()
-                    
                     key_name = current_workplace
                     cnt = 2
                     while key_name in table_dictionary:
-                        key_name = f"{current_workplace}_{cnt}"
-                        cnt += 1
+                        key_name = f"{current_workplace}_{cnt}"; cnt += 1
                     table_dictionary[key_name] = [my_data.reset_index(drop=True), others_data.reset_index(drop=True)]
                     
-    return table_dictionary
+    return table_dictionary, raw_dfs
 
 def data_integration(pdf_dic, time_schedule_dic):
-    """
-    PDFから取得した勤務地名と、時程表（シート名 or A列）を紐付ける。
-    """
     integrated_dic = {}
     logs = []
     for place_name, pdf_data in pdf_dic.items():
         norm_place = normalize_for_match(place_name)
         matched_key = None
-        
         for k, df in time_schedule_dic.items():
-            # シート名で判定
             if normalize_for_match(k) in norm_place or norm_place in normalize_for_match(k):
-                matched_key = k
-                break
-            # A列の内容で判定
+                matched_key = k; break
             a_col = df.iloc[:, 0].astype(str).apply(normalize_for_match).tolist()
             if any(norm_place == val for val in a_col if val):
-                matched_key = k
-                break
+                matched_key = k; break
         
         if matched_key:
             integrated_dic[place_name] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
             logs.append(f"✅ 紐付け成功: {place_name} ↔ {matched_key}")
         else:
             logs.append(f"❌ 紐付け失敗: {place_name}")
-            
     return integrated_dic, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """打合.pyのロジックを忠実に再現"""
+    """
+    TypeError修正済み。
+    """
     if (time_schedule.iloc[:, 1].astype(str) == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
@@ -175,9 +146,16 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                         mask = mask_handing_over if i == 0 else mask_taking_over
                         search_keys = sched_clean.loc[mask, sched_clean.columns[1]]
                         target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_keys)]
-                        names = "・".join(target_rows.iloc[:, 0].unique().astype(str))
-                        if i == 0: handing_over = f"to {names}" if names else ""
-                        else: taking_over = f"【{current_val}】from {names}" if names else f"【{current_val}】"
+                        
+                        names_raw = target_rows.iloc[:, 0].dropna()
+                        names_list = [str(n).split('\n')[0].strip() for n in names_raw.unique() if n and str(n).lower() != 'none']
+                        
+                        if i == 0:
+                            staff_names = f"to {'・'.join(names_list)}" if names_list else ""
+                            handing_over = f"{staff_names}"
+                        else:
+                            staff_names = f"from {'・'.join(names_list)}" if names_list else ""
+                            taking_over = f"【{current_val}】{staff_names}"
                     
                     final_rows.append([f"{handing_over}=>{taking_over}", target_date, sched_clean.iloc[0, t_col], target_date, "", "False", "", key])
                 else:
@@ -195,6 +173,7 @@ def process_full_month(integrated_dic, year, month):
             my_shift, other_shift, time_sched = data_list
             if current_col >= my_shift.shape[1]: continue
             raw_val = str(my_shift.iloc[0, current_col])
+            
             if not raw_val or raw_val.lower() == 'nan' or raw_val.strip() == "": continue
             
             items = [i.strip() for i in re.split(r'[,、\s\n]+', raw_val) if i.strip()]
