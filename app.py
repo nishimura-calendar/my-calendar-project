@@ -41,12 +41,20 @@ def main():
                 pdf_dic = p0.pdf_reader(uploaded_pdf, target_staff)
             
             if pdf_dic:
-                # 3. 紐付け
-                integrated_data = p0.data_integration(pdf_dic, time_dic)
+                # 3. 紐付け (紐付け結果のログを表示)
+                integrated_data, debug_logs = p0.data_integration(pdf_dic, time_dic)
                 
-                # 4. 全日程のCSV行生成 (1日から月末までループ)
+                with st.expander("🔍 勤務地の紐付けログを確認"):
+                    for log in debug_logs:
+                        st.write(log)
+                
+                if not integrated_data:
+                    st.error("PDFで見つかった勤務地が、時程表のシート名と一致しませんでした。ログを確認してください。")
+                    return
+
+                # 4. 全日程のCSV行生成
                 with st.spinner("全日程のシフトを抽出中..."):
-                    # PDFから年月の推定（本来はPDF内から取得すべきですが、一旦現在の年月を基準にします）
+                    # PDFから年月の推定（※本来はPDF内から取得。一旦実行時の年月を使用）
                     now = datetime.now()
                     current_year = now.year
                     current_month = now.month
@@ -73,7 +81,7 @@ def main():
                 else:
                     st.warning("シフトデータが抽出されませんでした。")
             else:
-                st.error(f"PDF内に「{target_staff}」が見つかりませんでした。")
+                st.error(f"PDF内に「{target_staff}」が見つかりませんでした。名前が正しいか、PDFの形式を確認してください。")
         else:
             st.info("サイドバーの「解析を実行する」ボタンを押してください。")
     else:
