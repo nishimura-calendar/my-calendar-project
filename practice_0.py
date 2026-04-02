@@ -3,12 +3,12 @@ import pdfplumber
 import unicodedata
 import re
 import io
+import calendar
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
 def get_gdrive_service(secrets):
-    """Google Drive APIへのサービスオブジェクトを作成"""
     creds = service_account.Credentials.from_service_account_info(
         secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/drive.readonly"]
@@ -16,23 +16,12 @@ def get_gdrive_service(secrets):
     return build('drive', 'v3', credentials=creds)
 
 def time_schedule_from_drive(service, file_id):
-    """
-    基本事項に則り、スプレッドシートを .xlsx としてダウンロードし、Excelとして読み込む。
-    MIMEタイプを自動判定し、スプレッドシートならexport、ファイルならgetを使用する。
-    """
     try:
-        # ファイルの属性（MIMEタイプ）を確認
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         mime_type = file_metadata.get('mimeType')
-
         if mime_type == 'application/vnd.google-apps.spreadsheet':
-            # Googleスプレッドシートの場合はExcel形式に変換してエクスポート
-            request = service.files().export_media(
-                fileId=file_id,
-                mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            )
+            request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         else:
-            # すでにxlsxファイルなどの場合は、そのままバイナリでダウンロード
             request = service.files().get_media(fileId=file_id)
         
         fh = io.BytesIO()
@@ -42,35 +31,25 @@ def time_schedule_from_drive(service, file_id):
             status, done = downloader.next_chunk()
         
         fh.seek(0)
-        # Excelとして全シートを読み込み
-        # Excel読み込み(read_excel)を使うことで、CSV変換時の型崩れを防止
         all_sheets = pd.read_excel(fh, sheet_name=None, header=None)
         
         time_dic = {}
         for sheet_name, df in all_sheets.items():
-            # NaNを空文字に変換
             df = df.fillna("")
-            
-            # 数値の末尾 .0 を消去 (293.0 -> 293)
             def clean_format(x):
                 s = str(x)
                 return s[:-2] if s.endswith('.0') else s
-
-            # Pandasバージョン互換性を考慮 (applymap -> map)
             if hasattr(df, 'map'):
                 df = df.map(clean_format)
             else:
                 df = df.applymap(clean_format)
-                
             time_dic[sheet_name] = df
-                
         return time_dic
     except Exception as e:
-        raise Exception(f"Google Driveからの時程表取得に失敗しました: {e}")
+        raise Exception(f"時程表取得失敗: {e}")
 
 def normalize_for_match(text):
-    if text is None or str(text).lower() == 'nan': 
-        return ""
+    if text is None or str(text).lower() == 'nan': return ""
     normalized = unicodedata.normalize('NFKC', str(text))
     return re.sub(r'[\s\n]+', '', normalized).strip().upper()
 
@@ -87,8 +66,7 @@ def extract_workplace_from_header(header_text):
             if len(non_empty) >= 2: work_place = non_empty[1]
             elif non_empty: work_place = non_empty[0]
         return work_place
-    except:
-        return "解析エラー"
+    except: return "解析エラー"
 
 def pdf_reader(file_stream, target_staff):
     table_dictionary = {}
@@ -99,23 +77,18 @@ def pdf_reader(file_stream, target_staff):
             for table in tables:
                 df = pd.DataFrame(table)
                 if df.empty: continue
-                
                 header_val = df.iloc[0, 0]
                 current_workplace = extract_workplace_from_header(header_val)
-                
                 search_col = df.iloc[:, 0].apply(normalize_for_match)
                 found_indices = [i for i, val in enumerate(search_col) if clean_target in val]
-                
                 if not found_indices: continue
-                
                 for idx in found_indices:
                     my_data = df.iloc[[idx]].copy()
                     others_data = df[df.index != idx].copy()
                     key_name = current_workplace
                     cnt = 2
                     while key_name in table_dictionary:
-                        key_name = f"{current_workplace}_{cnt}"
-                        cnt += 1
+                        key_name = f"{current_workplace}_{cnt}"; cnt += 1
                     table_dictionary[key_name] = [my_data.reset_index(drop=True), others_data.reset_index(drop=True)]
     return table_dictionary
 
@@ -126,56 +99,58 @@ def data_integration(pdf_dic, time_schedule_dic):
         matched_key = None
         for k in time_schedule_dic.keys():
             if normalize_for_match(k) in norm_place or norm_place in normalize_for_match(k):
-                matched_key = k
-                break
+                matched_key = k; break
         if matched_key:
             integrated_dic[place_name] = [pdf_data[0], pdf_data[1], time_schedule_dic[matched_key]]
     return integrated_dic
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """基本事項: B列(1)=シフトコード, D列(3)以降=時間行"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
-    
-    sched_clean = time_schedule.copy()
-    my_time_shift = sched_clean[sched_clean.iloc[:, 1] == shift_info]
-    
+    my_time_shift = time_schedule[time_schedule.iloc[:, 1] == shift_info]
     if not my_time_shift.empty:
         prev_val = ""
-        # D列(index 3)以降をスキャン
-        for t_col in range(3, sched_clean.shape[1]):
+        for t_col in range(3, time_schedule.shape[1]):
             current_val = my_time_shift.iloc[0, t_col]
             if current_val != prev_val:
                 if current_val != "": 
-                    mask_handing_over = (sched_clean.iloc[:, t_col] == prev_val) & (sched_clean.iloc[:, 1] != shift_info)
-                    mask_taking_over = (sched_clean.iloc[:, t_col] == current_val) & (sched_clean.iloc[:, 1] != shift_info)
-                    
-                    handing_over = ""
-                    taking_over = ""
+                    mask_handing_over = (time_schedule.iloc[:, t_col] == prev_val) & (time_schedule.iloc[:, 1] != shift_info)
+                    mask_taking_over = (time_schedule.iloc[:, t_col] == current_val) & (time_schedule.iloc[:, 1] != shift_info)
+                    handing_over = ""; taking_over = ""
                     for i in range(2):
                         mask = mask_handing_over if i == 0 else mask_taking_over
-                        search_codes = sched_clean.loc[mask, sched_clean.columns[1]]
+                        search_codes = time_schedule.loc[mask, time_schedule.columns[1]]
                         target_rows = other_staff_shift[other_staff_shift.iloc[:, col].isin(search_codes)]
                         names = '・'.join(target_rows.iloc[:, 0].unique().astype(str))
                         if i == 0: handing_over = f"to {names}" if names else ""
                         else: taking_over = f"【{current_val}】from {names}" if names else f"【{current_val}】"
-                    
-                    start_time = sched_clean.iloc[0, t_col]
+                    start_time = time_schedule.iloc[0, t_col]
                     final_rows.append([f"{handing_over}=>{taking_over}", target_date, start_time, target_date, "", "False", "", key])
                 else:
                     if len(final_rows) > 0 and final_rows[-1][5] == "False":
-                        final_rows[-1][4] = sched_clean.iloc[0, t_col]
+                        final_rows[-1][4] = time_schedule.iloc[0, t_col]
             prev_val = current_val
 
-def process_integrated_data(integrated_dic, target_date_str, current_col):
+def process_full_month(integrated_dic, year, month):
+    """1日から月末まで全ての日付をループして処理する"""
     all_final_rows = []
-    for place_key, data_list in integrated_dic.items():
-        my_shift, other_shift, time_sched = data_list
-        raw_val = str(my_shift.iloc[0, current_col])
-        items = [i.strip() for i in re.split(r'[,、\s\n]+', raw_val) if i.strip()]
-        master_codes = [normalize_for_match(x) for x in time_sched.iloc[:, 1].tolist()]
-        for item in items:
-            if normalize_for_match(item) in master_codes:
-                shift_cal(place_key, target_date_str, current_col, item, my_shift, other_shift, time_sched, all_final_rows)
-            else:
-                all_final_rows.append([item, target_date_str, "", target_date_str, "", "True", "", place_key])
+    num_days = calendar.monthrange(year, month)[1]
+    
+    for day in range(1, num_days + 1):
+        target_date_str = f"{year}-{month:02d}-{day:02d}"
+        # PDFの列は 1日 = index 1
+        current_col = day 
+        
+        for place_key, data_list in integrated_dic.items():
+            my_shift, other_shift, time_sched = data_list
+            if current_col >= my_shift.shape[1]: continue
+            
+            raw_val = str(my_shift.iloc[0, current_col])
+            items = [i.strip() for i in re.split(r'[,、\s\n]+', raw_val) if i.strip()]
+            master_codes = [normalize_for_match(x) for x in time_sched.iloc[:, 1].tolist()]
+            
+            for item in items:
+                if normalize_for_match(item) in master_codes:
+                    shift_cal(place_key, target_date_str, current_col, item, my_shift, other_shift, time_sched, all_final_rows)
+                else:
+                    all_final_rows.append([item, target_date_str, "", target_date_str, "", "True", "", place_key])
     return all_final_rows
