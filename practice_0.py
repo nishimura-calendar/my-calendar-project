@@ -154,7 +154,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 if current_val != "":
                     # 交代相手の特定ロジック
                     mask_handing_over = (sched_clean.iloc[:, t_col].astype(str) == prev_val) & (sched_clean.iloc[:, 1] != shift_info)
-                    mask_taking_over = (sched_clean.iloc[:, t_col].astype(str) == current_val) & (sched_clean.iloc[:, 1] != shift_info)
+                    mask_taking_over = (sched_clean.iloc[:, t_col-1].astype(str) == current_val) & (sched_clean.iloc[:, 1] != shift_info)
                     
                     handing_over = ""; taking_over = ""
                     for i in range(2):
