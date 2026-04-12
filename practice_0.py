@@ -18,8 +18,9 @@ def get_gdrive_service(secrets):
 
 def time_schedule_from_drive(service, file_id):
     """
-    Google Driveから時程表を読み込み。
-    0列目に「T1」「T2」がある行をブロックの開始点として動的に抽出。
+    時程表（Excel）の最初のシートから勤務地ごとのブロックを抽出。
+    0列目(Index 0)に名称がある行をブロックの開始とみなす。
+    0行目の時刻列（数値）は HH:MM 形式に変換する。
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -39,10 +40,9 @@ def time_schedule_from_drive(service, file_id):
         while not done: _, done = downloader.next_chunk()
         fh.seek(0)
         
-        full_df = pd.read_excel(fh, header=None, engine='openpyxl')
+        full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0)
         
         # --- 1. 列の境界判定 ---
-        # 4列目(Index 3)以降が時刻軸。数値でなくなった列を終端とする。
         col_limit = len(full_df.columns)
         for i in range(3, len(full_df.columns)):
             val = full_df.iloc[0, i]
@@ -53,28 +53,39 @@ def time_schedule_from_drive(service, file_id):
                 col_limit = i
                 break
 
-        # --- 2. 勤務地ブロックの抽出 ---
-        # 0列目に T1, T2 等の値が入っている行のインデックスを取得
-        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
-        
+        # --- 2. 時刻ヘッダーの変換 (0.25単位の数値を HH:MM へ) ---
+        # 4列目(Index 3)以降の0行目を走査
+        for i in range(3, col_limit):
+            val = full_df.iloc[0, i]
+            if pd.notna(val) and isinstance(val, (int, float)):
+                try:
+                    hours = int(val)
+                    # 0.25 -> 15, 0.5 -> 30, 0.75 -> 45
+                    minutes = int(round((val - hours) * 60))
+                    full_df.iloc[0, i] = f"{hours}:{minutes:02d}"
+                except (ValueError, TypeError):
+                    continue
+
+        # --- 3. ブロック分割 ---
+        location_indices = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         processed_data_parts = {}
-        if not location_rows:
+        
+        if not location_indices:
             processed_data_parts["Unknown"] = full_df.iloc[:, 0:col_limit].copy().fillna('')
         else:
-            for i, start_row in enumerate(location_rows):
-                end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+            for i, start_row in enumerate(location_indices):
+                end_row = location_indices[i+1] if i+1 < len(location_indices) else len(full_df)
                 location_name = str(full_df.iloc[start_row, 0]).strip()
-                # 数値変換ロジックを削除し、そのまま抽出
                 df_part = full_df.iloc[start_row:end_row, 0:col_limit].copy().reset_index(drop=True)
                 processed_data_parts[location_name] = df_part.fillna('')
 
         return processed_data_parts
     except Exception as e:
-        print(f"Error loading Google Sheet: {e}")
+        print(f"Time Schedule Error: {e}")
         return None
 
 def normalize_for_match(text):
-    """氏名・勤務地の比較用正規化（スペース・ノイズ除去）"""
+    """比較用の正規化"""
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFKC', text)
     text = re.sub(r'[\(（].*?[\)）]', '', text) 
@@ -84,8 +95,7 @@ def normalize_for_match(text):
 
 def pdf_reader(file_stream, target_staff):
     """
-    PDF解析: 指定された target_staff（西村文宏など）を全ページから検索し、
-    その行を抽出。1列目(Index 1)を勤務地キーとして取得。
+    PDFからスタッフの行と、1列目の勤務地情報を抽出。
     """
     pdf_data = {}
     target_norm = normalize_for_match(target_staff)
@@ -97,14 +107,15 @@ def pdf_reader(file_stream, target_staff):
             for i, row in df.iterrows():
                 row_str = "".join([str(x) for x in row if x])
                 if target_norm in normalize_for_match(row_str):
-                    # 1列目: 勤務地 (例: 'C')
                     location = str(row[1]).strip() if len(row) > 1 else "Unknown"
                     pdf_data[location] = df.copy()
                     pdf_data[location + "_target_row_idx"] = i 
     return pdf_data
 
 def data_integration(pdf_dic, time_dic):
-    """PDF上の勤務地略称と、時程表のブロック名を紐付ける。'C' -> 'T2' 等の救済込。"""
+    """
+    紐付け確認用の詳細ログを返す。
+    """
     integrated = {}
     logs = []
     location_keys = list(time_dic.keys())
@@ -115,13 +126,13 @@ def data_integration(pdf_dic, time_dic):
         pdf_loc_norm = normalize_for_match(pdf_loc_raw)
         matched_key = None
         
-        # 1. 部分一致マッチング
+        # 1. 部分一致
         for lk in location_keys:
-            if pdf_loc_norm in normalize_for_match(lk):
+            if pdf_loc_norm and (pdf_loc_norm in normalize_for_match(lk)):
                 matched_key = lk
                 break
         
-        # 2. 救済: PDFが 'C' 一文字などの場合、時程表の 'T2' に紐付ける
+        # 2. 救済ロジック
         if not matched_key and pdf_loc_norm == "c":
             for lk in location_keys:
                 if "T2" in lk.upper():
@@ -129,36 +140,28 @@ def data_integration(pdf_dic, time_dic):
                     break
 
         if matched_key:
-            logs.append(f"✅ 紐付け成功: PDF『{pdf_loc_raw}』 -> 時程表内『{matched_key}』")
+            logs.append({"PDF内勤務地": pdf_loc_raw, "時程表ブロック": matched_key, "判定": "成功 ✅"})
             idx = pdf_dic[pdf_loc_raw + "_target_row_idx"]
-            # integrated = {勤務地名: [自分の行, 他人の表, 時程表]}
             integrated[matched_key] = [pdf_df.iloc[[idx], :], pdf_df.drop(idx), time_dic[matched_key]]
         else:
-            logs.append(f"❌ 紐付け失敗: PDFの『{pdf_loc_raw}』に対応するマスタが時程表にありません。")
+            logs.append({"PDF内勤務地": pdf_loc_raw, "時程表ブロック": "見つかりません", "判定": "失敗 ❌"})
             
     return integrated, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    時程表に基づき詳細予定を算出。
-    ※時刻変換をせず、時程表の0行目の値をそのまま時刻として扱う。
-    """
-    # 終日予定
+    """時刻変換なしでスケジュール行を生成"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
-    # シフト記号(1列目/Index 1)が一致する行を抽出
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
     if my_time_shift.empty: return
 
     prev_val = ""
-    # 時刻軸（4列目/Index 3 以降）
     for t_col in range(3, time_schedule.shape[1]):
         current_val = str(my_time_shift.iloc[0, t_col])
         if current_val.lower() == 'nan': current_val = ""
 
         if current_val != prev_val:
             if current_val != "":
-                # 交代相手の検索
                 mask_curr = (time_schedule.iloc[:, t_col].astype(str) == current_val) & (time_schedule.iloc[:, 1] != shift_info)
                 codes = time_schedule.loc[mask_curr, time_schedule.columns[1]].tolist()
                 
@@ -171,31 +174,26 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 unique_names = "・".join(list(set(names_list)))
                 subj = f"【{current_val}】from {unique_names}" if unique_names else f"【{current_val}】"
                 
-                # 開始時刻: 時程表の0行目の値を直接使用
+                # Excelの時刻（6:15など）をそのまま取得
                 start_time = str(time_schedule.iloc[0, t_col])
                 final_rows.append([subj, target_date, start_time, target_date, "", "False", "", key])
             else:
-                # 終了時刻のセット
                 if final_rows and final_rows[-1][5] == "False":
                     final_rows[-1][4] = str(time_schedule.iloc[0, t_col])
         prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
-    """月間全日程の行を生成"""
     all_final_rows = []
     num_days = calendar.monthrange(year, month)[1]
     for day in range(1, num_days + 1):
         target_date_str = f"{year}-{month:02d}-{day:02d}"
-        current_col = day + 1 # PDFの1日は Index 2
-        
+        current_col = day + 1 
         for place_key, data in integrated_dic.items():
-            my_shift_row, other_staff_df, time_sched = data
-            if current_col >= my_shift_row.shape[1]: continue
-            
-            val = str(my_shift_row.iloc[0, current_col])
+            my_row, others, time_sched = data
+            if current_col >= my_row.shape[1]: continue
+            val = str(my_row.iloc[0, current_col])
             if not val or val.lower() == 'nan' or val.strip() == "": continue
-            
             items = [i.strip() for i in re.split(r'[,、\s\n]+', val) if i.strip()]
             for item in items:
-                shift_cal(place_key, target_date_str, current_col, item, my_shift_row, other_staff_df, time_sched, all_final_rows)
+                shift_cal(place_key, target_date_str, current_col, item, my_row, others, time_sched, all_final_rows)
     return all_final_rows
