@@ -139,9 +139,11 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         
     # shift_code = my_daily_shift.iloc[0, col]
     
-    # my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
-    my_time_shift = time_schedule.iloc[:, 1] == shift_info
-                    
+    my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
+    # my_time_shift = time_schedule.iloc[:, 1] == shift_info
+    if my_time_shift.empty:
+        return
+                       
     if not my_time_shift.empty:
         prev_val = ""
         for t_col in range(2, my_time_shift.shape[1]):
