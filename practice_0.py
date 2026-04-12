@@ -19,7 +19,7 @@ def get_gdrive_service(secrets):
 def time_schedule_from_drive(service, file_id):
     """
     Google Driveから時程表を読み込み、時刻軸をクレンジングする。
-    考察2.pyに基づき、0列目のNaNでない行をすべて勤務地として特定。
+    1列目=勤務地, 2列目=シフト記号, 3列目=ロッカー, 4列目(Index 3)以降=時間行の構造に対応。
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -42,10 +42,12 @@ def time_schedule_from_drive(service, file_id):
         # ヘッダーなしで読み込み
         full_df = pd.read_excel(fh, header=None, engine='openpyxl')
         
-        # --- 1. 列の境界（文字列が現れる列）を自動判定 (考察2.py) ---
+        # --- 1. 列の境界（文字列が現れる列）を自動判定 ---
+        # 4列目(Index 3)以降をループし、数値以外の文字列(「出勤」など)が出たらそこまで。
         col_limit = len(full_df.columns)
         for i in range(3, len(full_df.columns)):
             val = full_df.iloc[0, i]
+            if pd.isna(val): continue
             try:
                 float(val)
             except (ValueError, TypeError):
@@ -53,44 +55,44 @@ def time_schedule_from_drive(service, file_id):
                 break
 
         # --- 2. 勤務地（T1, T2など）の開始行を特定 ---
-        # 考察2.pyのロジック: 0列目 (インデックス0) でNaNではない行が勤務地行
-        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
+        # 0列目に値があり、1〜3列目が空白である行を勤務地の区切りとする
+        location_rows = []
+        for idx, row in full_df.iterrows():
+            if pd.notna(row[0]) and pd.isna(row[1]) and pd.isna(row[2]) and pd.isna(row[3]):
+                location_rows.append(idx)
         
-        processed_sheets = {}
+        processed_data_parts = {}
         if not location_rows:
-            # 勤務地行が見つからない場合は全体を処理
             df_part = full_df.iloc[:, 0:col_limit].copy().reset_index(drop=True)
-            processed_sheets["Unknown"] = clean_time_header(df_part)
+            processed_data_parts["Unknown"] = clean_time_header(df_part)
         else:
             for i, start_row in enumerate(location_rows):
                 end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
                 location_name = str(full_df.iloc[start_row, 0]).strip()
-                
-                # 判定された col_limit を使用して範囲を抽出
                 df_part = full_df.iloc[start_row:end_row, 0:col_limit].copy().reset_index(drop=True)
-                processed_sheets[location_name] = clean_time_header(df_part)
+                processed_data_parts[location_name] = clean_time_header(df_part)
 
-        return processed_sheets
+        return processed_data_parts
     except Exception as e:
         print(f"Error loading Google Sheet: {e}")
         return None
 
 def clean_time_header(df):
     """
-    1行目の時刻インデックス（数値/シリアル値）を HH:MM 形式に変換。
+    1行目の時刻（6.25, 6.5 等）を HH:MM 形式に確実に変換する。
     """
     df = df.astype(object)
+    # 4列目(Index 3)以降が時間軸
     for col in range(3, df.shape[1]):
         val = df.iloc[0, col]
         try:
             num_val = float(val)
-            if 0 < num_val < 1:
-                ts = int(num_val * 24 * 3600 + 0.5)
-                df.iloc[0, col] = f"{ts // 3600:02d}:{(ts % 3600) // 60:02d}"
-            elif num_val >= 1:
-                total_minutes = int(num_val * 60 + 0.5)
-                df.iloc[0, col] = f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
-        except:
+            # 24時間表記の数値（例: 6.25 -> 6:15）として計算
+            hours = int(num_val)
+            minutes = int(round((num_val - hours) * 60))
+            # 24時を超える場合（25.0 -> 01:00）のケア
+            df.iloc[0, col] = f"{hours % 24:02d}:{minutes:02d}"
+        except (ValueError, TypeError):
             pass
     return df
 
@@ -104,6 +106,7 @@ def normalize_for_match(text):
     return text.strip().lower()
 
 def pdf_reader(file_stream, target_staff):
+    """PDFから指定スタッフのシフトと勤務地を抽出"""
     pdf_data = {}
     target_norm = normalize_for_match(target_staff)
     with pdfplumber.open(file_stream) as pdf:
@@ -113,52 +116,56 @@ def pdf_reader(file_stream, target_staff):
             df = pd.DataFrame(table)
             for i, row in df.iterrows():
                 if target_norm in normalize_for_match(str(row[0])):
-                    location = str(row[1]) if len(row) > 1 else "Unknown"
+                    location = str(row[1]).strip() if len(row) > 1 else "Unknown"
                     pdf_data[location] = df.copy()
                     pdf_data[location + "_target_row_idx"] = i 
     return pdf_data
 
 def data_integration(pdf_dic, time_dic):
+    """PDFと時程表の勤務地を紐付け"""
     integrated = {}
     logs = []
-    sheet_names = list(time_dic.keys())
+    location_keys = list(time_dic.keys())
     
-    for loc_key, pdf_df in pdf_dic.items():
-        if "_target_row_idx" in loc_key: continue
+    for pdf_loc_raw, pdf_df in pdf_dic.items():
+        if "_target_row_idx" in pdf_loc_raw: continue
         
-        pdf_loc_raw = loc_key
-        pdf_loc_norm = normalize_for_match(loc_key)
-        matched_sheet = None
+        pdf_loc_norm = normalize_for_match(pdf_loc_raw)
+        matched_key = None
         
-        for sn in sheet_names:
-            sn_norm = normalize_for_match(sn)
-            if sn_norm and pdf_loc_norm and (sn_norm in pdf_loc_norm or pdf_loc_norm in sn_norm):
-                matched_sheet = sn
+        for lk in location_keys:
+            lk_norm = normalize_for_match(lk)
+            if lk_norm and pdf_loc_norm and (lk_norm in pdf_loc_norm or pdf_loc_norm in lk_norm):
+                matched_key = lk
                 break
         
-        if matched_sheet:
-            logs.append(f"✅ 紐付け成功: PDF『{pdf_loc_raw}』 -> 時程表『{matched_sheet}』")
-            idx = pdf_dic[loc_key + "_target_row_idx"]
-            integrated[matched_sheet] = [pdf_df.iloc[[idx], :], pdf_df.drop(idx), time_dic[matched_sheet]]
+        if matched_key:
+            logs.append(f"✅ 紐付け成功: PDF『{pdf_loc_raw}』 -> 時程表内『{matched_key}』")
+            idx = pdf_dic[pdf_loc_raw + "_target_row_idx"]
+            integrated[matched_key] = [pdf_df.iloc[[idx], :], pdf_df.drop(idx), time_dic[matched_key]]
         else:
-            logs.append(f"❌ 紐付け失敗: PDF内の勤務地『{pdf_loc_raw}』が時程表に見つかりません。")
-            logs.append(f"   (候補: {', '.join(sheet_names)})")
+            logs.append(f"❌ 紐付け失敗: PDFの『{pdf_loc_raw}』が時程表の勤務地行に見つかりません。")
+            logs.append(f"   (候補: {', '.join(location_keys)})")
             
     return integrated, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    """個別の時間詳細を算出"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
+    # 2列目(Index 1)のシフト記号で検索
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
     if my_time_shift.empty: return
 
     prev_val = ""
+    # 4列目(Index 3)以降を走査
     for t_col in range(3, time_schedule.shape[1]):
         current_val = str(my_time_shift.iloc[0, t_col])
         if current_val.lower() == 'nan': current_val = ""
 
         if current_val != prev_val:
             if current_val != "":
+                # 交代相手の特定
                 mask_curr = (time_schedule.iloc[:, t_col].astype(str) == current_val) & (time_schedule.iloc[:, 1] != shift_info)
                 codes = time_schedule.loc[mask_curr, time_schedule.columns[1]].tolist()
                 
@@ -170,8 +177,10 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 
                 unique_names = "・".join(list(set(names_list)))
                 subj = f"【{current_val}】from {unique_names}" if unique_names else f"【{current_val}】"
+                # 開始時刻をセット
                 final_rows.append([subj, target_date, time_schedule.iloc[0, t_col], target_date, "", "False", "", key])
             else:
+                # 予定の終了時刻をセット
                 if final_rows and final_rows[-1][5] == "False":
                     final_rows[-1][4] = time_schedule.iloc[0, t_col]
         prev_val = current_val
