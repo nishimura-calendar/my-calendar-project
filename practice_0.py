@@ -20,7 +20,7 @@ def time_schedule_from_drive(service, file_id):
     """
     時程表（Excel）の最初のシートから勤務地ごとのブロックを抽出。
     0列目(Index 0)に名称がある行をブロックの開始とみなす。
-    0行目の時刻列（数値）は HH:MM 形式に変換する。
+    0行目の時刻列（数値）は HH:MM 形式に変換する（例: 6.25 -> 6:15）。
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -53,20 +53,20 @@ def time_schedule_from_drive(service, file_id):
                 col_limit = i
                 break
 
-        # --- 2. 時刻ヘッダーの変換 (0.25単位の数値を HH:MM へ) ---
-        # 4列目(Index 3)以降の0行目を走査
+        # --- 2. 時刻ヘッダーの変換 (小数点 -> HH:MM) ---
         for i in range(3, col_limit):
             val = full_df.iloc[0, i]
             if pd.notna(val) and isinstance(val, (int, float)):
                 try:
                     hours = int(val)
-                    # 0.25 -> 15, 0.5 -> 30, 0.75 -> 45
+                    # 0.25 * 60 = 15, 0.5 * 60 = 30 ...
                     minutes = int(round((val - hours) * 60))
+                    # 時間が24を超える場合も考慮 (例: 25.25 -> 25:15)
                     full_df.iloc[0, i] = f"{hours}:{minutes:02d}"
                 except (ValueError, TypeError):
                     continue
 
-        # --- 3. ブロック分割 ---
+        # --- 3. 勤務地ブロックの分割 ---
         location_indices = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         processed_data_parts = {}
         
@@ -85,7 +85,7 @@ def time_schedule_from_drive(service, file_id):
         return None
 
 def normalize_for_match(text):
-    """比較用の正規化"""
+    """比較用の正規化（全角半角、スペース、特定キーワードの除去）"""
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFKC', text)
     text = re.sub(r'[\(（].*?[\)）]', '', text) 
@@ -95,7 +95,8 @@ def normalize_for_match(text):
 
 def pdf_reader(file_stream, target_staff):
     """
-    PDFからスタッフの行と、1列目の勤務地情報を抽出。
+    PDFから指定スタッフの行を抽出。
+    PDFの1列目（Index 1）を勤務地名として保持。
     """
     pdf_data = {}
     target_norm = normalize_for_match(target_staff)
@@ -107,6 +108,7 @@ def pdf_reader(file_stream, target_staff):
             for i, row in df.iterrows():
                 row_str = "".join([str(x) for x in row if x])
                 if target_norm in normalize_for_match(row_str):
+                    # 勤務地（例: 羽田, C, T1）
                     location = str(row[1]).strip() if len(row) > 1 else "Unknown"
                     pdf_data[location] = df.copy()
                     pdf_data[location + "_target_row_idx"] = i 
@@ -114,7 +116,8 @@ def pdf_reader(file_stream, target_staff):
 
 def data_integration(pdf_dic, time_dic):
     """
-    紐付け確認用の詳細ログを返す。
+    PDFの勤務地と時程表のブロックを紐付ける。
+    紐付け結果をログ(list of dict)としても返す。
     """
     integrated = {}
     logs = []
@@ -126,13 +129,13 @@ def data_integration(pdf_dic, time_dic):
         pdf_loc_norm = normalize_for_match(pdf_loc_raw)
         matched_key = None
         
-        # 1. 部分一致
+        # 1. 部分一致による紐付け（'羽田' in '羽田(国際線)' 等）
         for lk in location_keys:
             if pdf_loc_norm and (pdf_loc_norm in normalize_for_match(lk)):
                 matched_key = lk
                 break
         
-        # 2. 救済ロジック
+        # 2. 'C' -> 'T2' などの特定ルール救済
         if not matched_key and pdf_loc_norm == "c":
             for lk in location_keys:
                 if "T2" in lk.upper():
@@ -140,16 +143,16 @@ def data_integration(pdf_dic, time_dic):
                     break
 
         if matched_key:
-            logs.append({"PDF内勤務地": pdf_loc_raw, "時程表ブロック": matched_key, "判定": "成功 ✅"})
+            logs.append({"PDF勤務地": pdf_loc_raw, "時程表側": matched_key, "状態": "✅ 紐付け完了"})
             idx = pdf_dic[pdf_loc_raw + "_target_row_idx"]
             integrated[matched_key] = [pdf_df.iloc[[idx], :], pdf_df.drop(idx), time_dic[matched_key]]
         else:
-            logs.append({"PDF内勤務地": pdf_loc_raw, "時程表ブロック": "見つかりません", "判定": "失敗 ❌"})
+            logs.append({"PDF勤務地": pdf_loc_raw, "時程表側": "未検出", "状態": "❌ 失敗"})
             
     return integrated, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """時刻変換なしでスケジュール行を生成"""
+    """シフト詳細スケジュール生成"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
@@ -174,7 +177,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 unique_names = "・".join(list(set(names_list)))
                 subj = f"【{current_val}】from {unique_names}" if unique_names else f"【{current_val}】"
                 
-                # Excelの時刻（6:15など）をそのまま取得
                 start_time = str(time_schedule.iloc[0, t_col])
                 final_rows.append([subj, target_date, start_time, target_date, "", "False", "", key])
             else:
