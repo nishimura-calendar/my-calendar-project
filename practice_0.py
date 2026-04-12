@@ -138,7 +138,9 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
         
     shift_code = my_daily_shift.iloc[0, col]
-    my_time_shift = time_schedule.iloc[:, 1] == shift_code
+    
+    my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
+    # my_time_shift = time_schedule.iloc[:, 1] == shift_code
                     
     if not my_time_shift.empty:
         prev_val = ""
