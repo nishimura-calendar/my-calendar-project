@@ -1,91 +1,104 @@
 import streamlit as st
 import pandas as pd
-import practice_0 as p0
-from datetime import datetime
 import io
+import datetime
+from practice_0 import (
+    get_gdrive_service,
+    time_schedule_from_drive,
+    pdf_reader,
+    data_integration,
+    process_full_month
+)
+
+# --- 設定 ---
+# ※ secrets.toml または Streamlit Cloud の Secrets に設定が必要です
+# target_staff = "西村 文宏"
+# year = 2024
+# month = 4
 
 def main():
-    st.set_page_config(page_title="勤務シフトCSV出力システム", layout="wide")
-    st.title("勤務シフトCSV出力システム")
+    st.title("勤務スケジュール抽出システム")
+    st.sidebar.header("設定")
 
-    # --- サイドバー設定 ---
-    st.sidebar.header("⚙️ 設定")
-    target_staff = st.sidebar.text_input("本人の氏名", value="西村文宏")
+    # 1. 入力パラメータ
+    target_staff = st.sidebar.text_input("対象スタッフ名", value="西村 文宏")
+    target_year = st.sidebar.number_input("対象年", min_value=2020, max_value=2030, value=2024)
+    target_month = st.sidebar.number_input("対象月", min_value=1, max_value=12, value=4)
     
-    # 基本事項：スプレッドシートID
-    sheet_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    # 2. ファイルアップロード
+    pdf_file = st.file_uploader("勤務表PDFをアップロード", type="pdf")
+    
+    # 時程表（Google Drive上のIDを指定、またはファイルアップロード）
+    # 今回はID指定を想定していますが、アップロード形式も可能です
+    g_sheet_id = st.sidebar.text_input("時程表 Google Sheet ID", help="URLの /d/.../edit の部分")
 
-    # --- ファイルアップロード ---
-    st.subheader("📁 勤務表PDFのアップロード")
-    uploaded_pdf = st.file_uploader("勤務表PDFを選択してください", type="pdf")
-
-    # --- 解析実行ボタン ---
-    analyze_button = st.sidebar.button("解析を実行する", type="primary")
-
-    if uploaded_pdf:
-        if analyze_button:
-            # 1. 時程表の取得
-            with st.spinner("Google Driveから時程表を取得中..."):
-                try:
-                    service = p0.get_gdrive_service(st.secrets)
-                    time_dic = p0.time_schedule_from_drive(service, sheet_id)
-                    if not time_dic:
-                        st.warning("時程表データが見つかりませんでした。")
-                        return
-                except Exception as e:
-                    st.error(f"時程表取得エラー: {e}")
+    if pdf_file and g_sheet_id:
+        if st.button("スケジュール生成開始"):
+            try:
+                # Google Drive サービス取得
+                # secrets に "gcp_service_account" が設定されている前提
+                service = get_gdrive_service(st.secrets)
+                
+                with st.spinner("時程表を読み込み中..."):
+                    # 時程表を「シート内の勤務地ブロック」として取得
+                    time_dic = time_schedule_from_drive(service, g_sheet_id)
+                
+                if not time_dic:
+                    st.error("時程表の読み込みに失敗しました。")
                     return
 
-            # 2. PDF解析
-            with st.spinner("PDFを解析中..."):
-                pdf_dic = p0.pdf_reader(uploaded_pdf, target_staff)
-            
-            if pdf_dic:
-                # 3. 紐付け (紐付け結果のログを表示)
-                integrated_data, debug_logs = p0.data_integration(pdf_dic, time_dic)
+                with st.spinner("PDFを解析中..."):
+                    # PDFから対象スタッフのデータを抽出
+                    pdf_stream = io.BytesIO(pdf_file.read())
+                    pdf_dic = pdf_reader(pdf_stream, target_staff)
                 
-                with st.expander("🔍 勤務地の紐付けログを確認"):
-                    for log in debug_logs:
-                        st.write(log)
-                
-                if not integrated_data:
-                    st.error("PDFで見つかった勤務地が、時程表のシート名と一致しませんでした。ログを確認してください。")
+                if not pdf_dic:
+                    st.error(f"PDFから『{target_staff}』が見つかりませんでした。")
                     return
 
-                # 4. 全日程のCSV行生成
-                with st.spinner("全日程のシフトを抽出中..."):
-                    # PDFから年月の推定（※本来はPDF内から取得。一旦実行時の年月を使用）
-                    now = datetime.now()
-                    current_year = now.year
-                    current_month = now.month
-                    
-                    all_month_rows = p0.process_full_month(integrated_data, current_year, current_month)
+                # データ紐付け（'C' -> 'T2' などの救済を含む）
+                integrated_dic, logs = data_integration(pdf_dic, time_dic)
                 
-                if all_month_rows:
-                    columns = ["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"]
-                    df_final = pd.DataFrame(all_month_rows, columns=columns)
+                # ログの表示
+                for log in logs:
+                    if "✅" in log:
+                        st.success(log)
+                    else:
+                        st.warning(log)
+
+                if not integrated_dic:
+                    st.error("時程表とPDFの勤務地を紐付けられませんでした。")
+                    return
+
+                with st.spinner("詳細スケジュールを算出中..."):
+                    # 全日程の行を生成
+                    final_rows = process_full_month(integrated_dic, int(target_year), int(target_month))
+
+                if final_rows:
+                    # 結果の表示とCSVダウンロード
+                    df_result = pd.DataFrame(
+                        final_rows,
+                        columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"]
+                    )
                     
-                    st.success(f"「{target_staff}」の全日程シフトを抽出しました。")
-                    st.markdown("### 📅 CSVプレビュー (全日程)")
-                    st.dataframe(df_final)
-                    
+                    st.subheader("生成されたスケジュール（プレビュー）")
+                    st.dataframe(df_result)
+
+                    # CSVダウンロード
                     csv_buffer = io.StringIO()
-                    df_final.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
-                    
+                    df_result.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
                     st.download_button(
-                        label="月間.csv をダウンロード",
+                        label="Googleカレンダー用CSVをダウンロード",
                         data=csv_buffer.getvalue(),
-                        file_name=f"月間_{target_staff}_{current_year}{current_month:02d}.csv",
-                        mime="text/csv",
+                        file_name=f"schedule_{target_staff}_{target_year}{target_month:02d}.csv",
+                        mime="text/csv"
                     )
                 else:
-                    st.warning("シフトデータが抽出されませんでした。")
-            else:
-                st.error(f"PDF内に「{target_staff}」が見つかりませんでした。名前が正しいか、PDFの形式を確認してください。")
-        else:
-            st.info("サイドバーの「解析を実行する」ボタンを押してください。")
-    else:
-        st.info("解析を行うにはPDFファイルをアップロードしてください。")
+                    st.warning("該当するシフトデータが見つかりませんでした。")
+
+            except Exception as e:
+                st.error(f"エラーが発生しました: {e}")
+                st.exception(e)
 
 if __name__ == "__main__":
     main()
