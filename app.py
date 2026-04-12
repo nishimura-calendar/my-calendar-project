@@ -1,108 +1,91 @@
 import streamlit as st
 import pandas as pd
 import io
-from practice_0 import (
-    get_gdrive_service,
-    time_schedule_from_drive,
-    pdf_reader,
-    data_integration,
-    process_full_month
-)
+import practice_0 as p0
 
 def main():
-    st.set_page_config(page_title="勤務スケジュール抽出システム", layout="wide")
+    st.set_page_config(page_title="勤務地・時程表 紐付け確認", layout="wide")
+    st.title("📍 勤務地・時程表 紐付け確認ツール")
+    st.markdown("""
+    このツールは、PDFから抽出したスタッフの勤務地と、Google Drive上のスプレッドシート（時程表）を紐付け、
+    正しくデータが取得できているかを確認するためのものです。
+    """)
+
+    # --- サイドバー設定 ---
+    st.sidebar.header("1. ユーザー設定")
+    target_staff = st.sidebar.text_input("対象スタッフ名", value="西村 文宏")
     
-    # --- サイドバー：設定エリア ---
-    with st.sidebar:
-        st.header("📋 設定")
-        target_staff = st.text_input("対象スタッフ名", value="西村 文宏")
-        
-        col_year, col_month = st.columns(2)
-        with col_year:
-            target_year = st.number_input("対象年", min_value=2020, max_value=2030, value=2024)
-        with col_month:
-            target_month = st.number_input("対象月", min_value=1, max_value=12, value=4)
-        
-        g_sheet_id = st.text_input("時程表 Google Sheet ID", value="")
-        st.caption("※Google Drive上のIDを入力してください")
+    st.sidebar.header("2. ファイル指定")
+    # PDFのアップロード
+    pdf_file = st.sidebar.file_uploader("勤務表PDFを選択", type="pdf")
+    
+    # 時程表スプレッドシートID（デフォルトで共有IDを設定）
+    default_sheet_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    sheet_id = st.sidebar.text_input("時程表 Spreadsheet ID", value=default_sheet_id)
 
-    # --- メインエリア ---
-    st.title("📅 勤務スケジュール抽出")
-    st.markdown("PDFの勤務表を読み込み、Googleカレンダー用CSVを生成します。")
-
-    # 1. PDFのアップロード
-    st.subheader("1. 勤務表PDFのアップロード")
-    pdf_file = st.file_uploader("PDFファイルを選択（複数ページ対応）", type="pdf")
-
-    if pdf_file and g_sheet_id:
-        st.info("解析準備が整いました。下のボタンを押して紐付けを確認してください。")
-        
-        if st.button("🚀 紐付けを確認してスケジュール生成"):
+    # --- メイン処理 ---
+    if target_staff and pdf_file and sheet_id:
+        if st.button("紐付けと時程表を確認する"):
             try:
-                # 認証
-                service = get_gdrive_service(st.secrets)
+                # 1. Google Drive サービス取得
+                service = p0.get_gdrive_service(st.secrets)
                 
-                # 時程表読み込み
-                with st.spinner("Google Driveから時程表を取得中..."):
-                    time_dic = time_schedule_from_drive(service, g_sheet_id)
-                
-                if not time_dic:
-                    st.error("時程表の取得に失敗しました。IDが正しいか確認してください。")
-                    return
-
-                # PDF解析
+                # 2. PDF解析 (practice_0.py の pdf_reader を使用)
                 with st.spinner("PDFを解析中..."):
-                    pdf_file.seek(0)
                     pdf_stream = io.BytesIO(pdf_file.read())
-                    pdf_dic = pdf_reader(pdf_stream, target_staff)
+                    pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
                 
                 if not pdf_dic:
-                    st.error(f"PDF内に『{target_staff}』が見つかりませんでした。")
+                    st.error(f"PDFから『{target_staff}』のデータが見つかりませんでした。")
                     return
 
-                # 紐付け確認表示
-                st.subheader("2. 勤務地の紐付け確認")
-                integrated_dic, logs = data_integration(pdf_dic, time_dic)
+                # 3. 時程表（スプレッドシート）取得
+                with st.spinner("Google Driveから時程表を取得中..."):
+                    time_schedule_dic = p0.time_schedule_from_drive(service, sheet_id)
                 
-                # ログをテーブルで表示
-                log_df = pd.DataFrame(logs)
-                st.table(log_df)
-
-                if not integrated_dic:
-                    st.error("有効な紐付けがありません。勤務地名を確認してください。")
+                if not time_schedule_dic:
+                    st.error("時程表の取得に失敗しました。IDを確認してください。")
                     return
 
-                # スケジュール計算
-                with st.spinner("詳細スケジュール（交代相手含む）を算定中..."):
-                    final_rows = process_full_month(integrated_dic, int(target_year), int(target_month))
+                # 4. データの紐付け
+                integrated_dic, logs = p0.data_integration(pdf_dic, time_schedule_dic)
 
-                if final_rows:
-                    st.subheader("3. 生成されたスケジュール")
-                    df_result = pd.DataFrame(
-                        final_rows,
-                        columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"]
-                    )
-                    
-                    st.success(f"{len(df_result)} 件の予定を抽出しました。")
-                    st.dataframe(df_result, use_container_width=True)
+                # --- 表示エリア ---
+                st.header("🔗 紐付けステータス")
+                
+                # 紐付けログの表示
+                for log in logs:
+                    c1, c2, c3 = st.columns([1, 1, 2])
+                    c1.write(f"**PDF:** `{log['PDF勤務地']}`")
+                    c2.write(f"**時程表:** `{log['時程表側']}`")
+                    if "✅" in log["状態"]:
+                        c3.success(log["状態"])
+                    else:
+                        c3.warning(log["状態"])
 
-                    # ダウンロード
-                    csv_buffer = io.StringIO()
-                    df_result.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
-                    st.download_button(
-                        label="📥 Googleカレンダー用CSVをダウンロード",
-                        data=csv_buffer.getvalue(),
-                        file_name=f"schedule_{target_staff}_{target_year}{target_month:02d}.csv",
-                        mime="text/csv"
-                    )
+                st.divider()
+
+                # 5. 各勤務地の時程表を表示
+                st.header("📅 時程表（詳細）")
+                if integrated_dic:
+                    for loc_key, data in integrated_dic.items():
+                        # data = [my_shift_df, other_shift_df, time_schedule_df]
+                        time_df = data[2]
+                        
+                        with st.expander(f"勤務地: {loc_key} の時程表を表示", expanded=True):
+                            st.write(f"PDF上の勤務地と紐付いた「{loc_key}」ブロックの時程表データです。")
+                            # 表を表示
+                            st.dataframe(time_df, use_container_width=True)
+                            
+                            st.info(f"このブロックには {len(time_df)} 行のシフトパターンが登録されています。")
                 else:
-                    st.warning("指定されたシフト記号に基づく時間データが見つかりませんでした。")
+                    st.warning("紐付けに成功した勤務地がないため、詳細データは表示できません。")
 
             except Exception as e:
-                st.error(f"システムエラーが発生しました: {e}")
-    
+                st.error(f"エラーが発生しました: {e}")
+                st.exception(e)
     else:
-        st.info("左側のサイドバーで設定を入力し、PDFファイルをアップロードしてください。")
+        st.info("サイドバーから スタッフ名、PDF、スプレッドシートID を設定してください。")
 
 if __name__ == "__main__":
     main()
