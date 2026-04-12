@@ -19,7 +19,7 @@ def get_gdrive_service(secrets):
 def time_schedule_from_drive(service, file_id):
     """
     Google Driveから時程表を読み込み、時刻軸のクレンジングと
-    データの有効範囲(col_limit)を自動判定する (考察2.pyのロジックを統合)
+    データの有効範囲(col_limit)を自動判定する
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -40,39 +40,33 @@ def time_schedule_from_drive(service, file_id):
             status, done = downloader.next_chunk()
         
         fh.seek(0)
-        # 考察2.pyに合わせて engine='openpyxl' を指定
         all_sheets_raw = pd.read_excel(fh, sheet_name=None, header=None, engine='openpyxl')
         
         processed_sheets = {}
 
         for sheet_name, full_df in all_sheets_raw.items():
-            # 1. 列の境界（文字列が現れる列）を自動判定
+            # 1. 列の境界（数値以外が現れる列）を自動判定
             col_limit = len(full_df.columns)
             for i in range(2, len(full_df.columns)):
                 val = full_df.iloc[0, i]
                 try:
-                    # 数値として解釈できるか試行
                     float(val)
                 except (ValueError, TypeError):
-                    # 数値に変換できない(例: 「出勤」) = 境界と判断
                     col_limit = i
                     break
             
-            # 2. 勤務地(ブロック)ごとの分割は、後のdata_integrationで行うため
-            # ここでは全体のクレンジングのみ実施
             df_cleaned = full_df.iloc[:, 0:col_limit].copy()
             
-            # 3. 時間表記の変換 (0.25 -> "06:00:00")
+            # 2. 時間表記の変換 (0.25 -> "06:00:00")
             for col in range(2, df_cleaned.shape[1]):
                 val = df_cleaned.iloc[0, col]
                 try:
                     num_val = float(val)
-                    if 0 < num_val < 1: # 1未満の数値は時刻シリアル値とみなす
+                    if 0 < num_val < 1: 
                         total_seconds = int(num_val * 24 * 3600)
                         hours = total_seconds // 3600
                         minutes = (total_seconds % 3600) // 60
-                        seconds = total_seconds % 60
-                        df_cleaned.iloc[0, col] = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                        df_cleaned.iloc[0, col] = f"{hours:02d}:{minutes:02d}"
                     else:
                         df_cleaned.iloc[0, col] = str(int(num_val)) if num_val.is_integer() else str(num_val)
                 except (ValueError, TypeError):
@@ -111,26 +105,34 @@ def pdf_reader(file_stream, target_staff):
     return pdf_data
 
 def data_integration(pdf_dic, time_dic):
-    """PDFの勤務地と時程表のシートを紐付け"""
+    """
+    修正版: app.pyの期待通り (integrated, logs) のタプルを返す
+    """
     integrated = {}
+    logs = []
+    
     for loc_key, pdf_df in pdf_dic.items():
         if "_target_row_idx" in loc_key: continue
+        
         matched_sheet = None
         for sheet_name in time_dic.keys():
             if normalize_for_match(sheet_name) in normalize_for_match(loc_key):
                 matched_sheet = sheet_name
                 break
+        
         if matched_sheet:
+            logs.append(f"✅ 勤務地マッチ: PDF[{loc_key}] -> シート[{matched_sheet}]")
             target_idx = pdf_dic[loc_key + "_target_row_idx"]
             my_shift = pdf_df.iloc[[target_idx], :]
             other_shift = pdf_df.drop(target_idx)
             integrated[matched_sheet] = [my_shift, other_shift, time_dic[matched_sheet]]
-    return integrated
+        else:
+            logs.append(f"⚠️ マッチ失敗: PDF[{loc_key}] に対応する時程表シートがありません")
+            
+    return integrated, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    修正版: 既にクレンジング済みのtime_scheduleを使用する前提
-    """
+    """シフトの詳細解析"""
     # 1. 終日予定
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
 
@@ -140,7 +142,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         return
 
     prev_val = ""
-    # クレンジング済みなので time_schedule.shape[1] まで回しても安全
     for t_col in range(2, time_schedule.shape[1]):
         current_val = str(my_time_shift.iloc[0, t_col]) if t_col < my_time_shift.shape[1] else ""
         if current_val.lower() == 'nan': current_val = ""
@@ -163,7 +164,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 taking_over = f"【{current_val}】from {names_from}" if names_from else f"【{current_val}】"
                 
                 subject = f"{handing_over} => {taking_over}".strip(" => ")
-                start_t = time_schedule.iloc[0, t_col] # すでに時刻形式に変換済み
+                start_t = time_schedule.iloc[0, t_col]
 
                 final_rows.append([subject, target_date, start_t, target_date, "", "False", "", key])
             else:
@@ -177,17 +178,26 @@ def process_full_month(integrated_dic, year, month):
     """月間全日程の処理"""
     all_final_rows = []
     num_days = calendar.monthrange(year, month)[1]
+    
     for day in range(1, num_days + 1):
         target_date_str = f"{year}-{month:02d}-{day:02d}"
-        current_col = day + 1 
+        
         for place_key, data_list in integrated_dic.items():
             my_shift, other_shift, time_sched = data_list
-            if current_col >= my_shift.shape[1]: continue
+            
+            # PDFの列構造に合わせた列インデックス判定。
+            # 1日がIndex 2にあると仮定（0:名前, 1:場所, 2:1日...）
+            current_col = day + 1 
+            
+            if current_col >= my_shift.shape[1]:
+                continue
             
             raw_val = str(my_shift.iloc[0, current_col])
-            if not raw_val or raw_val.lower() == 'nan' or raw_val.strip() == "": continue
+            if not raw_val or raw_val.lower() == 'nan' or raw_val.strip() == "":
+                continue
             
             items = [i.strip() for i in re.split(r'[,、\s\n]+', raw_val) if i.strip()]
             for item in items:
                 shift_cal(place_key, target_date_str, current_col, item, my_shift, other_shift, time_sched, all_final_rows)
+                
     return all_final_rows
