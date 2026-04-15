@@ -17,11 +17,30 @@ def get_gdrive_service(secrets):
     )
     return build('drive', 'v3', credentials=creds)
 
+def extract_year_month_from_pdf(pdf_stream):
+    """
+    PDFのテキストから「2024年4月」のような年月情報を抽出する。
+    """
+    try:
+        pdf_stream.seek(0)
+        with pdfplumber.open(pdf_stream) as pdf:
+            # 最初の1ページ目からテキストを抽出
+            first_page_text = pdf.pages[0].extract_text()
+            if not first_page_text:
+                return None, None
+            
+            # 正規表現で「2024年4月」や「2024/04」などのパターンを探す
+            match = re.search(r'(\d{4})\s*[年/]\s*(\d{1,2})\s*月?', first_page_text)
+            if match:
+                return int(match.group(1)), int(match.group(2))
+    except Exception:
+        pass
+    return None, None
+
 def time_schedule_from_drive(service, file_id):
     """
-    【改良版】時程表（Excel形式）からブロックを抽出。
-    勤務地ごとに「列の境界判定」と「時間表記の変換」を独立して行い、
-    各場所独自のスケジュール設定に対応する。
+    時程表（Excel形式）からブロックを抽出。
+    勤務地ごとに「列の境界判定」と「時間表記の変換」を独立して行う。
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -42,23 +61,18 @@ def time_schedule_from_drive(service, file_id):
             _, done = downloader.next_chunk()
         fh.seek(0)
         
-        # Excelとして読み込み
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0)
         
-        # 勤務地名の行（0列目が空でない行）を特定
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         location_data_dic = {}
         
         for i, start_row in enumerate(location_rows):
-            # 次の勤務地までの範囲を特定
             end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
             location_name = str(full_df.iloc[start_row, 0]).strip()
             
-            # この勤務地ブロックの全データを一旦取得
             temp_range = full_df.iloc[start_row:end_row, :].copy()
 
-            # --- 【改良ポイント1】この勤務地独自の列境界(col_limit)を判定 ---
-            # 0行目（時刻行）を見て、数値でなくなった時点でその場所の列終わりとする
+            # この勤務地独自の列境界(col_limit)を判定
             current_col_limit = len(temp_range.columns)
             for col_idx in range(2, len(temp_range.columns)):
                 val = temp_range.iloc[0, col_idx]
@@ -69,14 +83,10 @@ def time_schedule_from_drive(service, file_id):
                     current_col_limit = col_idx
                     break
             
-            # 判定された境界でデータを切り出し
             data_range = temp_range.iloc[:, 0:current_col_limit].copy().reset_index(drop=True)
-            
-            # 型エラー防止のため object に変換
             data_range = data_range.astype(object)
 
-            # --- 【改良ポイント2】この勤務地独自の時間表記変換 ---
-            # 1列目(インデックス1)から判定された境界までをループ
+            # この勤務地独自の時間表記変換
             for col in range(1, data_range.shape[1]):
                 time_val = data_range.iloc[0, col]
                 if pd.notna(time_val) and isinstance(time_val, (int, float)):
@@ -87,7 +97,6 @@ def time_schedule_from_drive(service, file_id):
                     except (ValueError, TypeError):
                         continue
             
-            # 欠損値を埋めて辞書に保存
             location_data_dic[location_name] = data_range.fillna('')
         
         return location_data_dic
@@ -103,6 +112,7 @@ def normalize_text(text):
 def pdf_reader(pdf_stream, target_staff):
     """PDFから指定スタッフの行とそれ以外のスタッフ行を抽出。"""
     clean_target = normalize_text(target_staff)
+    pdf_stream.seek(0)
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     
@@ -154,7 +164,7 @@ def data_integration(pdf_dic, time_schedule_dic):
     return integrated_dic, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """詳細スケジュールの算定"""
+    """詳細スケジュールの算定ロジック"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
@@ -186,7 +196,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
-    """1ヶ月分ループ"""
+    """1ヶ月分ループ実行"""
     all_final_rows = []
     num_days = calendar.monthrange(year, month)[1]
     for day in range(1, num_days + 1):
