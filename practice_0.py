@@ -19,8 +19,9 @@ def get_gdrive_service(secrets):
 
 def time_schedule_from_drive(service, file_id):
     """
-    【厳守】時程表（Excel形式）からブロックを抽出。
-    「考察1.py」のロジックに基づき、列の境界を自動判定し、型エラーを防止する。
+    【改良版】時程表（Excel形式）からブロックを抽出。
+    勤務地ごとに「列の境界判定」と「時間表記の変換」を独立して行い、
+    各場所独自のスケジュール設定に対応する。
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -44,42 +45,49 @@ def time_schedule_from_drive(service, file_id):
         # Excelとして読み込み
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0)
         
-        # --- 【考察1.py準拠】列の境界（数値以外の文字列が現れる列）を自動判定 ---
-        col_limit = len(full_df.columns)
-        for i in range(3, len(full_df.columns)):
-            val = full_df.iloc[0, i]
-            if pd.isna(val) or val == "": continue
-            try:
-                float(val)
-            except (ValueError, TypeError):
-                col_limit = i
-                break
-
         # 勤務地名の行（0列目が空でない行）を特定
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         location_data_dic = {}
         
         for i, start_row in enumerate(location_rows):
+            # 次の勤務地までの範囲を特定
             end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
             location_name = str(full_df.iloc[start_row, 0]).strip()
             
-            # 判定された col_limit を使用して範囲を抽出
-            data_range = full_df.iloc[start_row:end_row, 0:col_limit].copy().reset_index(drop=True)
+            # この勤務地ブロックの全データを一旦取得
+            temp_range = full_df.iloc[start_row:end_row, :].copy()
+
+            # --- 【改良ポイント1】この勤務地独自の列境界(col_limit)を判定 ---
+            # 0行目（時刻行）を見て、数値でなくなった時点でその場所の列終わりとする
+            current_col_limit = len(temp_range.columns)
+            for col_idx in range(2, len(temp_range.columns)):
+                val = temp_range.iloc[0, col_idx]
+                if pd.isna(val) or val == "": continue
+                try:
+                    float(val)
+                except (ValueError, TypeError):
+                    current_col_limit = col_idx
+                    break
             
-            # 【考察1.py重要ロジック】型エラー防止のため object に変換
+            # 判定された境界でデータを切り出し
+            data_range = temp_range.iloc[:, 0:current_col_limit].copy().reset_index(drop=True)
+            
+            # 型エラー防止のため object に変換
             data_range = data_range.astype(object)
 
-            # --- 時間表記の変換処理 (例: 6.25 -> 6:15) ---
+            # --- 【改良ポイント2】この勤務地独自の時間表記変換 ---
+            # 1列目(インデックス1)から判定された境界までをループ
             for col in range(1, data_range.shape[1]):
-                val = data_range.iloc[0, col]
-                if pd.notna(val) and isinstance(val, (int, float)):
+                time_val = data_range.iloc[0, col]
+                if pd.notna(time_val) and isinstance(time_val, (int, float)):
                     try:
-                        hours = int(val)
-                        minutes = int(round((val - hours) * 60))
+                        hours = int(time_val)
+                        minutes = int(round((time_val - hours) * 60))
                         data_range.iloc[0, col] = f"{hours}:{minutes:02d}"
                     except (ValueError, TypeError):
                         continue
-                
+            
+            # 欠損値を埋めて辞書に保存
             location_data_dic[location_name] = data_range.fillna('')
         
         return location_data_dic
@@ -93,9 +101,7 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', text).lower()
 
 def pdf_reader(pdf_stream, target_staff):
-    """
-    【厳守】PDFから指定スタッフの行とそれ以外のスタッフ行を抽出。
-    """
+    """PDFから指定スタッフの行とそれ以外のスタッフ行を抽出。"""
     clean_target = normalize_text(target_staff)
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
@@ -109,7 +115,6 @@ def pdf_reader(pdf_stream, target_staff):
     for table in tables:
         df = table.df
         if not df.empty:
-            # 場所名の推測（セル内改行の中央付近）
             text = str(df.iloc[0, 0])
             lines = text.splitlines()
             target_idx = text.count('\n') // 2
@@ -121,7 +126,6 @@ def pdf_reader(pdf_stream, target_staff):
             
             if matched_indices:
                 idx = matched_indices[0]
-                # 自分の2行と他人行に分離
                 my_daily_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 other_daily_shift = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
                 table_dictionary[work_place] = [my_daily_shift, other_daily_shift]
@@ -129,7 +133,7 @@ def pdf_reader(pdf_stream, target_staff):
     return table_dictionary
 
 def data_integration(pdf_dic, time_schedule_dic):
-    """勤務地名によるPDFと時程表の紐付け"""
+    """勤務地名による紐付け"""
     integrated_dic = {}
     logs = []
     
@@ -145,12 +149,12 @@ def data_integration(pdf_dic, time_schedule_dic):
             integrated_dic[matched_key] = pdf_vals + [time_schedule_dic[matched_key]]
             logs.append({"PDF勤務地": pdf_loc, "時程表側": matched_key, "状態": "OK"})
         else:
-            logs.append({"PDF勤務地": pdf_loc, "時程表側": "未検出", "状態": "NG"})
+            logs.append({"PDF勤務地": pdf_loc, "時程表側": "---", "状態": "未検出"})
             
     return integrated_dic, logs
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """詳細スケジュールの算定ロジック"""
+    """詳細スケジュールの算定"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
@@ -182,7 +186,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
-    """1ヶ月分ループ実行"""
+    """1ヶ月分ループ"""
     all_final_rows = []
     num_days = calendar.monthrange(year, month)[1]
     for day in range(1, num_days + 1):
