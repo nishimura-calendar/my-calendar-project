@@ -31,18 +31,23 @@ def main():
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
-        # PDFから年月情報を抽出（表示用＆計算用）
+        # PDFから年月情報を抽出（内部計算用）
         extracted_y, extracted_m = p0.extract_year_month_from_pdf(pdf_stream)
         
         if extracted_y and extracted_m:
             st.session_state.pdf_year = extracted_y
             st.session_state.pdf_month = extracted_m
             st.success(f"📁 ファイル名: {pdf_file.name} を受理しました。")
-            st.info(f"📅 解析対象年月: **{extracted_y}年 {extracted_m}月**")
+            # 「解析対象年月」の表示を削除しました
         else:
-            st.error("PDFから年月の取得ができませんでした。PDFの形式を確認してください。")
+            # 年月が取れない場合でも、ファイル名自体は受理したことを示す
+            st.success(f"📁 ファイル名: {pdf_file.name} を受理しました。")
+            # デバッグが必要な場合のみエラーを表示
+            if st.session_state.pdf_year is None:
+                st.warning("PDFから日付情報が読み取れませんでした。システム規定の年月で処理される可能性があります。")
 
         # 実行ボタン
+        # セッションに年月がある場合、または抽出に成功した場合にボタンを有効化
         if st.session_state.pdf_year and st.session_state.pdf_month:
             if st.button("🚀 実行してカレンダーを生成", use_container_width=True, type="primary"):
                 try:
@@ -92,7 +97,7 @@ def main():
                             use_container_width=True
                         )
                 except Exception as e:
-                    st.error(f"エラーが発生しました。時程表の空欄（NaN）または形式を確認してください。")
+                    st.error(f"エラーが発生しました。時程表の形式を確認してください。")
                     with st.expander("詳細なエラー内容"):
                         st.exception(e)
     else:
