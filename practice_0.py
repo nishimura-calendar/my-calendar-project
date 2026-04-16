@@ -17,22 +17,62 @@ def get_gdrive_service(secrets):
     )
     return build('drive', 'v3', credentials=creds)
 
+def normalize_text(text):
+    if not isinstance(text, str): return ""
+    return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
+
+def extract_year_month_from_text(text):
+    """テキスト（ファイル名など）から年月を抽出"""
+    if not text: return None, None
+    match = re.search(r'(\d{2,4})\s*[年/]\s*(\d{1,2})\s*月?', text)
+    if match:
+        y = int(match.group(1))
+        if y < 100: y += 2000 # 26 -> 2026
+        return y, int(match.group(2))
+    return None, None
+
 def extract_year_month_from_pdf(pdf_stream):
-    """PDFのテキストから年月情報を抽出"""
+    """PDFの第1ページテキストから年月を抽出"""
     try:
         pdf_stream.seek(0)
         with pdfplumber.open(pdf_stream) as pdf:
-            first_page_text = pdf.pages[0].extract_text()
-            if not first_page_text:
-                return None, None
-            
-            match = re.search(r'(\d{4})\s*[年/]\s*(\d{1,2})\s*月?', first_page_text)
-            if match:
-                return int(match.group(1)), int(match.group(2))
-    except Exception:
-        pass
-    return None, None
+            text = pdf.pages[0].extract_text()
+            return extract_year_month_from_text(text)
+    except: return None, None
 
+def extract_max_day_from_pdf(pdf_stream):
+    """PDFテーブルから最大の日付（月末日）を推測"""
+    try:
+        pdf_stream.seek(0)
+        with open("temp_days.pdf", "wb") as f:
+            f.write(pdf_stream.getbuffer())
+        tables = camelot.read_pdf("temp_days.pdf", pages='1', flavor='lattice')
+        if tables:
+            df = tables[0].df
+            all_text = " ".join(df.iloc[0:2, :].values.flatten().astype(str))
+            days = re.findall(r'\b(2[89]|3[01])\b', all_text)
+            if days:
+                return int(max(days))
+    except: pass
+    return None
+
+def extract_first_weekday_from_pdf(pdf_stream):
+    """PDFテーブルの1日の列から曜日を抽出"""
+    try:
+        pdf_stream.seek(0)
+        with open("temp_wd.pdf", "wb") as f:
+            f.write(pdf_stream.getbuffer())
+        tables = camelot.read_pdf("temp_wd.pdf", pages='1', flavor='lattice')
+        if tables:
+            df = tables[0].df
+            for col in range(1, min(6, df.shape[1])):
+                cell_text = "".join(df.iloc[0:3, col].astype(str))
+                match = re.search(r'[（\(]([月火水木金土日])[）\)]', cell_text)
+                if match: return match.group(1)
+    except: pass
+    return None
+
+# --- ① 指定された基幹関数 ---
 def time_schedule_from_drive(service, file_id):
     """勤務地ごとに列境界と時間を独立判定して抽出"""
     try:
@@ -85,12 +125,7 @@ def time_schedule_from_drive(service, file_id):
     except Exception as e:
         raise e
 
-def normalize_text(text):
-    """テキスト比較用の正規化"""
-    if not isinstance(text, str): return ""
-    text = unicodedata.normalize('NFKC', text)
-    return re.sub(r'[\s　]', '', text).lower()
-
+# --- ② 指定された基幹関数 ---
 def pdf_reader(pdf_stream, target_staff):
     """PDFからスタッフ行を抽出"""
     clean_target = normalize_text(target_staff)
@@ -121,25 +156,21 @@ def pdf_reader(pdf_stream, target_staff):
                 table_dictionary[work_place] = [my_daily, others]
     return table_dictionary
 
-def data_integration(pdf_dic, time_schedule_dic):
-    """勤務地紐付け"""
-    integrated_dic = {}
-    logs = []
-    for pdf_loc, pdf_vals in pdf_dic.items():
-        norm_pdf_loc = normalize_text(pdf_loc)
-        matched_key = next((k for k in time_schedule_dic.keys() if norm_pdf_loc in normalize_text(k)), None)
-        if matched_key:
-            integrated_dic[matched_key] = pdf_vals + [time_schedule_dic[matched_key]]
-            logs.append({"PDF勤務地": pdf_loc, "時程表側": matched_key, "状態": "OK"})
-        else:
-            logs.append({"PDF勤務地": pdf_loc, "時程表側": "---", "状態": "未検出"})
-    return integrated_dic, logs
+# --- ③ 指定された基幹関数 ---
+def data_integration(pdf_dic, time_dic):
+    """PDFと時程表の勤務地名を紐付ける。"""
+    integrated = {}
+    for pk, pv in pdf_dic.items():
+        match = next((k for k in time_dic.keys() if normalize_text(pk) in normalize_text(k)), None)
+        if match: integrated[match] = pv + [time_dic[match]]
+    return integrated, []
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """スケジュールの算定"""
+    """個別のシフト詳細計算"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
     if my_time_shift.empty: return
+    
     prev_val = ""
     for t_col in range(2, time_schedule.shape[1]):
         current_val = str(my_time_shift.iloc[0, t_col])
