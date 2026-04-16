@@ -9,6 +9,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
 def get_gdrive_service(secrets):
+    """Google Drive APIへのサービスオブジェクトを作成"""
     creds = service_account.Credentials.from_service_account_info(
         secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/drive.readonly"]
@@ -20,13 +21,15 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def extract_year_month_from_text(text):
-    """ファイル名から年月を抽出"""
+    """ファイル名から年月を抽出 (26 (1) 形式や 2026/1 形式に対応)"""
     if not text: return None, None
+    # 26 (1).pdf のような形式
     match1 = re.search(r'\b(\d{2,4})\b.*?\(\s*(\d{1,2})\s*\)', text)
     if match1:
         y, m = int(match1.group(1)), int(match1.group(2))
         if y < 100: y += 2000
         if 1 <= m <= 12: return y, m
+    # 2026/1 や 26/1 などの形式
     match2 = re.search(r'(\d{4}|\b\d{2})\s*[年/\s\-]\s*(\d{1,2})', text)
     if match2:
         y, m = int(match2.group(1)), int(match2.group(2))
@@ -35,14 +38,13 @@ def extract_year_month_from_text(text):
     return None, None
 
 def extract_max_day_from_pdf(pdf_stream):
-    """PDFの表から最大の日付（日数）を抽出"""
+    """PDFの表のヘッダーから最大の日付を抽出して日数を判定"""
     try:
         pdf_stream.seek(0)
         with open("temp_days.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
         tables = camelot.read_pdf("temp_days.pdf", pages='1', flavor='lattice')
         if tables:
             df = tables[0].df
-            # 上部1-2行目から日付らしい数字を探す
             header_text = " ".join(df.iloc[0:2, :].values.flatten().astype(str))
             days = re.findall(r'\b(2[89]|3[01])\b', header_text)
             if days: return int(max(days))
@@ -50,14 +52,13 @@ def extract_max_day_from_pdf(pdf_stream):
     return None
 
 def extract_first_weekday_from_pdf(pdf_stream):
-    """PDFの1日の列から曜日を抽出"""
+    """PDFの1日の列にある曜日 (月) 等を抽出"""
     try:
         pdf_stream.seek(0)
         with open("temp_wd.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
         tables = camelot.read_pdf("temp_wd.pdf", pages='1', flavor='lattice')
         if tables:
             df = tables[0].df
-            # 1日がありそうな列（2-5列目付近）をスキャン
             for col in range(1, min(7, df.shape[1])):
                 cell_text = "".join(df.iloc[0:3, col].astype(str))
                 match = re.search(r'[（\(]([月火水木金土日])[）\)]', cell_text)
@@ -66,7 +67,7 @@ def extract_first_weekday_from_pdf(pdf_stream):
     return None
 
 def time_schedule_from_drive(service, file_id):
-    """Google Driveから時程表を取得"""
+    """Google Driveから時程表を取得し整形"""
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         request = service.files().get_media(fileId=file_id)
@@ -101,7 +102,7 @@ def time_schedule_from_drive(service, file_id):
     except Exception as e: raise e
 
 def pdf_reader(pdf_stream, target_staff):
-    """PDFからターゲットのシフト行を抽出"""
+    """PDFをテーブルとして読み込み、ターゲットの行を抽出"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
@@ -131,6 +132,7 @@ def data_integration(pdf_dic, time_dic):
     return integrated, []
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    """各日のシフトを詳細な時間帯に分解して登録"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
     if my_time_shift.empty: return
@@ -155,6 +157,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
+    """指定された年月の全日を処理"""
     all_final_rows = []
     num_days = calendar.monthrange(year, month)[1]
     for day in range(1, num_days + 1):
