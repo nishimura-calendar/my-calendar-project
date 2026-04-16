@@ -20,16 +20,55 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def extract_year_month_from_text(text):
-    """ファイル名から年月を抽出。26 (3) 等の形式に対応"""
+    """
+    ファイル名から年月を抽出。
+    ご提案のアルゴリズム：空白を除去し、数字の桁数で西暦/和暦を判定。
+    """
     if not text: return None, None
+    
+    # 1. 全角を半角に変換し、すべての空白（全角・半角）を除去
     text = unicodedata.normalize('NFKC', text)
-    match = re.search(r'(\d{2,4})\s*[\(\（]\s*(\d{1,2})\s*[\)\）]', text)
-    if not match:
-        match = re.search(r'(\d{4}|\b\d{2})\s*[年/\-\.]\s*(\d{1,2})', text)
-    if match:
-        y, m = int(match.group(1)), int(match.group(2))
+    clean_text = re.sub(r'\s+', '', text)
+    
+    # 2. 月を特定 (「数字+月」または「(数字)」または「.数字」など)
+    # まず「〇月」という表現を探す
+    month_match = re.search(r'(\d{1,2})月', clean_text)
+    if not month_match:
+        # 「〇月」がない場合、括弧内の数字や区切り記号の後の数字を探す
+        month_match = re.search(r'[\(\（\.\-/](\d{1,2})[\)\）\.\-/]?\.pdf', clean_text, re.IGNORECASE)
+    
+    # 3. 年を特定
+    # 数字の塊をすべて抽出
+    nums = re.findall(r'\d+', clean_text)
+    
+    y_val, m_val = None, None
+    
+    # 月の値を確定
+    if month_match:
+        m_val = int(month_match.group(1))
+    
+    # 年の値を確定
+    for n in nums:
+        val = int(n)
+        # 4桁なら西暦
+        if len(n) == 4:
+            y_val = val
+        # 2桁で、かつ月として既に使われていない、あるいは13以上なら年(26年など)とみなす
+        elif len(n) == 2 and y_val is None:
+            if m_val is None or val != m_val or clean_text.find(n) < clean_text.find(str(m_val) + '月'):
+                y_val = 2000 + val
+                
+    # バリデーション
+    if y_val and m_val and 1 <= m_val <= 12:
+        return y_val, m_val
+        
+    # フォールバック: 従来の正規表現も併用
+    match_fallback = re.search(r'(\d{2,4}).*?(\d{1,2})', clean_text)
+    if match_fallback:
+        y, m = int(match_fallback.group(1)), int(match_fallback.group(2))
         if y < 100: y += 2000
         if 1 <= m <= 12: return y, m
+            
     return None, None
 
 def extract_max_day_from_pdf(pdf_stream):
@@ -37,13 +76,10 @@ def extract_max_day_from_pdf(pdf_stream):
     try:
         pdf_stream.seek(0)
         with open("temp_days.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
-        # latticeモードで表を読み込み
         tables = camelot.read_pdf("temp_days.pdf", pages='1', flavor='lattice')
         if tables:
             df = tables[0].df
-            # 表の上部数行を文字列化
             header_text = " ".join(df.iloc[0:4, :].values.flatten().astype(str))
-            # 28, 29, 30, 31という独立した数字を探す
             days = re.findall(r'\b(2[89]|3[01])\b', header_text)
             if days: 
                 return int(max(map(int, days)))
@@ -58,7 +94,6 @@ def extract_first_weekday_from_pdf(pdf_stream):
         tables = camelot.read_pdf("temp_wd.pdf", pages='1', flavor='lattice')
         if tables:
             df = tables[0].df
-            # 1日が配置される可能性がある列を走査
             for col in range(1, min(12, df.shape[1])):
                 cell_text = "".join(df.iloc[0:5, col].astype(str))
                 match = re.search(r'[（\(]([月火水木金土日])[）\)]', cell_text)
