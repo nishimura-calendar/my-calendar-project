@@ -37,19 +37,20 @@ def main():
             # 2. 整合性チェック
             mismatch_reasons = []
             
-            # (A) 月末日のチェック
-            expected_days = calendar.monthrange(apply_y, apply_m)[1]
-            actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
-            if actual_max_day and actual_max_day != expected_days:
-                mismatch_reasons.append(f"日数の不一致: {apply_m}月は{expected_days}日までですが、PDFは{actual_max_day}日まであります。")
-            
-            # (B) 1日の曜日のチェック
-            first_day_date = datetime.date(apply_y, apply_m, 1)
-            wd_list = ["月", "火", "水", "木", "金", "土", "日"]
-            expected_wd = wd_list[first_day_date.weekday()]
-            actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
-            if actual_wd and actual_wd != expected_wd:
-                mismatch_reasons.append(f"曜日の不一致: {apply_y}年{apply_m}月1日は({expected_wd})曜日ですが、PDFは({actual_wd})曜日となっています。")
+            with st.spinner("PDFの内容を検証中..."):
+                # (A) 月末日のチェック
+                expected_days = calendar.monthrange(apply_y, apply_m)[1]
+                actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
+                if actual_max_day and actual_max_day != expected_days:
+                    mismatch_reasons.append(f"日数の不一致: {apply_m}月は{expected_days}日までですが、PDFは{actual_max_day}日まであります。")
+                
+                # (B) 1日の曜日のチェック
+                first_day_date = datetime.date(apply_y, apply_m, 1)
+                wd_list = ["月", "火", "水", "木", "金", "土", "日"]
+                expected_wd = wd_list[first_day_date.weekday()]
+                actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
+                if actual_wd and actual_wd != expected_wd:
+                    mismatch_reasons.append(f"曜日の不一致: {apply_y}年{apply_m}月1日は({expected_wd})曜日ですが、PDFは({actual_wd})曜日となっています。")
 
             # --- 判定と表示 ---
             if mismatch_reasons:
@@ -103,7 +104,7 @@ def main():
                 except Exception as e:
                     st.error(f"エラーが発生しました: {e}")
         else:
-            st.error("ファイル名から年月（例: 26(1)）を特定できませんでした。")
+            st.error(f"ファイル名『{pdf_file.name}』から年月を特定できませんでした。半角数字で '26 (1)' のような形式にしてください。")
 
 if __name__ == "__main__":
     main()
