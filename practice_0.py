@@ -22,57 +22,52 @@ def normalize_text(text):
 def extract_year_month_from_text(text):
     """
     ファイル名から年月を抽出。
-    ご提案のアルゴリズム：空白を除去し、数字の桁数で西暦/和暦を判定。
+    ロジック：空白を除去し、数字の桁数で西暦/和暦を判定し、「月」を探す。
     """
     if not text: return None, None
     
-    # 1. 全角を半角に変換し、すべての空白（全角・半角）を除去
+    # 1. 全角を半角に変換し、すべての空白を除去
     text = unicodedata.normalize('NFKC', text)
     clean_text = re.sub(r'\s+', '', text)
     
-    # 2. 月を特定 (「数字+月」または「(数字)」または「.数字」など)
-    # まず「〇月」という表現を探す
-    month_match = re.search(r'(\d{1,2})月', clean_text)
-    if not month_match:
-        # 「〇月」がない場合、括弧内の数字や区切り記号の後の数字を探す
-        month_match = re.search(r'[\(\（\.\-/](\d{1,2})[\)\）\.\-/]?\.pdf', clean_text, re.IGNORECASE)
-    
-    # 3. 年を特定
-    # 数字の塊をすべて抽出
-    nums = re.findall(r'\d+', clean_text)
-    
     y_val, m_val = None, None
-    
-    # 月の値を確定
+
+    # 2. 月の特定: 「数字+月」を最優先
+    month_match = re.search(r'(\d{1,2})月', clean_text)
     if month_match:
         m_val = int(month_match.group(1))
     
-    # 年の値を確定
+    # 3. 年の特定: 数字の塊を抽出して桁数チェック
+    nums = re.findall(r'\d+', clean_text)
     for n in nums:
         val = int(n)
-        # 4桁なら西暦
+        # 4桁なら西暦確定
         if len(n) == 4:
             y_val = val
-        # 2桁で、かつ月として既に使われていない、あるいは13以上なら年(26年など)とみなす
-        elif len(n) == 2 and y_val is None:
-            if m_val is None or val != m_val or clean_text.find(n) < clean_text.find(str(m_val) + '月'):
-                y_val = 2000 + val
-                
-    # バリデーション
+        # 2桁の場合
+        elif len(n) == 2:
+            # 月として確定していない、もしくは13以上なら「年」の可能性大
+            if m_val is None or (val != m_val):
+                # 令和や西暦下2桁を想定（2000年代固定）
+                if y_val is None:
+                    y_val = 2000 + val
+
+    # 月がまだ見つかっていない場合、残りの数字から探す
+    if m_val is None:
+        for n in nums:
+            val = int(n)
+            if 1 <= val <= 12 and (y_val is None or val != (y_val % 100)):
+                m_val = val
+                break
+
+    # 結果のバリデーション
     if y_val and m_val and 1 <= m_val <= 12:
         return y_val, m_val
-        
-    # フォールバック: 従来の正規表現も併用
-    match_fallback = re.search(r'(\d{2,4}).*?(\d{1,2})', clean_text)
-    if match_fallback:
-        y, m = int(match_fallback.group(1)), int(match_fallback.group(2))
-        if y < 100: y += 2000
-        if 1 <= m <= 12: return y, m
             
     return None, None
 
 def extract_max_day_from_pdf(pdf_stream):
-    """PDF内の日付ヘッダーから最大日（28-31）を特定"""
+    """PDF内の日付ヘッダーから最大日を特定"""
     try:
         pdf_stream.seek(0)
         with open("temp_days.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
@@ -166,12 +161,13 @@ def data_integration(pdf_dic, time_dic):
     return integrated, []
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    """IndexErrorを考慮した修正版ロジック"""
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
     if my_time_shift.empty: return
     prev_val = ""
     for t_col in range(2, time_schedule.shape[1]):
-        current_val = str(my_time_shift.iloc[0, t_col])
+        current_val = str(my_time_shift.iloc[0, t_col]) if t_col < my_time_shift.shape[1] else ""
         if current_val.lower() == 'nan': current_val = ""
         if current_val != prev_val:
             if current_val != "":
