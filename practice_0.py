@@ -61,7 +61,7 @@ def time_schedule_from_drive(service, file_id):
             
             temp_range = full_df.iloc[start_row:end_row, :].copy()
             current_col_limit = len(temp_range.columns)
-            for col_idx in range(2, len(temp_range.columns)):
+            for col_idx in range(3, len(temp_range.columns)):
                 val = temp_range.iloc[0, col_idx]
                 if pd.isna(val) or val == "": continue
                 try:
