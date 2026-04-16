@@ -22,13 +22,28 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def extract_year_month_from_text(text):
-    """テキスト（ファイル名など）から年月を抽出"""
+    """
+    テキスト（ファイル名など）から年月を抽出。
+    '26' のような2桁の数字を 2026年として扱うロジックを強化。
+    """
     if not text: return None, None
-    match = re.search(r'(\d{2,4})\s*[年/]\s*(\d{1,2})\s*月?', text)
+    # 「26 (1).pdf」や「2026年1月」に対応
+    # 数字(2桁or4桁) + 区切り(年,/,空白) + 数字(1-2桁)
+    match = re.search(r'(\d{2,4})[年/\s\-]?\s*(\d{1,2})\s*月?', text)
     if match:
-        y = int(match.group(1))
-        if y < 100: y += 2000 # 26 -> 2026
-        return y, int(match.group(2))
+        y_str = match.group(1)
+        m_str = match.group(2)
+        y = int(y_str)
+        m = int(m_str)
+        
+        # 2桁の場合は2000年代とみなす
+        if len(y_str) == 2:
+            y += 2000
+        elif y < 100:
+            y += 2000
+            
+        if 1 <= m <= 12:
+            return y, m
     return None, None
 
 def extract_year_month_from_pdf(pdf_stream):
