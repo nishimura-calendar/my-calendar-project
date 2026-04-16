@@ -4,103 +4,88 @@ import io
 import practice_0 as p0
 
 def main():
-    st.set_page_config(page_title="カレンダー作成ツール", layout="centered")
+    st.set_page_config(page_title="シフト抽出ツール", layout="wide")
     
-    # セッション状態で年月と名前を保持
     if 'pdf_year' not in st.session_state: st.session_state.pdf_year = None
     if 'pdf_month' not in st.session_state: st.session_state.pdf_month = None
-    if 'staff_name' not in st.session_state: st.session_state.staff_name = "西村 文宏"
+    if 'staff_name' not in st.session_state: st.session_state.staff_name = "田坂 友愛"
 
-    st.title("📅 勤務スケジュール抽出システム")
-    st.markdown("PDFのシフト表からGoogleカレンダー用CSVを生成します。")
-
-    # --- メインエリアでの設定入力 ---
-    st.subheader("1. 基本設定")
-    col_name, col_sheet = st.columns([1, 1])
-    with col_name:
-        target_staff = st.text_input("あなたの名前", value=st.session_state.staff_name)
+    st.title("🛡️ 関空免税店シフト抽出システム")
+    
+    with st.sidebar:
+        st.header("設定")
+        target_staff = st.text_input("抽出する名前", value=st.session_state.staff_name)
         st.session_state.staff_name = target_staff
-    with col_sheet:
-        sheet_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+        sheet_id = st.text_input("時程表シートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+        
+        st.divider()
+        st.info("PDFをアップロードすると、年月が自動解析されます。")
 
-    # --- PDFアップロード ---
-    st.subheader("2. ファイルのアップロード")
-    pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
+    pdf_file = st.file_uploader("シフト表PDFをアップロード", type="pdf")
 
     if pdf_file:
-        # PDFを読み込み年月抽出を試みる
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
-        extracted_y, extracted_m = p0.extract_year_month_from_pdf(pdf_stream)
-        
-        # 年月が抽出された場合の処理
-        if extracted_y and extracted_m:
-            if extracted_y != st.session_state.pdf_year or extracted_m != st.session_state.pdf_month:
-                st.session_state.pdf_year = extracted_y
-                st.session_state.pdf_month = extracted_m
-                st.success(f"PDFから対象年月を自動判定しました: **{extracted_y}年{extracted_m}月**")
-                st.rerun()
-            else:
-                st.info(f"対象設定: **{st.session_state.pdf_year}年 {st.session_state.pdf_month}月**")
-        else:
-            # 抽出できなかった場合のみ警告を表示
-            st.error("PDFから年月の取得ができませんでした。PDFの形式を確認してください。")
 
-        # 実行ボタン（年月が取得できている場合のみ有効化）
-        if st.session_state.pdf_year and st.session_state.pdf_month:
-            if st.button("🚀 実行してカレンダーを生成", use_container_width=True, type="primary"):
-                try:
+        # 1. 年月解析
+        year, month = p0.extract_year_month_from_pdf(pdf_stream)
+        if year and month:
+            st.session_state.pdf_year = year
+            st.session_state.pdf_month = month
+            st.success(f"📅 解析対象: {year}年 {month}月")
+        else:
+            st.error("年月が判定できません。手動で設定するか、ファイルを確認してください。")
+            col1, col2 = st.columns(2)
+            st.session_state.pdf_year = col1.number_input("年", value=2026)
+            st.session_state.pdf_month = col2.number_input("月", value=1, min_value=1, max_value=12)
+
+        if st.button("CSVを作成する", type="primary", use_container_width=True):
+            try:
+                with st.spinner("PDFを解析中..."):
                     service = p0.get_gdrive_service(st.secrets)
                     
-                    # 1. 時程表の取得
-                    with st.spinner("Google Driveから時程表を読み込んでいます..."):
-                        time_dic = p0.time_schedule_from_drive(service, sheet_id)
-                    
-                    # 2. PDF解析
-                    with st.spinner(f"PDFから {target_staff} さんの勤務を解析中..."):
-                        pdf_stream.seek(0)
-                        pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-                    
+                    # 必須関数 ② PDF読み込み
+                    pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
                     if not pdf_dic:
-                        st.error(f"PDF内に『{target_staff}』が見つかりませんでした。")
+                        st.error(f"「{target_staff}」さんが見つかりませんでした。名前の表記（スペースの有無など）を確認してください。")
                         return
-
-                    # 3. データの紐付け
-                    integrated_dic, _ = p0.data_integration(pdf_dic, time_dic)
-
-                    # 4. カレンダー行の生成
-                    with st.spinner("スケジュールを計算中..."):
-                        final_rows = p0.process_full_month(
-                            integrated_dic, 
-                            int(st.session_state.pdf_year), 
-                            int(st.session_state.pdf_month)
-                        )
+                    
+                    # 必須関数 ① 時程表取得
+                    time_schedule_dic = p0.time_schedule_from_drive(service, sheet_id)
+                    
+                    # 必須関数 ③ データ統合
+                    integrated_dic = p0.data_integration(pdf_dic, time_schedule_dic)
+                    
+                    # 4. 月間処理
+                    final_rows = p0.process_full_month(
+                        integrated_dic, 
+                        st.session_state.pdf_year, 
+                        st.session_state.pdf_month
+                    )
 
                     if final_rows:
-                        st.subheader("3. 生成結果の確認")
                         df_res = pd.DataFrame(final_rows, columns=[
                             "Subject", "Start Date", "Start Time", "End Date", "End Time", 
                             "All Day Event", "Description", "Location"
                         ])
                         
+                        st.subheader("抽出結果プレビュー")
                         st.dataframe(df_res, use_container_width=True)
 
                         csv_buffer = io.StringIO()
                         df_res.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
                         
                         st.download_button(
-                            label="📥 Googleカレンダー用CSVをダウンロード",
+                            label="📥 Googleカレンダー用CSVを保存",
                             data=csv_buffer.getvalue(),
-                            file_name=f"schedule_{st.session_state.pdf_year}{st.session_state.pdf_month:02d}_{target_staff}.csv",
+                            file_name=f"shift_{st.session_state.pdf_year}_{st.session_state.pdf_month}_{target_staff}.csv",
                             mime="text/csv",
                             use_container_width=True
                         )
-                except Exception as e:
-                    st.error(f"エラーが発生しました: {e}")
-    else:
-        # ファイル未選択時の初期化
-        st.session_state.pdf_year = None
-        st.session_state.pdf_month = None
+                    else:
+                        st.warning("該当するシフトデータが見つかりませんでした。")
+            except Exception as e:
+                st.error(f"実行エラー: {e}")
 
 if __name__ == "__main__":
     main()
