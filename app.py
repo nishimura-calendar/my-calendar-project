@@ -31,28 +31,27 @@ def main():
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
-        # 1. ファイル名から年月を抽出 (最優先の「正」とする)
+        # ファイル名・PDF内部から年月を抽出
         fname_y, fname_m = p0.extract_year_month_from_text(pdf_file.name)
-        # 2. PDF内部テキストから年月を抽出
         pdf_y, pdf_m = p0.extract_year_month_from_pdf(pdf_stream)
         
-        # ファイル名からの情報を正としてセット
+        # ファイル名由来を最優先の「正」とする
         st.session_state.pdf_year = fname_y if fname_y else pdf_y
         st.session_state.pdf_month = fname_m if fname_m else pdf_m
         
         mismatch_reason = []
         if st.session_state.pdf_year and st.session_state.pdf_month:
-            # (a) 年月の相違
+            # 年月の相違チェック
             if fname_y and pdf_y and (fname_y != pdf_y or fname_m != pdf_m):
                 mismatch_reason.append(f"ファイル名({fname_y}/{fname_m})と内部テキスト({pdf_y}/{pdf_m})が一致しません。")
 
-            # (b) 月末日数の相違
+            # 月末日数の相違チェック
             expected_days = calendar.monthrange(st.session_state.pdf_year, st.session_state.pdf_month)[1]
             actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
             if actual_max_day and actual_max_day != expected_days:
                 mismatch_reason.append(f"ファイル名由来の日数({expected_days}日)とPDF内の末尾({actual_max_day}日)が一致しません。")
 
-            # (c) 曜日の相違
+            # 1日の曜日相違チェック
             first_day = datetime.date(st.session_state.pdf_year, st.session_state.pdf_month, 1)
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             expected_wd = weekdays[first_day.weekday()]
@@ -76,11 +75,10 @@ def main():
             except Exception as e:
                 st.error(f"プレビュー表示エラー: {e}")
         else:
-            # 不備がない場合はメッセージのみ
             st.success(f"📁 {pdf_file.name} を正常に受理しました。")
             st.info(f"設定年月: {st.session_state.pdf_year}年{st.session_state.pdf_month}月")
 
-        # 実行ボタン（年月が特定できている場合）
+        # 実行ボタン
         if st.session_state.pdf_year and st.session_state.pdf_month:
             if st.button("🚀 実行してカレンダーを生成", use_container_width=True, type="primary"):
                 try:
