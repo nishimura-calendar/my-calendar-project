@@ -32,7 +32,7 @@ def main():
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
-        # 1. ファイル名から年月を抽出
+        # 1. ファイル名から年月を抽出（改善版ロジック）
         apply_y, apply_m = p0.extract_year_month_from_text(pdf_file.name)
         
         if apply_y and apply_m:
@@ -78,7 +78,6 @@ def main():
                 # 【相違がない場合】 自動的にカレンダー生成へ進む
                 st.success(f"✅ 整合性確認OK: {apply_y}年{apply_m}月の解析を自動開始します。")
                 
-                # ここで「ボタン」を介さず直接メイン処理を実行
                 try:
                     service = p0.get_gdrive_service(st.secrets)
                     with st.spinner(f"{apply_y}年{apply_m}月のシフトを解析中..."):
@@ -95,11 +94,8 @@ def main():
                             if final_rows:
                                 st.subheader("3. 生成結果（CSV）")
                                 df_res = pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
-                                
-                                # 結果のプレビュー
                                 st.dataframe(df_res, use_container_width=True)
                                 
-                                # ダウンロードボタン
                                 csv_buffer = io.StringIO()
                                 df_res.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
                                 st.download_button(
@@ -111,7 +107,7 @@ def main():
                                     type="primary"
                                 )
                             else:
-                                st.warning("該当する勤務データが生成されませんでした。時程表の設定を確認してください。")
+                                st.warning("該当する勤務データが生成されませんでした。")
                 except Exception as e:
                     st.error(f"解析中にエラーが発生しました: {e}")
         else:
