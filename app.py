@@ -4,6 +4,7 @@ import io
 import practice_0 as p0
 import pdfplumber
 import datetime
+import calendar
 
 def main():
     st.set_page_config(page_title="カレンダー作成ツール", layout="centered")
@@ -38,25 +39,31 @@ def main():
         # 2. PDF内部テキストから年月を抽出
         pdf_y, pdf_m = p0.extract_year_month_from_pdf(pdf_stream)
         
-        # ファイル名の情報をセッションにセット
+        # ファイル名の情報をセッションにセット（これが「正」）
         st.session_state.pdf_year = fname_y if fname_y else pdf_y
         st.session_state.pdf_month = fname_m if fname_m else pdf_m
         
-        # --- 相違チェック ---
+        # --- 相違チェック用リスト ---
         mismatch_reason = []
         
         # (a) 年月の相違チェック
         if fname_y and pdf_y and (fname_y != pdf_y or fname_m != pdf_m):
             mismatch_reason.append(f"ファイル名({fname_y}/{fname_m})と内部テキスト({pdf_y}/{pdf_m})が一致しません。")
 
-        # (b) 曜日の相違チェック
-        # ファイル名由来の年月の1日の曜日を取得
+        # (b) 月の日数の相違チェック
         if st.session_state.pdf_year and st.session_state.pdf_month:
+            # カレンダー上の日数
+            expected_days = calendar.monthrange(st.session_state.pdf_year, st.session_state.pdf_month)[1]
+            # PDF上の最大日数を取得
+            actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
+            
+            if actual_max_day and actual_max_day != expected_days:
+                mismatch_reason.append(f"ファイル名由来の日数({expected_days}日)とPDF内の末尾({actual_max_day}日)が一致しません。")
+
+            # (c) 曜日の相違チェック
             first_day = datetime.date(st.session_state.pdf_year, st.session_state.pdf_month, 1)
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             expected_wd = weekdays[first_day.weekday()]
-            
-            # PDFから1日の曜日を読み取る (practice_0内で解析)
             actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
             
             if actual_wd and actual_wd != expected_wd:
@@ -69,7 +76,7 @@ def main():
                 st.write(f"- {reason}")
             
             # 不一致時は自動でPDFを表示
-            st.info("PDFの内容を確認してください:")
+            st.info("PDFの内容を確認してください（計算にはファイル名の年月を使用します）:")
             try:
                 pdf_stream.seek(0)
                 with pdfplumber.open(pdf_stream) as pdf:
@@ -120,12 +127,12 @@ def main():
                         st.download_button(
                             label="📥 CSVをダウンロード",
                             data=csv_buffer.getvalue(),
-                            file_name=f"schedule_{st.session_state.pdf_year}{st.session_state.pdf_month:02d}.csv",
+                            file_name=f"schedule_{st.session_state.pdf_year}{st.session_state.pdf_month:02d}_{target_staff}.csv",
                             mime="text/csv",
                             use_container_width=True
                         )
                 except Exception as e:
-                    st.error(f"エラー: {e}")
+                    st.error(f"解析エラー: {e}")
     else:
         st.session_state.pdf_year = None
         st.session_state.pdf_month = None
