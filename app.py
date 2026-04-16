@@ -31,42 +31,46 @@ def main():
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
-        # ファイル名・PDF内部から年月を抽出
+        # ファイル名からの抽出を「絶対的な正」とする
         fname_y, fname_m = p0.extract_year_month_from_text(pdf_file.name)
+        # PDF内部テキストからの抽出
         pdf_y, pdf_m = p0.extract_year_month_from_pdf(pdf_stream)
         
-        # ファイル名由来を最優先の「正」とする
-        st.session_state.pdf_year = fname_y if fname_y else pdf_y
-        st.session_state.pdf_month = fname_m if fname_m else pdf_m
+        # 最終的な適用年月を決定（ファイル名優先）
+        apply_y = fname_y if fname_y else pdf_y
+        apply_m = fname_m if fname_m else pdf_m
+        
+        st.session_state.pdf_year = apply_y
+        st.session_state.pdf_month = apply_m
         
         mismatch_reason = []
-        if st.session_state.pdf_year and st.session_state.pdf_month:
-            # 1. 年月の相違チェック (内部テキストとファイル名の不一致)
+        if apply_y and apply_m:
+            # 不一致のチェック（警告用）
+            # 1. ファイル名とPDF内部の矛盾
             if fname_y and pdf_y and (fname_y != pdf_y or fname_m != pdf_m):
-                mismatch_reason.append(f"ファイル名({fname_y}/{fname_m})と内部テキスト({pdf_y}/{pdf_m})が一致しません。")
+                mismatch_reason.append(f"ファイル名({fname_y}/{fname_m})とPDF内部({pdf_y}/{pdf_m})が異なります。ファイル名を優先します。")
 
-            # 2. 月末日数の相違チェック
-            expected_days = calendar.monthrange(st.session_state.pdf_year, st.session_state.pdf_month)[1]
+            # 2. 月末日数のチェック
+            expected_days = calendar.monthrange(apply_y, apply_m)[1]
             actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
             if actual_max_day and actual_max_day != expected_days:
-                mismatch_reason.append(f"設定月の日数({expected_days}日)とPDF内の最終日({actual_max_day}日)が一致しません。")
+                mismatch_reason.append(f"指定月の日数({expected_days}日)とPDF内の最終日({actual_max_day}日)が一致しません。")
 
-            # 3. 1日の曜日相違チェック
-            first_day = datetime.date(st.session_state.pdf_year, st.session_state.pdf_month, 1)
+            # 3. 曜日のチェック
+            first_day = datetime.date(apply_y, apply_m, 1)
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             expected_wd = weekdays[first_day.weekday()]
             actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
             if actual_wd and actual_wd != expected_wd:
-                mismatch_reason.append(f"カレンダー上の1日({expected_wd}曜)とPDF記載の曜日({actual_wd}曜)が一致しません。")
+                mismatch_reason.append(f"カレンダーの1日({expected_wd}曜)とPDF記載の曜日({actual_wd}曜)が異なります。")
 
         # --- 表示制御 ---
         if mismatch_reason:
-            st.warning("⚠️ 検索名とファイルの内容に違いが認められる。")
+            st.warning("⚠️ 整合性チェックにより以下の懸念が見つかりました：")
             for reason in mismatch_reason:
                 st.write(f"- {reason}")
             
-            # 不一致がある場合のみ設定年月を表示して注意を促す
-            st.info(f"現在の解析設定: {st.session_state.pdf_year}年{st.session_state.pdf_month}月")
+            st.info(f"適用される解析設定: {apply_y}年{apply_m}月")
             st.info("PDFの内容を確認してください:")
             try:
                 pdf_stream.seek(0)
@@ -81,7 +85,7 @@ def main():
             st.success(f"📁 {pdf_file.name} を正常に受理しました。")
 
         # 実行ボタン
-        if st.session_state.pdf_year and st.session_state.pdf_month:
+        if apply_y and apply_m:
             if st.button("🚀 実行してカレンダーを生成", use_container_width=True, type="primary"):
                 try:
                     service = p0.get_gdrive_service(st.secrets)
@@ -97,8 +101,8 @@ def main():
                         integrated_dic, _ = p0.data_integration(pdf_dic, time_dic)
                         final_rows = p0.process_full_month(
                             integrated_dic, 
-                            int(st.session_state.pdf_year), 
-                            int(st.session_state.pdf_month)
+                            int(apply_y), 
+                            int(apply_m)
                         )
 
                     if final_rows:
@@ -110,14 +114,14 @@ def main():
                         st.download_button(
                             label="📥 CSVをダウンロード",
                             data=csv_buffer.getvalue(),
-                            file_name=f"schedule_{st.session_state.pdf_year}{st.session_state.pdf_month:02d}_{target_staff}.csv",
+                            file_name=f"schedule_{apply_y}{apply_m:02d}_{target_staff}.csv",
                             mime="text/csv",
                             use_container_width=True
                         )
                 except Exception as e:
                     st.error(f"解析中にエラーが発生しました: {e}")
         else:
-            st.error("ファイル名から年月を特定できません。ファイル名に「2026年1月」などの年月を含めてください。")
+            st.error("ファイル名から年月を特定できません。")
     else:
         st.session_state.pdf_year = None
         st.session_state.pdf_month = None
