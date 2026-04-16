@@ -27,6 +27,8 @@ def main():
     pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
 
     if pdf_file:
+        # ファイルポインタを先頭に戻す
+        pdf_file.seek(0)
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
@@ -54,25 +56,33 @@ def main():
 
             # --- 判定と条件分岐 ---
             if mismatch_reasons:
-                # 相違がある場合はエラーを表示し、ここで止める
+                # 相違がある場合はエラーを表示
                 st.error("⚠️ ファイル名とPDFの内容に相違が見つかりました")
                 for reason in mismatch_reasons:
                     st.write(f"- {reason}")
                 
-                st.info("以下のプレビューを確認し、正しいファイル（またはファイル名）か確認してください。")
-                with st.container():
-                    try:
-                        pdf_stream.seek(0)
-                        with pdfplumber.open(pdf_stream) as pdf:
-                            # 最初の1ページ目だけ表示して確認を促す
-                            page = pdf.pages[0]
-                            img = page.to_image(resolution=100)
-                            st.image(img.original, use_container_width=True, caption="アップロードされたPDFのプレビュー")
-                    except Exception as e:
-                        st.error(f"プレビュー表示エラー: {e}")
+                # PDFを表示するための専用セクション
+                st.markdown("---")
+                st.subheader("📝 アップロードされたPDFの確認")
+                st.info("内容を確認し、正しいファイルか、またはファイル名が正しいかを確認してください。")
                 
-                # 実行ボタンは出さない
-                st.warning("内容に相違があるため、処理を中断しました。")
+                try:
+                    # PDFストリームをリセット
+                    pdf_stream.seek(0)
+                    with pdfplumber.open(pdf_stream) as pdf:
+                        # 最初のページを画像として表示
+                        if len(pdf.pages) > 0:
+                            page = pdf.pages[0]
+                            # 解像度を少し上げて視認性を確保
+                            img = page.to_image(resolution=150)
+                            st.image(img.original, use_container_width=True, caption=f"PDFプレビュー: {pdf_file.name}")
+                        else:
+                            st.warning("PDFにページが見つかりませんでした。")
+                except Exception as e:
+                    st.error(f"PDFプレビューの生成に失敗しました: {e}")
+                
+                # 実行ボタンは出さずにここで終了
+                st.warning("不整合があるため、このファイルでのカレンダー生成はできません。")
                 
             else:
                 # 相違がない場合のみ実行ボタンを表示
