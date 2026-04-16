@@ -41,17 +41,17 @@ def main():
         
         mismatch_reason = []
         if st.session_state.pdf_year and st.session_state.pdf_month:
-            # 年月の相違チェック
+            # 1. 年月の相違チェック (内部テキストとファイル名の不一致)
             if fname_y and pdf_y and (fname_y != pdf_y or fname_m != pdf_m):
                 mismatch_reason.append(f"ファイル名({fname_y}/{fname_m})と内部テキスト({pdf_y}/{pdf_m})が一致しません。")
 
-            # 月末日数の相違チェック
+            # 2. 月末日数の相違チェック
             expected_days = calendar.monthrange(st.session_state.pdf_year, st.session_state.pdf_month)[1]
             actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
             if actual_max_day and actual_max_day != expected_days:
-                mismatch_reason.append(f"ファイル名由来の日数({expected_days}日)とPDF内の末尾({actual_max_day}日)が一致しません。")
+                mismatch_reason.append(f"設定月の日数({expected_days}日)とPDF内の最終日({actual_max_day}日)が一致しません。")
 
-            # 1日の曜日相違チェック
+            # 3. 1日の曜日相違チェック
             first_day = datetime.date(st.session_state.pdf_year, st.session_state.pdf_month, 1)
             weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             expected_wd = weekdays[first_day.weekday()]
@@ -59,13 +59,15 @@ def main():
             if actual_wd and actual_wd != expected_wd:
                 mismatch_reason.append(f"カレンダー上の1日({expected_wd}曜)とPDF記載の曜日({actual_wd}曜)が一致しません。")
 
-        # --- 表示制御：不備があるときだけPDFを表示 ---
+        # --- 表示制御 ---
         if mismatch_reason:
             st.warning("⚠️ 検索名とファイルの内容に違いが認められる。")
             for reason in mismatch_reason:
                 st.write(f"- {reason}")
             
-            st.info("PDFの内容を確認してください（計算にはファイル名の年月を使用します）:")
+            # 不一致がある場合のみ設定年月を表示して注意を促す
+            st.info(f"現在の解析設定: {st.session_state.pdf_year}年{st.session_state.pdf_month}月")
+            st.info("PDFの内容を確認してください:")
             try:
                 pdf_stream.seek(0)
                 with pdfplumber.open(pdf_stream) as pdf:
@@ -75,8 +77,8 @@ def main():
             except Exception as e:
                 st.error(f"プレビュー表示エラー: {e}")
         else:
+            # 不備がない場合は年月を表示せず、受理メッセージのみ
             st.success(f"📁 {pdf_file.name} を正常に受理しました。")
-            st.info(f"設定年月: {st.session_state.pdf_year}年{st.session_state.pdf_month}月")
 
         # 実行ボタン
         if st.session_state.pdf_year and st.session_state.pdf_month:
@@ -115,7 +117,7 @@ def main():
                 except Exception as e:
                     st.error(f"解析中にエラーが発生しました: {e}")
         else:
-            st.error("ファイル名から年月を特定できません。")
+            st.error("ファイル名から年月を特定できません。ファイル名に「2026年1月」などの年月を含めてください。")
     else:
         st.session_state.pdf_year = None
         st.session_state.pdf_month = None
