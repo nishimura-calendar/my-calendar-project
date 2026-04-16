@@ -1,127 +1,168 @@
-import streamlit as st
 import pandas as pd
+import camelot
+import unicodedata
+import re
 import io
-import practice_0 as p0
-import datetime
 import calendar
-import pdfplumber
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from google.oauth2 import service_account
 
-def main():
-    st.set_page_config(page_title="勤務スケジュール抽出", layout="centered")
-    
-    if 'staff_name' not in st.session_state: 
-        st.session_state.staff_name = "西村 文宏"
+def get_gdrive_service(secrets):
+    creds = service_account.Credentials.from_service_account_info(
+        secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    return build('drive', 'v3', credentials=creds)
 
-    st.title("📅 勤務スケジュール抽出システム")
-    st.markdown("PDFのシフト表からGoogleカレンダー用CSVを生成します。")
+def normalize_text(text):
+    if not isinstance(text, str): return ""
+    return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-    st.subheader("1. 基本設定")
-    col_name, col_sheet = st.columns([1, 1])
-    with col_name:
-        target_staff = st.text_input("あなたの名前", value=st.session_state.staff_name)
-        st.session_state.staff_name = target_staff
-    with col_sheet:
-        sheet_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+def extract_year_month_from_text(text):
+    """ファイル名から年月を抽出。26 (3) 等の形式に対応"""
+    if not text: return None, None
+    text = unicodedata.normalize('NFKC', text)
+    match = re.search(r'(\d{2,4})\s*[\(\（]\s*(\d{1,2})\s*[\)\）]', text)
+    if not match:
+        match = re.search(r'(\d{4}|\b\d{2})\s*[年/\-\.]\s*(\d{1,2})', text)
+    if match:
+        y, m = int(match.group(1)), int(match.group(2))
+        if y < 100: y += 2000
+        if 1 <= m <= 12: return y, m
+    return None, None
 
-    st.subheader("2. ファイルのアップロード")
-    pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
+def extract_max_day_from_pdf(pdf_stream):
+    """PDF内の日付ヘッダーから最大日（28-31）を特定"""
+    try:
+        pdf_stream.seek(0)
+        with open("temp_days.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
+        # latticeモードで表を読み込み
+        tables = camelot.read_pdf("temp_days.pdf", pages='1', flavor='lattice')
+        if tables:
+            df = tables[0].df
+            # 表の上部数行を文字列化
+            header_text = " ".join(df.iloc[0:4, :].values.flatten().astype(str))
+            # 28, 29, 30, 31という独立した数字を探す
+            days = re.findall(r'\b(2[89]|3[01])\b', header_text)
+            if days: 
+                return int(max(map(int, days)))
+    except: pass
+    return None
 
-    if pdf_file:
-        # ファイルポインタを先頭に戻す
-        pdf_file.seek(0)
-        pdf_bytes = pdf_file.read()
-        pdf_stream = io.BytesIO(pdf_bytes)
-        
-        # 1. ファイル名から年月を抽出
-        apply_y, apply_m = p0.extract_year_month_from_text(pdf_file.name)
-        
-        if apply_y and apply_m:
-            # 2. 整合性チェック
-            mismatch_reasons = []
-            
-            with st.spinner("PDFの内容を検証中..."):
-                # (A) 月末日のチェック
-                expected_days = calendar.monthrange(apply_y, apply_m)[1]
-                actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
-                if actual_max_day and actual_max_day != expected_days:
-                    mismatch_reasons.append(f"日数の不一致: {apply_m}月は{expected_days}日までですが、PDFは{actual_max_day}日まであります。")
-                
-                # (B) 1日の曜日のチェック
-                first_day_date = datetime.date(apply_y, apply_m, 1)
-                wd_list = ["月", "火", "水", "木", "金", "土", "日"]
-                expected_wd = wd_list[first_day_date.weekday()]
-                actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
-                if actual_wd and actual_wd != expected_wd:
-                    mismatch_reasons.append(f"曜日の不一致: {apply_y}年{apply_m}月1日は({expected_wd})曜日ですが、PDFは({actual_wd})曜日となっています。")
+def extract_first_weekday_from_pdf(pdf_stream):
+    """1日のセル付近から曜日を抽出"""
+    try:
+        pdf_stream.seek(0)
+        with open("temp_wd.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
+        tables = camelot.read_pdf("temp_wd.pdf", pages='1', flavor='lattice')
+        if tables:
+            df = tables[0].df
+            # 1日が配置される可能性がある列を走査
+            for col in range(1, min(12, df.shape[1])):
+                cell_text = "".join(df.iloc[0:5, col].astype(str))
+                match = re.search(r'[（\(]([月火水木金土日])[）\)]', cell_text)
+                if match: return match.group(1)
+    except: pass
+    return None
 
-            # --- 判定と条件分岐 ---
-            if mismatch_reasons:
-                # 相違がある場合はエラーを表示
-                st.error("⚠️ ファイル名とPDFの内容に相違が見つかりました")
-                for reason in mismatch_reasons:
-                    st.write(f"- {reason}")
-                
-                # PDFを表示するための専用セクション
-                st.markdown("---")
-                st.subheader("📝 アップロードされたPDFの確認")
-                st.info("内容を確認し、正しいファイルか、またはファイル名が正しいかを確認してください。")
-                
-                try:
-                    # PDFストリームをリセット
-                    pdf_stream.seek(0)
-                    with pdfplumber.open(pdf_stream) as pdf:
-                        # 最初のページを画像として表示
-                        if len(pdf.pages) > 0:
-                            page = pdf.pages[0]
-                            # 解像度を少し上げて視認性を確保
-                            img = page.to_image(resolution=150)
-                            st.image(img.original, use_container_width=True, caption=f"PDFプレビュー: {pdf_file.name}")
-                        else:
-                            st.warning("PDFにページが見つかりませんでした。")
-                except Exception as e:
-                    st.error(f"PDFプレビューの生成に失敗しました: {e}")
-                
-                # 実行ボタンは出さずにここで終了
-                st.warning("不整合があるため、このファイルでのカレンダー生成はできません。")
-                
+def time_schedule_from_drive(service, file_id):
+    """Google Driveから時程表を取得"""
+    try:
+        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
+        request = service.files().get_media(fileId=file_id)
+        if file_metadata.get('mimeType') == 'application/vnd.google-apps.spreadsheet':
+            request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done: _, done = downloader.next_chunk()
+        fh.seek(0)
+        full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0)
+        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
+        location_data_dic = {}
+        for i, start_row in enumerate(location_rows):
+            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+            location_name = str(full_df.iloc[start_row, 0]).strip()
+            temp_range = full_df.iloc[start_row:end_row, :].copy()
+            current_col_limit = len(temp_range.columns)
+            for col_idx in range(3, len(temp_range.columns)):
+                val = temp_range.iloc[0, col_idx]
+                if pd.isna(val) or val == "": continue
+                try: float(val)
+                except: current_col_limit = col_idx; break
+            data_range = temp_range.iloc[:, 0:current_col_limit].copy().reset_index(drop=True)
+            for col in range(1, data_range.shape[1]):
+                time_val = data_range.iloc[0, col]
+                if pd.notna(time_val) and isinstance(time_val, (int, float)):
+                    h = int(time_val); m = int(round((time_val - h) * 60))
+                    data_range.iloc[0, col] = f"{h}:{m:02d}"
+            location_data_dic[location_name] = data_range.fillna('')
+        return location_data_dic
+    except Exception as e: raise e
+
+def pdf_reader(pdf_stream, target_staff):
+    clean_target = normalize_text(target_staff)
+    pdf_stream.seek(0)
+    with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
+    try:
+        tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
+    except: return {}
+    table_dictionary = {}
+    for table in tables:
+        df = table.df
+        if not df.empty:
+            header = str(df.iloc[0, 0]).splitlines()
+            work_place = header[len(header)//2] if header else "Unknown"
+            search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
+            matched_indices = df.index[search_col == clean_target].tolist()
+            if matched_indices:
+                idx = matched_indices[0]
+                my_daily = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
+                others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
+                table_dictionary[work_place] = [my_daily, others]
+    return table_dictionary
+
+def data_integration(pdf_dic, time_dic):
+    integrated = {}
+    for pk, pv in pdf_dic.items():
+        match = next((k for k in time_dic.keys() if normalize_text(pk) in normalize_text(k)), None)
+        if match: integrated[match] = pv + [time_dic[match]]
+    return integrated, []
+
+def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
+    my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.strip() == str(shift_info).strip()]
+    if my_time_shift.empty: return
+    prev_val = ""
+    for t_col in range(2, time_schedule.shape[1]):
+        current_val = str(my_time_shift.iloc[0, t_col])
+        if current_val.lower() == 'nan': current_val = ""
+        if current_val != prev_val:
+            if current_val != "":
+                mask = (time_schedule.iloc[:, t_col].astype(str) == current_val) & (time_schedule.iloc[:, 1] != shift_info)
+                codes = time_schedule.loc[mask, time_schedule.columns[1]].tolist()
+                names = []
+                for code in codes:
+                    matches = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(str(code))]
+                    names.extend([n.split('\n')[0].strip() for n in matches.iloc[:, 0].tolist() if n])
+                u_names = "・".join(list(set(names)))
+                subj = f"【{current_val}】from {u_names}" if u_names else f"【{current_val}】"
+                final_rows.append([subj, target_date, str(time_schedule.iloc[0, t_col]), target_date, "", "False", "", key])
             else:
-                # 相違がない場合のみ実行ボタンを表示
-                st.success(f"✅ 整合性確認OK: {apply_y}年{apply_m}月として処理可能です。")
-                
-                if st.button("🚀 実行してカレンダーを生成", use_container_width=True, type="primary"):
-                    try:
-                        service = p0.get_gdrive_service(st.secrets)
-                        with st.spinner("解析中..."):
-                            time_dic = p0.time_schedule_from_drive(service, sheet_id)
-                            pdf_stream.seek(0)
-                            pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-                            
-                            if not pdf_dic:
-                                st.error(f"PDF内に『{target_staff}』が見つかりませんでした。")
-                            else:
-                                integrated_dic, _ = p0.data_integration(pdf_dic, time_dic)
-                                final_rows = p0.process_full_month(integrated_dic, int(apply_y), int(apply_m))
+                if final_rows and final_rows[-1][5] == "False":
+                    final_rows[-1][4] = str(time_schedule.iloc[0, t_col])
+        prev_val = current_val
 
-                                if final_rows:
-                                    st.subheader("3. 生成結果の確認")
-                                    df_res = pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
-                                    st.dataframe(df_res, use_container_width=True)
-                                    
-                                    csv_buffer = io.StringIO()
-                                    df_res.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
-                                    st.download_button(
-                                        label="📥 CSVをダウンロード",
-                                        data=csv_buffer.getvalue(),
-                                        file_name=f"schedule_{apply_y}{apply_m:02d}_{target_staff}.csv",
-                                        mime="text/csv",
-                                        use_container_width=True
-                                    )
-                                else:
-                                    st.warning("該当するシフトが見つかりませんでした。")
-                    except Exception as e:
-                        st.error(f"エラーが発生しました: {e}")
-        else:
-            st.error(f"ファイル名『{pdf_file.name}』から年月を特定できません。")
-
-if __name__ == "__main__":
-    main()
+def process_full_month(integrated_dic, year, month):
+    all_final_rows = []
+    num_days = calendar.monthrange(year, month)[1]
+    for day in range(1, num_days + 1):
+        target_date_str = f"{year}-{month:02d}-{day:02d}"
+        for place_key, (my_row, others, time_sched) in integrated_dic.items():
+            if day + 1 >= my_row.shape[1]: continue
+            val = str(my_row.iloc[0, day + 1])
+            if not val or val.strip() == "" or val.lower() == 'nan': continue
+            for item in [i.strip() for i in re.split(r'[,、\s\n]+', val) if i.strip()]:
+                shift_cal(place_key, target_date_str, day + 1, item, my_row, others, time_sched, all_final_rows)
+    return all_final_rows
