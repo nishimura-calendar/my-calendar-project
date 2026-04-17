@@ -172,7 +172,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
 
         if not my_time_shift.empty:
             prev_val = ""
-            for t_col in range(2, my_time_shift.shape[1]):
+            for t_col in range(3, my_time_shift.shape[1]):
                 current_val = my_time_shift.iloc[0, t_col]
                 
                 if current_val != prev_val:
