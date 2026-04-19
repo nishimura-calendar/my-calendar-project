@@ -76,8 +76,8 @@ def extract_first_weekday_from_pdf(pdf_stream):
 
 def time_schedule_from_drive(service, file_id):
     """
-    時程表スプレッドシートの解析。
-    D列(インデックス3)からスキャンし、数値または時刻以外の文字列が出現するまでを有効な時間範囲とする。
+    時程表スプレッドシートを解析し、時間列の範囲を自動特定します。
+    数値が開始された列の1つ前をスタートとし、数値が確認できる最終列までを抽出。
     """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -90,7 +90,7 @@ def time_schedule_from_drive(service, file_id):
         while not done: _, done = downloader.next_chunk()
         fh.seek(0)
         
-        # 混在エラー回避のため一旦すべて文字列として読み込む
+        # すべて文字列として読み込む
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
         
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
@@ -101,41 +101,46 @@ def time_schedule_from_drive(service, file_id):
             location_name = str(full_df.iloc[start_row, 0]).strip()
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 3列目(D列)から時間データの終端を探す
-            first_time_col = 3
-            last_time_col = first_time_col
+            # --- 時間列の動的特定ロジック ---
+            time_row = temp_range.iloc[0, :]
+            first_num_col = None
+            last_num_col = None
             
-            for col in range(first_time_col, temp_range.shape[1]):
-                val = temp_range.iloc[0, col]
-                if pd.isna(val) or str(val).lower() == "nan" or str(val).strip() == "":
-                    # 空白はスキップして継続（暫定）
-                    continue
-                
-                # 数値(6.25等)または時刻形式(6:15等)かチェック
-                valid_time = False
+            for col_idx, val in enumerate(time_row):
+                if col_idx < 1: continue # A, B列はスキップ
                 try:
-                    # 数値なら時刻形式文字列に変換
-                    f_val = float(val)
-                    if 0 <= f_val <= 28: # 最大28時まで想定
-                        h = int(f_val)
-                        m = int(round((f_val - h) * 60))
-                        temp_range.iloc[0, col] = f"{h}:{m:02d}"
-                        valid_time = True
-                except ValueError:
-                    # 数値でない場合、":"が含まれていれば時刻とみなす
-                    if ":" in str(val):
-                        temp_range.iloc[0, col] = str(val).strip()
-                        valid_time = True
-                
-                # 時刻でない文字列（出勤、退勤など）が出現したらループ停止
-                if not valid_time:
-                    break
-                
-                last_time_col = col
+                    # 数値として解釈できるか確認
+                    float(val)
+                    if first_num_col is None:
+                        first_num_col = col_idx
+                    last_num_col = col_idx
+                except (ValueError, TypeError):
+                    continue
             
-            # 拠点データとして抽出（不要な末尾列を除去）
-            extracted_df = temp_range.iloc[:, :last_time_col + 1].copy()
-            location_data_dic[location_name] = extracted_df.fillna('')
+            if first_num_col is not None:
+                # 数値開始の1つ前をスタート列とする（出勤判定などのため）
+                start_col = max(1, first_num_col - 1)
+                # 数値の最終列までを範囲とする
+                end_col = last_num_col + 1
+                
+                # A, B列（拠点名、記号）と、特定した時間範囲を結合
+                fixed_cols = [0, 1] # A列とB列
+                target_cols = fixed_cols + list(range(start_col, end_col))
+                temp_range = temp_range.iloc[:, target_cols].copy()
+                
+                # 数値列(6.25等)を時刻形式(6:15)に整形
+                for col in range(len(temp_range.columns)):
+                    if col < 2: continue # A, B列は飛ばす
+                    v = temp_range.iloc[0, col]
+                    try:
+                        f_v = float(v)
+                        if 0 <= f_v <= 28:
+                            h = int(f_v)
+                            m = int(round((f_v - h) * 60))
+                            temp_range.iloc[0, col] = f"{h}:{m:02d}"
+                    except: pass
+            
+            location_data_dic[location_name] = temp_range.fillna('')
             
         return location_data_dic
     except Exception as e:
@@ -184,7 +189,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
         if not my_time_shift.empty:
             prev_val = ""
             # 3列目以降、保持されているデータの終端までループ
-            for t_col in range(3, my_time_shift.shape[1]):
+            for t_col in range(2, my_time_shift.shape[1]):
                 current_val = my_time_shift.iloc[0, t_col]
                 
                 if current_val != prev_val:
