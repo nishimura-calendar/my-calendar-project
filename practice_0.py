@@ -176,40 +176,80 @@ def data_integration(pdf_dic, time_dic):
     return integrated, []
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    確定した時間範囲（3列目〜）に基づいてスケジュール解析を実施。
-    """
+    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
+    # 終日イベントの追加（シフトコードそのものの予定）
     time_shift = time_schedule.fillna("").astype(str)
-    
-    # 勤務記号がB列(インデックス1)にあるか照合
-    if (time_shift.iloc[:, 1] == str(shift_info)).any():
-        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
-        my_time_shift = time_shift[time_shift.iloc[:, 1] == str(shift_info)]
+    if (time_shift.iloc[:, 1] == shift_info).any():
+        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
         
+        # my_time_shift は time_shift(時程表) の1列目がshift_infoと等しい行を抽出結果。
+        my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
+
         if not my_time_shift.empty:
             prev_val = ""
-            # 3列目以降、保持されているデータの終端までループ
             for t_col in range(2, my_time_shift.shape[1]):
                 current_val = my_time_shift.iloc[0, t_col]
                 
                 if current_val != prev_val:
-                    time_val = time_shift.iloc[0, t_col]
                     
-                    if current_val != "":
-                        # 新しい業務の開始
-                        final_rows.append([f"【{current_val}】", target_date, time_val, target_date, "", "False", "", key])
-                    else:
-                        # 業務の終了・退勤判定
-                        suffix = ""
-                        # 以降のセルがすべて空白なら退勤
-                        if (my_time_shift.iloc[0, t_col:] == "").all():
-                            suffix = " => (退勤)"
+                    if current_val != "": 
                         
-                        if len(final_rows) > 0:
-                            if not final_rows[-1][0].endswith("(退勤)"):
-                                final_rows[-1][0] += suffix
-                            final_rows[-1][4] = time_val
-                
+                        # --- 引取(From)情報の取得 ---
+                        taking_over_department=F"<{current_val}>"
+                        mask_taking_department=time_shift.iloc[:,t_col-1]==taking_over_department
+                        mask_taking_codes = time_shift.loc[mask_taking_department,time_shift.columns[1]] 
+                        mask_transfer_taking_codes=other_staff_shift.iloc[:, col].isin(mask_taking_codes)
+                        taking_over_names = other_staff_shift[mask_transfer_taking_codes].iloc[:,0].tolist()
+                        taking_over_staff=f"from {','.join(taking_over_names)}" if taking_over_names else ""
+                        
+                        # --- 引渡(To)情報の取得 ---
+                        mask_handing_codes = []
+                        if prev_val == "": 
+                            handing_over_department = ""
+                            if (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != ""):
+                                handing_over_department = "(交代)"
+                                condition=(time_shift.iloc[:, t_col] == "") & (my_time_shift.iloc[:, t_col-1] != "")
+                                mask_handing_codes=time_shift.loc[condition, time_shift.columns[1]]
+                                
+                        else:
+                            # prev_val(空白以外)
+                            final_rows[-1][4] = time_shift.iloc[0, t_col] # 前の予定の終了時間をセット                        
+                            handing_over_department = F"({prev_val})" 
+                            mask_handing_department = time_shift.iloc[:, t_col] == prev_val
+                            mask_handing_codes=time_shift.loc[mask_handing_department,time_shift.columns[1]]
+                            
+                        mask_transfer_handing_codes =other_staff_shift.iloc[:, col].isin(mask_handing_codes)
+                        handing_over_names=other_staff_shift[mask_transfer_handing_codes].iloc[:,0].tolist()
+                        handing_over_staff=f"to {','.join(handing_over_names)}" if handing_over_names else ""
+                        subject_raw=f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}" 
+                        subject = subject_raw.replace("  ", " ").strip() # 連続スペースを1つにし、前後を削る   
+                                
+                        final_rows.append([
+                            subject, 
+                            target_date, 
+                            time_shift.iloc[0, t_col], 
+                            target_date, 
+                            "", 
+                            "False", 
+                            "", 
+                            ""
+                        ])
+                    else:
+                        # --- 業務が終了して空白("")になった時の処理 ---
+                        
+                        # 現在のセル(t_col)から最後までのセルがすべて空白("")か判定
+                        if (my_time_shift.iloc[0, t_col:] == "").all():
+                            # 以降に業務がない場合は「退勤」扱い
+                            taking_over_department = " => (退勤)"
+                        else:
+                            # まだ後に業務が控えている場合は通常の終了処理
+                            taking_over_department = "" 
+
+                        # 前の予定の終了時間をセット
+                        subject=final_rows[-1][0]
+                        final_rows[-1][0] = subject+taking_over_department                                      
+                        final_rows[-1][4] = time_shift.iloc[0, t_col]    
+                                
                 prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
