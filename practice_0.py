@@ -7,163 +7,165 @@ import calendar
 import pdfplumber
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
+from googleapiclient.http import MediaIoBaseDownload
 
-# --- 共通ユーティリティ ---
+# --- 共通ユーティリティ (consideration_0.py準拠) ---
 def normalize_text(text):
-    """テキストの正規化（全角→半角、改行、空白、タブをすべて除去）"""
+    """テキストの正規化（全角→半角、空白除去）"""
     if not isinstance(text, str): return ""
-    # 改行やタブをスペースに置換してから、すべての空白を除去
-    text = text.replace('\n', ' ').replace('\t', ' ')
-    normalized = unicodedata.normalize('NFKC', text)
-    return re.sub(r'\s+', '', normalized).lower()
+    return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-def extract_date_info(text):
-    """セルから日付(数字)と曜日を抽出"""
-    day_match = re.search(r'(\d+)', text)
-    wday_match = re.search(r'([月火水木金土日])', text)
-    day = int(day_match.group(1)) if day_match else None
-    wday = wday_match.group(1) if wday_match else None
-    return day, wday
-
-def get_workplace_from_cell(cell_text):
-    """左上セル(iloc[0,0])から勤務地名を特定"""
-    if not cell_text or str(cell_text).lower() == 'nan': return "Unknown"
-    lines = [l.strip() for l in cell_text.split('\n') if l.strip()]
-    if not lines: return "Unknown"
+def extract_year_month_from_text(text):
+    """PDFテキストから年月を抽出"""
+    if not text: return None, None
+    text = unicodedata.normalize('NFKC', text)
+    clean_text = re.sub(r'\s+', '', text)
+    y_val, m_val = None, None
     
-    full_norm = normalize_text(cell_text)
-    if "t1" in full_norm: return "T1"
-    if "t2" in full_norm: return "T2"
+    # 「〇月」を探す
+    month_match = re.search(r'(\d{1,2})月', clean_text)
+    if month_match:
+        m_val = int(month_match.group(1))
     
-    target_idx = cell_text.count('\n') // 2
-    return lines[target_idx] if target_idx < len(lines) else lines[-1]
+    # 数値をすべて抽出して年を特定
+    nums = re.findall(r'\d+', clean_text)
+    for n in nums:
+        val = int(n)
+        if len(n) == 4:
+            y_val = val
+        elif len(n) == 2:
+            if m_val is None or (val != m_val):
+                if y_val is None:
+                    y_val = 2000 + val
+                    
+    if m_val is None:
+        for n in nums:
+            val = int(n)
+            if 1 <= val <= 12 and (y_val is None or val != (y_val % 100)):
+                m_val = val
+                break
+    return y_val, m_val
 
-# --- PDF解析 (Camelot) ---
-def pdf_reader(pdf_stream, target_staff):
-    """Ghostscriptを利用してPDFから表を抽出"""
-    clean_target = normalize_text(target_staff)
-    pdf_stream.seek(0)
-    temp_path = "temp_process.pdf"
-    with open(temp_path, "wb") as f:
-        f.write(pdf_stream.getbuffer())
-    
-    # 年月の特定
-    with pdfplumber.open(temp_path) as pdf:
-        full_text = "\n".join([p.extract_text() or "" for p in pdf.pages])
-        y_m = re.search(r'(202\d)年\s*(\d{1,2})月', full_text)
-        year = int(y_m.group(1)) if y_m else None
-        month = int(y_m.group(2)) if y_m else None
-
-    table_results = {}
-    try:
-        # flavor='stream' を使用
-        tables = camelot.read_pdf(temp_path, pages='all', flavor='stream')
-        
-        for table in tables:
-            df = table.df
-            if df.empty: continue
-            
-            work_place = get_workplace_from_cell(str(df.iloc[0, 0]))
-            
-            col_map = {}
-            for c_idx in range(len(df.columns)):
-                day, wday = extract_date_info(str(df.iloc[0, c_idx]))
-                if day: col_map[c_idx] = {"day": day, "wday": wday}
-            
-            if not col_map: continue
-
-            my_row = None
-            other_rows_list = []
-            
-            # スタッフ行の探索
-            for r_idx in range(len(df)):
-                # 名前が入っている可能性があるのは通常 0列目か1列目
-                name_cell = str(df.iloc[r_idx, 0])
-                clean_name = normalize_text(name_cell)
-                
-                # 入力された名前がセル内の文字列に含まれているか判定（部分一致）
-                if clean_target != "" and clean_target in clean_name:
-                    my_row = df.iloc[r_idx : r_idx+1, :]
-                else:
-                    other_rows_list.append(df.iloc[r_idx : r_idx+1, :])
-            
-            if my_row is not None:
-                table_results[work_place] = {
-                    "my_row": my_row,
-                    "others": pd.concat(other_rows_list) if other_rows_list else pd.DataFrame(),
-                    "col_map": col_map
-                }
-    except Exception as e:
-        print(f"Camelot解析エラー: {e}")
-        
-    return table_results, year, month
-
-# --- Google Sheets 連携 ---
-def get_sheets_service(secrets):
+# --- Google Drive / Sheets 連携 (consideration_0.py準拠) ---
+def get_gdrive_service(secrets):
     creds = service_account.Credentials.from_service_account_info(
         secrets["gcp_service_account"],
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        scopes=["https://www.googleapis.com/auth/drive.readonly"]
     )
-    return build('sheets', 'v4', credentials=creds)
+    return build('drive', 'v3', credentials=creds)
 
-def fetch_time_schedule(service, spreadsheet_id):
+def time_schedule_from_drive(service, file_id):
+    """時程表（スプレッドシート）を勤務地別の辞書として取得"""
     try:
-        res = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range='Sheet1!A:Z').execute()
-        values = res.get('values', [])
-        return pd.DataFrame(values)
+        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
+        request = service.files().get_media(fileId=file_id)
+        if file_metadata.get('mimeType') == 'application/vnd.google-apps.spreadsheet':
+            request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done: _, done = downloader.next_chunk()
+        fh.seek(0)
+        
+        # openpyxlで読み込み
+        full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
+        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
+        location_data_dic = {}
+        
+        for i, start_row in enumerate(location_rows):
+            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+            location_name = str(full_df.iloc[start_row, 0]).strip()
+            temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+            
+            # 時程行（数値列）の特定
+            time_row = temp_range.iloc[0, :]
+            first_num_col = None
+            last_num_col = None
+            for col_idx, val in enumerate(time_row):
+                if col_idx < 1: continue 
+                try:
+                    float(val)
+                    if first_num_col is None: first_num_col = col_idx
+                    last_num_col = col_idx
+                except: continue
+            
+            if first_num_col is not None:
+                start_col = max(1, first_num_col - 1)
+                end_col = last_num_col + 1
+                fixed_cols = [0, 1] 
+                target_cols = fixed_cols + list(range(start_col, end_col))
+                temp_range = temp_range.iloc[:, target_cols].copy()
+                
+                # シリアル値を時刻文字列(H:MM)に変換
+                for col in range(len(temp_range.columns)):
+                    if col < 2: continue
+                    v = temp_range.iloc[0, col]
+                    try:
+                        f_v = float(v)
+                        if 0 <= f_v <= 28:
+                            h = int(f_v)
+                            m = int(round((f_v - h) * 60))
+                            temp_range.iloc[0, col] = f"{h}:{m:02d}"
+                    except: pass
+            
+            location_data_dic[location_name] = temp_range.fillna('')
+        return location_data_dic
+    except Exception as e:
+        raise e
+
+# --- PDF解析 (consideration_0.py準拠 + Camelot) ---
+def pdf_reader(pdf_stream, target_staff):
+    """Camelotを使用して全ページをスキャンし、ターゲットのシフトを抽出"""
+    clean_target = normalize_text(target_staff)
+    pdf_stream.seek(0)
+    temp_filename = "target_shift.pdf"
+    with open(temp_filename, "wb") as f:
+        f.write(pdf_stream.getbuffer())
+    
+    # pdfplumberで1ページ目から年月を特定
+    year, month = None, None
+    with pdfplumber.open(temp_filename) as pdf:
+        if len(pdf.pages) > 0:
+            first_page_text = pdf.pages[0].extract_text()
+            year, month = extract_year_month_from_text(first_page_text)
+
+    try:
+        # pages='all' で全ページ対応、latticeモード
+        tables = camelot.read_pdf(temp_filename, pages='all', flavor='lattice')
     except:
-        return pd.DataFrame()
+        return {}, year, month
 
-# --- スケジュール生成ロジック ---
-def shift_cal(key, target_date, col_idx, shift_info, others, time_schedule, final_rows):
-    """時程表に基づいた詳細スケジュールの生成"""
-    # 終日予定を追加
-    final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", f"コード: {shift_info}", key])
-    
-    if not time_schedule.empty and shift_info != "":
-        # 2列目(index 1)がシフト記号と一致する行を探す
-        my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.contains(shift_info, na=False)]
+    table_dictionary = {}
+    for table in tables:
+        df = table.df
+        if df.empty: continue
         
-        if not my_time_shift.empty:
-            prev_val = ""
-            for t_col in range(2, time_schedule.shape[1]):
-                current_val = str(my_time_shift.iloc[0, t_col]) if t_col < my_time_shift.shape[1] else ""
-                if current_val != prev_val:
-                    if current_val not in ["", "None", "nan"]:
-                        # 開始時刻を取得 (1行目のヘッダー)
-                        start_t = str(time_schedule.iloc[0, t_col])
-                        final_rows.append([f"【{current_val}】", target_date, start_t, target_date, "", "False", "", key])
-                    else:
-                        # 終了時刻を直前の行にセット
-                        if final_rows and final_rows[-1][5] == "False":
-                            final_rows[-1][4] = str(time_schedule.iloc[0, t_col])
-                prev_val = current_val
+        # 勤務地の特定（左上セルの改行中央行）
+        header_lines = str(df.iloc[0, 0]).splitlines()
+        work_place = header_lines[len(header_lines)//2] if header_lines else "Unknown"
+        
+        # 名前検索
+        search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
+        matched_indices = df.index[search_col == clean_target].tolist()
+        
+        if matched_indices:
+            idx = matched_indices[0]
+            # [自分, 他の人] のペアで保存
+            my_row = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
+            others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
+            table_dictionary[work_place] = [my_row, others]
+                
+    return table_dictionary, year, month
 
-def build_calendar_df(integrated_data, year, month):
-    final_rows = []
-    if not year or not month: return []
-    
-    num_days = calendar.monthrange(year, month)[1]
-    
-    for loc, content in integrated_data.items():
-        pdf_data = content["pdf"]
-        time_schedule = content["times"]
-        my_row, col_map, others = pdf_data["my_row"], pdf_data["col_map"], pdf_data["others"]
-        
-        for d in range(1, num_days + 1):
-            date_str = f"{year}-{month:02d}-{d:02d}"
-            c_idx = next((k for k, v in col_map.items() if v["day"] == d), None)
-            if c_idx is None: continue
-            
-            cell_val = str(my_row.iloc[0, c_idx]).strip()
-            # 数字や曜日、改行を除去して純粋なコードを抽出
-            parts = re.split(r'[\s\n]+', cell_val)
-            codes = [p for p in parts if p and not p.isdigit() and p not in "月火水木金土日"]
-            
-            for code in codes:
-                if any(k in code for k in "休公有特欠振替"):
-                    final_rows.append([f"【{code}】", date_str, "", date_str, "", "True", "休暇", loc])
-                else:
-                    shift_cal(loc, date_str, c_idx, code, others, time_schedule, final_rows)
-                    
-    return final_rows
+# --- データ統合 (consideration_0.py準拠) ---
+def data_integration(pdf_dic, time_dic):
+    """PDF解析結果と時程表を勤務地キーで紐付け"""
+    integrated = {}
+    for pk, pv in pdf_dic.items():
+        # 曖昧一致で勤務地を特定
+        match = next((k for k in time_dic.keys() if normalize_text(pk) in normalize_text(k)), None)
+        if match:
+            # 形式: [my_row, others, time_schedule_df]
+            integrated[match] = pv + [time_dic[match]]
+    return integrated, []
