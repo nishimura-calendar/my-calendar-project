@@ -19,69 +19,11 @@ def normalize_text(text):
     if not isinstance(text, str): return ""
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-def extract_year_month_from_text(text):
-    if not text: return None, None
-    text = unicodedata.normalize('NFKC', text)
-    clean_text = re.sub(r'\s+', '', text)
-    y_val, m_val = None, None
-    month_match = re.search(r'(\d{1,2})月', clean_text)
-    if month_match:
-        m_val = int(month_match.group(1))
-    nums = re.findall(r'\d+', clean_text)
-    for n in nums:
-        val = int(n)
-        if len(n) == 4:
-            y_val = val
-        elif len(n) == 2:
-            if m_val is None or (val != m_val):
-                if y_val is None:
-                    y_val = 2000 + val
-    if m_val is None:
-        for n in nums:
-            val = int(n)
-            if 1 <= val <= 12 and (y_val is None or val != (y_val % 100)):
-                m_val = val
-                break
-    if y_val and m_val and 1 <= m_val <= 12:
-        return y_val, m_val
-    return None, None
-
-def extract_max_day_from_pdf(pdf_stream):
-    try:
-        pdf_stream.seek(0)
-        with open("temp_days.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
-        tables = camelot.read_pdf("temp_days.pdf", pages='1', flavor='lattice')
-        if tables:
-            df = tables[0].df
-            header_text = " ".join(df.iloc[0:4, :].values.flatten().astype(str))
-            days = re.findall(r'\b(2[89]|3[01])\b', header_text)
-            if days: 
-                return int(max(map(int, days)))
-    except: pass
-    return None
-
-def extract_first_weekday_from_pdf(pdf_stream):
-    try:
-        pdf_stream.seek(0)
-        with open("temp_wd.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
-        tables = camelot.read_pdf("temp_wd.pdf", pages='1', flavor='lattice')
-        if tables:
-            df = tables[0].df
-            for col in range(1, min(12, df.shape[1])):
-                cell_text = "".join(df.iloc[0:5, col].astype(str))
-                match = re.search(r'[（\(]([月火水木金土日])[）\)]', cell_text)
-                if match: return match.group(1)
-    except: pass
-    return None
-
 def time_schedule_from_drive(service, file_id):
-    """
-    時程表スプレッドシートを解析し、時間列の範囲を自動特定します。
-    数値が開始された列の1つ前をスタートとし、数値が確認できる最終列までを抽出。
-    """
+    """時程表スプレッドシートを解析し、勤務地ごとの動的範囲を抽出（consideration_0.py準拠）"""
     try:
-        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         request = service.files().get_media(fileId=file_id)
+        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         if file_metadata.get('mimeType') == 'application/vnd.google-apps.spreadsheet':
             request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         fh = io.BytesIO()
@@ -90,9 +32,7 @@ def time_schedule_from_drive(service, file_id):
         while not done: _, done = downloader.next_chunk()
         fh.seek(0)
         
-        # すべて文字列として読み込む
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
-        
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         location_data_dic = {}
         
@@ -101,52 +41,113 @@ def time_schedule_from_drive(service, file_id):
             location_name = str(full_df.iloc[start_row, 0]).strip()
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # --- 時間列の動的特定ロジック ---
             time_row = temp_range.iloc[0, :]
-            first_num_col = None
-            last_num_col = None
-            
-            for col_idx, val in enumerate(time_row):
-                if col_idx < 1: continue # A, B列はスキップ
+            first_num_col, last_num_col = None, None
+            for idx, val in enumerate(time_row):
+                if idx < 1: continue 
                 try:
-                    # 数値として解釈できるか確認
                     float(val)
-                    if first_num_col is None:
-                        first_num_col = col_idx
-                    last_num_col = col_idx
-                except (ValueError, TypeError):
-                    continue
+                    if first_num_col is None: first_num_col = idx
+                    last_num_col = idx
+                except: continue
             
             if first_num_col is not None:
-                # 数値開始の1つ前をスタート列とする（出勤判定などのため）
-                start_col = max(1, first_num_col - 1)
-                # 数値の最終列までを範囲とする
-                end_col = last_num_col + 1
+                # 前の時間(t_col-1)を参照するため、数値列の1つ前から抽出
+                start_c = max(1, first_num_col - 1)
+                end_c = last_num_col + 1
+                selected_cols = [0, 1] + list(range(start_c, end_c))
+                temp_range = temp_range.iloc[:, selected_cols].copy()
                 
-                # A, B列（拠点名、記号）と、特定した時間範囲を結合
-                fixed_cols = [0, 1] # A列とB列
-                target_cols = fixed_cols + list(range(start_col, end_col))
-                temp_range = temp_range.iloc[:, target_cols].copy()
-                
-                # 数値列(6.25等)を時刻形式(6:15)に整形
-                for col in range(len(temp_range.columns)):
-                    if col < 2: continue # A, B列は飛ばす
-                    v = temp_range.iloc[0, col]
+                # 時刻変換
+                for c in range(2, len(temp_range.columns)):
+                    v = temp_range.iloc[0, c]
                     try:
-                        f_v = float(v)
-                        if 0 <= f_v <= 28:
-                            h = int(f_v)
-                            m = int(round((f_v - h) * 60))
-                            temp_range.iloc[0, col] = f"{h}:{m:02d}"
+                        fv = float(v)
+                        h = int(fv); m = int(round((fv - h) * 60))
+                        temp_range.iloc[0, c] = f"{h}:{m:02d}"
                     except: pass
             
             location_data_dic[location_name] = temp_range.fillna('')
-            
         return location_data_dic
     except Exception as e:
         raise e
 
+def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    """
+    引継ぎロジック完全実装
+    受取(From): 自分の開始時、t_col-1 に同じ場所を担当していた人を探す
+    渡却(To): 自分の終了時、t_col にその場所を引き継ぐ人を探す
+    """
+    time_shift = time_schedule.fillna("").astype(str)
+    
+    # 終日予定(シフトコード)
+    if (time_shift.iloc[:, 1] == shift_info).any():
+        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
+        
+        my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
+        if not my_time_shift.empty:
+            prev_val = ""
+            # 時間列をスキャン (インデックス2以降)
+            for t_col in range(2, my_time_shift.shape[1]):
+                current_val = my_time_shift.iloc[0, t_col]
+                time_header = time_shift.iloc[0, t_col]
+
+                if current_val != prev_val:
+                    # --- 渡却 (Handing over / To) ---
+                    # 自分が担当していた prev_val が終了し、今の列(t_col)からそれを始める人を探す
+                    if final_rows and final_rows[-1][5] == "False":
+                        # 前の予定の終了時間を確定 (iloc[0, t_col])
+                        final_rows[-1][4] = time_header
+                        
+                        handing_over_staff = ""
+                        if prev_val != "":
+                            # 今の列(t_col)で、前の業務(prev_val)を担当している自分以外のスタッフ記号を取得
+                            mask_to = (time_shift.iloc[:, t_col] == prev_val) & (time_shift.iloc[:, 1] != shift_info)
+                            to_codes = time_shift.loc[mask_to, time_shift.columns[1]].tolist()
+                            
+                            for c in to_codes:
+                                if c == "": continue
+                                match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
+                                if not match.empty:
+                                    handing_over_staff = str(match.iloc[0, 0]).split('\n')[0].strip()
+                                    break
+                        
+                        if handing_over_staff:
+                            final_rows[-1][0] += f" => {handing_over_staff}"
+                        
+                        # 退勤判定
+                        if current_val == "" and (my_time_shift.iloc[0, t_col:] == "").all():
+                            final_rows[-1][0] += " (退勤)" if "=>" in final_rows[-1][0] else " => (退勤)"
+
+                    # --- 受取 (Taking over / From) ---
+                    # 自分が新しい業務(current_val)を開始し、一つ前の列(t_col-1)でそれをしていた人を探す
+                    if current_val != "":
+                        taking_over_department = f"【{current_val}】"
+                        taking_over_staff = ""
+                        
+                        # t_col-1 を参照。出勤直後（t_col=2）の場合は参照せず空欄
+                        if t_col > 2:
+                            mask_from = (time_shift.iloc[:, t_col-1] == current_val) & (time_shift.iloc[:, 1] != shift_info)
+                            from_codes = time_shift.loc[mask_from, time_shift.columns[1]].tolist()
+                            
+                            for c in from_codes:
+                                if c == "": continue
+                                match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
+                                if not match.empty:
+                                    taking_over_staff = f"{str(match.iloc[0, 0]).split('\n')[0].strip()} => "
+                                    break
+                        
+                        subject = f"{taking_over_staff}{taking_over_department}"
+                        
+                        # 新規行の追加 (開始時間は入力するが、終了時間は空)
+                        final_rows.append([
+                            subject, target_date, time_header, target_date, "", "False", "", key
+                        ])
+                        
+                prev_val = current_val
+
 def pdf_reader(pdf_stream, target_staff):
+    """consideration_0.py準拠"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
@@ -174,83 +175,6 @@ def data_integration(pdf_dic, time_dic):
         match = next((k for k in time_dic.keys() if normalize_text(pk) in normalize_text(k)), None)
         if match: integrated[match] = pv + [time_dic[match]]
     return integrated, []
-
-def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
-    # 終日イベントの追加（シフトコードそのものの予定）
-    time_shift = time_schedule.fillna("").astype(str)
-    if (time_shift.iloc[:, 1] == shift_info).any():
-        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
-        
-        # my_time_shift は time_shift(時程表) の1列目がshift_infoと等しい行を抽出結果。
-        my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
-
-        if not my_time_shift.empty:
-            prev_val = ""
-            for t_col in range(2, my_time_shift.shape[1]):
-                current_val = my_time_shift.iloc[0, t_col]
-                
-                if current_val != prev_val:
-                    
-                    if current_val != "": 
-                        
-                        # --- 引取(From)情報の取得 ---
-                        taking_over_department=F"<{current_val}>"
-                        mask_taking_department=time_shift.iloc[:,t_col-1]==taking_over_department
-                        mask_taking_codes = time_shift.loc[mask_taking_department,time_shift.columns[1]] 
-                        mask_transfer_taking_codes=other_staff_shift.iloc[:, col].isin(mask_taking_codes)
-                        taking_over_names = other_staff_shift[mask_transfer_taking_codes].iloc[:,0].tolist()
-                        taking_over_staff=f"from {','.join(taking_over_names)}" if taking_over_names else ""
-                        
-                        # --- 引渡(To)情報の取得 ---
-                        mask_handing_codes = []
-                        if prev_val == "": 
-                            handing_over_department = ""
-                            if (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != ""):
-                                handing_over_department = "(交代)"
-                                condition=(time_shift.iloc[:, t_col] == "") & (my_time_shift.iloc[:, t_col-1] != "")
-                                mask_handing_codes=time_shift.loc[condition, time_shift.columns[1]]
-                                
-                        else:
-                            # prev_val(空白以外)
-                            final_rows[-1][4] = time_shift.iloc[0, t_col] # 前の予定の終了時間をセット                        
-                            handing_over_department = F"({prev_val})" 
-                            mask_handing_department = time_shift.iloc[:, t_col] == prev_val
-                            mask_handing_codes=time_shift.loc[mask_handing_department,time_shift.columns[1]]
-                            
-                        mask_transfer_handing_codes =other_staff_shift.iloc[:, col].isin(mask_handing_codes)
-                        handing_over_names=other_staff_shift[mask_transfer_handing_codes].iloc[:,0].tolist()
-                        handing_over_staff=f"to {','.join(handing_over_names)}" if handing_over_names else ""
-                        subject_raw=f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}" 
-                        subject = subject_raw.replace("  ", " ").strip() # 連続スペースを1つにし、前後を削る   
-                                
-                        final_rows.append([
-                            subject, 
-                            target_date, 
-                            time_shift.iloc[0, t_col], 
-                            target_date, 
-                            "", 
-                            "False", 
-                            "", 
-                            ""
-                        ])
-                    else:
-                        # --- 業務が終了して空白("")になった時の処理 ---
-                        
-                        # 現在のセル(t_col)から最後までのセルがすべて空白("")か判定
-                        if (my_time_shift.iloc[0, t_col:] == "").all():
-                            # 以降に業務がない場合は「退勤」扱い
-                            taking_over_department = " => (退勤)"
-                        else:
-                            # まだ後に業務が控えている場合は通常の終了処理
-                            taking_over_department = "" 
-
-                        # 前の予定の終了時間をセット
-                        subject=final_rows[-1][0]
-                        final_rows[-1][0] = subject+taking_over_department                                      
-                        final_rows[-1][4] = time_shift.iloc[0, t_col]    
-                                
-                prev_val = current_val
 
 def process_full_month(integrated_dic, year, month):
     all_final_rows = []
