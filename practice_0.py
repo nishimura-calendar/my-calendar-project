@@ -10,10 +10,12 @@ from google.oauth2 import service_account
 
 # --- 共通ユーティリティ ---
 def normalize_text(text):
-    """テキストの正規化（全角→半角、改行削除、空白削除）"""
+    """テキストの正規化（全角→半角、改行、空白、タブをすべて除去）"""
     if not isinstance(text, str): return ""
-    text = text.replace('\n', '')
-    return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
+    # 改行やタブをスペースに置換してから、すべての空白を除去
+    text = text.replace('\n', ' ').replace('\t', ' ')
+    normalized = unicodedata.normalize('NFKC', text)
+    return re.sub(r'\s+', '', normalized).lower()
 
 def extract_date_info(text):
     """セルから日付(数字)と曜日を抽出"""
@@ -24,9 +26,7 @@ def extract_date_info(text):
     return day, wday
 
 def get_workplace_from_cell(cell_text):
-    """
-    左上セル(iloc[0,0])から勤務地名を特定。
-    """
+    """左上セル(iloc[0,0])から勤務地名を特定"""
     if not cell_text or str(cell_text).lower() == 'nan': return "Unknown"
     lines = [l.strip() for l in cell_text.split('\n') if l.strip()]
     if not lines: return "Unknown"
@@ -35,19 +35,19 @@ def get_workplace_from_cell(cell_text):
     if "t1" in full_norm: return "T1"
     if "t2" in full_norm: return "T2"
     
-    # 改行数の中央行を取得
     target_idx = cell_text.count('\n') // 2
     return lines[target_idx] if target_idx < len(lines) else lines[-1]
 
 # --- PDF解析 (Camelot) ---
 def pdf_reader(pdf_stream, target_staff):
-    """Ghostscriptを利用してPDFから表を抽出。"""
+    """Ghostscriptを利用してPDFから表を抽出"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     temp_path = "temp_process.pdf"
     with open(temp_path, "wb") as f:
         f.write(pdf_stream.getbuffer())
     
+    # 年月の特定
     with pdfplumber.open(temp_path) as pdf:
         full_text = "\n".join([p.extract_text() or "" for p in pdf.pages])
         y_m = re.search(r'(202\d)年\s*(\d{1,2})月', full_text)
@@ -56,7 +56,7 @@ def pdf_reader(pdf_stream, target_staff):
 
     table_results = {}
     try:
-        # flavor='stream' は罫線がなくても文字の配置で表を認識するモード
+        # flavor='stream' を使用
         tables = camelot.read_pdf(temp_path, pages='all', flavor='stream')
         
         for table in tables:
@@ -73,18 +73,24 @@ def pdf_reader(pdf_stream, target_staff):
             if not col_map: continue
 
             my_row = None
-            other_rows = []
+            other_rows_list = []
+            
+            # スタッフ行の探索
             for r_idx in range(len(df)):
-                row_content = normalize_text("".join(df.iloc[r_idx, :].astype(str)))
-                if clean_target in row_content:
+                # 名前が入っている可能性があるのは通常 0列目か1列目
+                name_cell = str(df.iloc[r_idx, 0])
+                clean_name = normalize_text(name_cell)
+                
+                # 入力された名前がセル内の文字列に含まれているか判定（部分一致）
+                if clean_target != "" and clean_target in clean_name:
                     my_row = df.iloc[r_idx : r_idx+1, :]
                 else:
-                    other_rows.append(df.iloc[r_idx : r_idx+1, :])
+                    other_rows_list.append(df.iloc[r_idx : r_idx+1, :])
             
             if my_row is not None:
                 table_results[work_place] = {
                     "my_row": my_row,
-                    "others": pd.concat(other_rows) if other_rows else pd.DataFrame(),
+                    "others": pd.concat(other_rows_list) if other_rows_list else pd.DataFrame(),
                     "col_map": col_map
                 }
     except Exception as e:
@@ -104,36 +110,39 @@ def fetch_time_schedule(service, spreadsheet_id):
     try:
         res = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range='Sheet1!A:Z').execute()
         values = res.get('values', [])
-        # 1行目は時間ヘッダー
         return pd.DataFrame(values)
-    except: return pd.DataFrame()
+    except:
+        return pd.DataFrame()
 
 # --- スケジュール生成ロジック ---
 def shift_cal(key, target_date, col_idx, shift_info, others, time_schedule, final_rows):
-    """
-    時程表(DataFrame)に基づいた詳細スケジュールの生成。
-    """
-    # 終日予定
+    """時程表に基づいた詳細スケジュールの生成"""
+    # 終日予定を追加
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", f"コード: {shift_info}", key])
     
-    # 時程詳細の探索 (2列目がシフトコードと一致する行を探す)
-    if not time_schedule.empty:
-        my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
+    if not time_schedule.empty and shift_info != "":
+        # 2列目(index 1)がシフト記号と一致する行を探す
+        my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str).str.contains(shift_info, na=False)]
+        
         if not my_time_shift.empty:
             prev_val = ""
             for t_col in range(2, time_schedule.shape[1]):
                 current_val = str(my_time_shift.iloc[0, t_col]) if t_col < my_time_shift.shape[1] else ""
                 if current_val != prev_val:
-                    if current_val != "" and current_val != 'None':
+                    if current_val not in ["", "None", "nan"]:
+                        # 開始時刻を取得 (1行目のヘッダー)
                         start_t = str(time_schedule.iloc[0, t_col])
                         final_rows.append([f"【{current_val}】", target_date, start_t, target_date, "", "False", "", key])
                     else:
+                        # 終了時刻を直前の行にセット
                         if final_rows and final_rows[-1][5] == "False":
                             final_rows[-1][4] = str(time_schedule.iloc[0, t_col])
                 prev_val = current_val
 
 def build_calendar_df(integrated_data, year, month):
     final_rows = []
+    if not year or not month: return []
+    
     num_days = calendar.monthrange(year, month)[1]
     
     for loc, content in integrated_data.items():
@@ -147,8 +156,9 @@ def build_calendar_df(integrated_data, year, month):
             if c_idx is None: continue
             
             cell_val = str(my_row.iloc[0, c_idx]).strip()
-            # 数字や曜日を除いたシフトコードを抽出
-            codes = [p for p in re.split(r'[\s\n]+', cell_val) if p and not p.isdigit() and p not in "月火水木金土日"]
+            # 数字や曜日、改行を除去して純粋なコードを抽出
+            parts = re.split(r'[\s\n]+', cell_val)
+            codes = [p for p in parts if p and not p.isdigit() and p not in "月火水木金土日"]
             
             for code in codes:
                 if any(k in code for k in "休公有特欠振替"):
