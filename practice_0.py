@@ -40,7 +40,6 @@ def is_name_match(target_name, text_to_check):
     # 4文字中3文字一致（1文字欠落・誤字許容）
     # PDFの読み取りミス（例: 宏→広）をカバーします
     if len(clean_target) >= 4 and match_count >= 3:
-        # ログには出さず、判定のみ通す
         return True
             
     return False
@@ -72,7 +71,7 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     expected_first_wday = weekdays_jp[first_wday_idx]
     
     pdf_days = []
-    # 最初の3行以内をスキャンして日付行を探す
+    # 最初の5行以内をスキャンして日付行を探す
     for r in range(min(5, len(df))):
         for col in range(1, df.shape[1]):
             cell_val = str(df.iloc[r, col])
@@ -132,21 +131,22 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         all_row_previews = []
 
         for i in range(len(df)):
-            # ★行の全列を結合（名前が1列目からズレている場合への対策）
+            # 行全体の文字列を結合（名前がどの列に飛んでいても捕まえる）
             row_content = "".join(df.iloc[i, :].astype(str))
             
-            # 前後の行と繋がっている可能性も考慮（2行1セットの表構造対策）
+            # 前後の行と繋がっている可能性も考慮
             prev_row = "".join(df.iloc[i-1, :].astype(str)) if i > 0 else ""
             next_row = "".join(df.iloc[i+1, :].astype(str)) if i+1 < len(df) else ""
             
+            # 3行分の巨大な検索範囲を作成
             search_area = prev_row + row_content + next_row
             
-            # デバッグ表示用
-            preview_txt = re.sub(r'\s+', ' ', row_content[:40])
+            # デバッグ用に最初の数文字を表示
+            preview_txt = re.sub(r'\s+', ' ', row_content[:50])
             all_row_previews.append(preview_txt)
 
             if is_name_match(target_staff, search_area):
-                # 発見：自分用として2行分を確保
+                # 発見：自分用として2行分（泣き別れ対策）を確保
                 my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
                 table_dictionary[work_place] = [my_daily, others]
@@ -154,11 +154,11 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
                 break
         
         if found:
-            st.success(f"🎯 '{target_staff}' 様のシフト行を発見しました。")
+            st.success(f"🎯 '{target_staff}' 様のシフト行を特定しました。")
         else:
             st.warning(f"'{target_staff}' 様の名前が検出できませんでした。")
             with st.expander("🔍 内部データを確認する（名前が見当たらない場合）"):
-                st.write("システムが読み取った各行のデータ（一部）です。お名前が別の文字とくっついていないか確認してください。")
+                st.write("システムが読み取った各行のデータです。ここにお名前（または断片）があるか確認してください。")
                 for idx, txt in enumerate(all_row_previews):
                     st.text(f"行 {idx}: {txt}")
                 
