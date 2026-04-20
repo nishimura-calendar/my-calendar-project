@@ -1,130 +1,89 @@
+import streamlit as st
 import pandas as pd
-import camelot
-import unicodedata
-import re
 import io
-import calendar
-import pdfplumber
+import practice_0 as p0
 import datetime
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
+import calendar
 
-# --- ユーティリティ関数 ---
-
-def extract_year_month_from_text(text):
-    """PDF内のテキストから年月を抽出する"""
-    if not text: return None, None
-    text = unicodedata.normalize('NFKC', text)
-    year_match = re.search(r'(202\d)', text)
-    month_match = re.search(r'(\d{1,2})月', text)
+def main():
+    st.set_page_config(page_title="勤務スケジュール抽出", layout="wide")
     
-    y = int(year_match.group(1)) if year_match else datetime.datetime.now().year
-    m = int(month_match.group(1)) if month_match else None
-    
-    if m is None:
-        date_stamp = re.search(r'202\d[/\- ](\d{1,2})[/\- ]', text)
-        if date_stamp: m = int(date_stamp.group(1))
-            
-    return y, m
+    if 'staff_name' not in st.session_state: 
+        st.session_state.staff_name = "西村 文宏"
 
-def normalize_text(text):
-    """テキストから空白・改行を除去"""
-    if not isinstance(text, str): return ""
-    return re.sub(r'[\s　\n]', '', unicodedata.normalize('NFKC', text)).lower()
+    st.title("📅 勤務スケジュール抽出システム")
+    st.markdown("PDFのシフト表からGoogleカレンダー用CSVを自動生成します。")
 
-# --- メインロジック ---
+    st.subheader("1. 基本設定")
+    col_name, col_sheet = st.columns([1, 1])
+    with col_name:
+        target_staff = st.text_input("あなたの名前", value=st.session_state.staff_name)
+        st.session_state.staff_name = target_staff
+    with col_sheet:
+        sheet_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
 
-def get_gdrive_service(secrets):
-    creds = service_account.Credentials.from_service_account_info(
-        secrets["gcp_service_account"],
-        scopes=["https://www.googleapis.com/auth/drive.readonly"]
-    )
-    return build('drive', 'v3', credentials=creds)
+    st.subheader("2. ファイルのアップロード")
+    pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
 
-def pdf_reader(pdf_stream, target_staff):
-    """
-    複数ページのPDFから対象者のシフトを抽出。
-    戻り値: (テーブル辞書, 解析された年, 解析された月)
-    """
-    clean_target = normalize_text(target_staff)
-    pdf_stream.seek(0)
-    
-    with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
-    
-    # 年月の特定
-    with pdfplumber.open("temp.pdf") as pdf:
-        full_text = "\n".join([p.extract_text() or "" for p in pdf.pages])
-        year, month = extract_year_month_from_text(full_text)
-
-    # テーブル抽出
-    try:
-        tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
-        if len(tables) == 0:
-            tables = camelot.read_pdf("temp.pdf", pages='all', flavor='stream')
-    except: return {}, year, month
-    
-    table_dictionary = {}
-    for i, table in enumerate(tables):
-        df = table.df
-        if df.empty: continue
+    if pdf_file and target_staff:
+        pdf_file.seek(0)
+        pdf_bytes = pdf_file.read()
+        pdf_stream = io.BytesIO(pdf_bytes)
         
-        raw_loc_text = str(df.iloc[0, 0])
-        work_place = "T2" if "T2" in raw_loc_text else ("T1" if "T1" in raw_loc_text else f"LOC_{i}")
+        # ファイル名または中身から年月を取得
+        apply_y, apply_m = p0.extract_year_month_from_text(pdf_file.name)
         
-        found_indices = []
-        for row_idx, row_val in enumerate(df.iloc[:, 0].astype(str)):
-            if clean_target in normalize_text(row_val):
-                found_indices.append(row_idx)
-        
-        for f_idx in found_indices:
-            my_daily = df.iloc[f_idx : f_idx + 1, :].copy().reset_index(drop=True)
-            others = df.drop([f_idx]).copy().reset_index(drop=True)
-            
-            key = f"{work_place}_{f_idx}"
-            table_dictionary[key] = [my_daily, others, year, month]
-            
-    return table_dictionary, year, month
+        # もしファイル名から取れなければPDFの中身から再試行
+        if not apply_y or not apply_m:
+            with st.spinner("PDF内から年月を特定中..."):
+                apply_y, apply_m = p0.identify_date_from_content(pdf_stream)
 
-def process_full_month(integrated_dic):
-    """
-    統合されたデータからGoogleカレンダー用フォーマットを生成。
-    日数は各データの year, month から自動計算。
-    """
-    all_final_rows = []
-    
-    for key, data in integrated_dic.items():
-        my_daily, others, year, month = data[0], data[1], data[2], data[3]
-        place_label = key.split('_')[0]
-        
-        if not year or not month: continue
-        num_days = calendar.monthrange(year, month)[1] # 月の日数を自動取得
-        
-        # 日付「1」の列を特定
-        start_col = -1
-        for c in range(1, len(my_daily.columns)):
-            col_content = "".join(my_daily.iloc[:, c].astype(str).tolist())
-            if re.search(r'\b1\b', col_content):
-                start_col = c
-                break
-        
-        if start_col == -1: start_col = 1
+        if apply_y and apply_m:
+            try:
+                service = p0.get_gdrive_service(st.secrets)
+                with st.spinner(f"解析を実行中 ({apply_y}年{apply_m}月)..."):
+                    # 時程表の取得
+                    time_dic = p0.time_schedule_from_drive(service, sheet_id)
+                    
+                    pdf_stream.seek(0)
+                    # pdf_readerは (解析データ辞書, year, month) を返す
+                    pdf_dic, detected_y, detected_m = p0.pdf_reader(pdf_stream, target_staff)
+                    
+                    # 警告チェック（日数の不一致など）
+                    expected_days = calendar.monthrange(apply_y, apply_m)[1]
+                    
+                    if not pdf_dic:
+                        st.error(f"PDF内に『{target_staff}』が見つかりませんでした。")
+                        st.info("ターゲット名の入力（姓名の間のスペース等）がPDFと一致しているか確認してください。")
+                    else:
+                        # データ統合とスケジュール生成
+                        integrated_dic, _ = p0.data_integration(pdf_dic, time_dic)
+                        final_rows = p0.process_full_month(integrated_dic, int(apply_y), int(apply_m))
 
-        for day in range(1, num_days + 1):
-            target_date_str = f"{year}-{month:02d}-{day:02d}"
-            col_idx = start_col + (day - 1)
-            
-            if col_idx >= my_daily.shape[1]: continue
-            
-            raw_cell = str(my_daily.iloc[0, col_idx]).strip()
-            if not raw_cell or raw_cell.lower() == 'nan': continue
-            
-            shifts = [s.strip() for s in re.split(r'[\s\n,、]+', raw_cell) if s.strip()]
-            
-            for s_info in shifts:
-                if any(k in s_info for k in ["休", "公", "有", "特", "欠", "振", "替"]):
-                    all_final_rows.append([f"【{s_info}】", target_date_str, "", target_date_str, "", "True", "休暇", place_label])
-                else:
-                    # ここに時程表(time_dic)がある場合は詳細を展開するロジックが入る
-                    all_final_rows.append([f"{place_label}_{s_info}", target_date_str, "", target_date_str, "", "True", "勤務予定", place_label])
-                        
-    return all_final_rows
+                        if final_rows:
+                            st.success(f"✅ {apply_y}年{apply_m}月のスケジュールを生成しました。")
+                            df_res = pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
+                            
+                            st.subheader("抽出結果のプレビュー")
+                            st.dataframe(df_res, use_container_width=True)
+                            
+                            csv_buffer = io.StringIO()
+                            df_res.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
+                            st.download_button(
+                                label="📥 この内容でカレンダー用CSVをダウンロード",
+                                data=csv_buffer.getvalue(),
+                                file_name=f"schedule_{apply_y}{apply_m:02d}_{target_staff}.csv",
+                                mime="text/csv",
+                                use_container_width=True,
+                                type="primary"
+                            )
+                        else:
+                            st.warning("スケジュールを生成できませんでした。名前の行にシフト記号が入っているか確認してください。")
+            except Exception as e:
+                st.error(f"解析中にエラーが発生しました: {e}")
+                st.exception(e) # デバッグ用に詳細表示
+        else:
+            st.error("年月を特定できません。ファイル名に『1月』等の情報を含めるか、PDF内の日付表記を確認してください。")
+
+if __name__ == "__main__":
+    main()
