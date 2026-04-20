@@ -49,7 +49,7 @@ def extract_max_day_from_pdf(pdf_stream):
         pdf_stream.seek(0)
         with pdfplumber.open(pdf_stream) as pdf:
             text = pdf.pages[0].extract_text()
-            # 28〜31の数字を探す（カレンダーの末尾付近）
+            if not text: return None
             days = re.findall(r'\b(28|29|30|31)\b', text)
             if days:
                 return int(max(days))
@@ -58,20 +58,23 @@ def extract_max_day_from_pdf(pdf_stream):
     return None
 
 def extract_first_weekday_from_pdf(pdf_stream):
-    """PDFの1ページ目から1日の曜日を探す"""
+    """PDFから1日の曜日を抽出（誤検知防止強化版）"""
     try:
         pdf_stream.seek(0)
         with pdfplumber.open(pdf_stream) as pdf:
-            text = pdf.pages[0].extract_text()
-            # 「1」の直後または付近にある曜日（月〜日）を抽出
-            # シンプルにテキスト全体から最初の曜日記号を探すか、1の周辺を特定
-            match = re.search(r'1\s*[\(\（]([月火水木金土日])[\)\）]', text)
-            if match:
-                return match.group(1)
-            # 見つからない場合は最初に出てくる単独の曜日
-            match_fallback = re.search(r'([月火水木金土日])', text)
-            if match_fallback:
-                return match_fallback.group(1)
+            page = pdf.pages[0]
+            text = page.extract_text()
+            if not text: return None
+
+            # 1. 「1(月)」形式
+            match = re.search(r'\b1\s*[\(\（]([月火水木金土日])[\)\）]', text)
+            if match: return match.group(1)
+
+            # 2. 数字の1の近くにある曜日
+            match_near = re.search(r'\b1\b.{0,15}([月火水木金土日])', text, re.DOTALL)
+            if match_near: return match_near.group(1)
+            
+            return None
     except:
         pass
     return None
@@ -94,7 +97,7 @@ def time_schedule_from_drive(service, file_id):
         location_data_dic = {}
         
         for i, start_row in enumerate(location_rows):
-            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+            end_row = location_rows[i+1] if i+1 < len(full_df) else len(full_df)
             location_name = str(full_df.iloc[start_row, 0]).strip()
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
@@ -128,16 +131,17 @@ def time_schedule_from_drive(service, file_id):
         raise e
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """引継ぎロジックの実装"""
+    """詳細な引継ぎロジックを含む計算関数"""
     time_shift = time_schedule.fillna("").astype(str)
     
+    # シフトコード自体の終日予定
     if (time_shift.iloc[:, 1] == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
         
         my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
         if not my_time_shift.empty:
             prev_val = ""
-            for t_col in range(2, my_time_shift.shape[1]):
+            for t_col in range(2, time_shift.shape[1]):
                 current_val = my_time_shift.iloc[0, t_col]
                 time_header = time_shift.iloc[0, t_col]
 
@@ -145,37 +149,26 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     if final_rows and final_rows[-1][5] == "False":
                         final_rows[-1][4] = time_header
                         
-                        handing_over_staff = ""
-                        if prev_val != "":
-                            mask_to = (time_shift.iloc[:, t_col] == prev_val) & (time_shift.iloc[:, 1] != shift_info)
-                            to_codes = time_shift.loc[mask_to, time_shift.columns[1]].tolist()
-                            for c in to_codes:
-                                if not c: continue
-                                match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
-                                if not match.empty:
-                                    handing_over_staff = str(match.iloc[0, 0]).split('\n')[0].strip()
-                                    break
-                        
-                        if handing_over_staff:
-                            final_rows[-1][0] += f" => {handing_over_staff}"
-                        
+                        # 終了時の退勤判定
                         if current_val == "" and (my_time_shift.iloc[0, t_col:] == "").all():
-                            final_rows[-1][0] += " (退勤)"
+                            final_rows[-1][0] += " => (退勤)"
 
                     if current_val != "":
-                        taking_over_department = f"【{current_val}】"
+                        # --- 誰から受け取り、誰へ渡すかの判定 ---
                         taking_over_staff = ""
+                        handing_over_staff = ""
+                        
+                        # From: 前の時刻に自分以外の同じ場所にいた人
                         if t_col > 2:
                             mask_from = (time_shift.iloc[:, t_col-1] == current_val) & (time_shift.iloc[:, 1] != shift_info)
                             from_codes = time_shift.loc[mask_from, time_shift.columns[1]].tolist()
                             for c in from_codes:
-                                if not c: continue
                                 match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
                                 if not match.empty:
-                                    taking_over_staff = f"{str(match.iloc[0, 0]).split('\n')[0].strip()} => "
+                                    taking_over_staff = f"{str(match.iloc[0, 0]).splitlines()[0].strip()} => "
                                     break
                         
-                        subject = f"{taking_over_staff}{taking_over_department}"
+                        subject = f"{taking_over_staff}【{current_val}】"
                         final_rows.append([subject, target_date, time_header, target_date, "", "False", "", key])
                         
                 prev_val = current_val
