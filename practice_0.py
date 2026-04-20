@@ -12,24 +12,29 @@ from googleapiclient.http import MediaIoBaseDownload
 # --- 1. テキストの正規化 ---
 def normalize_text(text):
     if not isinstance(text, str): return ""
+    # 全角半角を統一し、比較しやすくする
     text = unicodedata.normalize('NFKC', text)
-    # 構造解析のため改行 \n は維持する
     return text
 
 def find_name_and_index_in_cell(target_name, cell_text):
     """
-    セル内の改行を分割し、名前が「何番目の行」にあるかを返す。
-    例: "嵯峨根\n大喜多" に対して "大喜多" を探すと (True, 1) を返す。
+    西村様提案：0列目のセルを改行で分割し、名前が「何番目」に現れるか（\nの数）を数える。
+    戻り値: (見つかったか, 改行によるインデックス)
     """
-    clean_target = re.sub(r'[\s　]', '', normalize_text(target_name)).lower()
-    # 空行を除外せずに分割（シフト側の改行数と合わせるため）
-    lines = [l.strip() for l in cell_text.split('\n')]
+    if not cell_text: return False, 0
     
-    # 有効なデータ（空文字以外）の中での順番を探す
+    # 検索する名前からスペースを除去
+    clean_target = re.sub(r'[\s　]', '', normalize_text(target_name)).lower()
+    
+    # セル内を改行で分割（空行も構造維持のため含める）
+    lines = cell_text.split('\n')
+    
     for idx, line in enumerate(lines):
-        clean_line = re.sub(r'[\s　]', '', line).lower()
+        clean_line = re.sub(r'[\s　]', '', normalize_text(line)).lower()
+        # 名前、または名字が含まれているか判定
         if clean_target and (clean_target in clean_line or clean_target[:2] in clean_line):
             return True, idx
+            
     return False, 0
 
 # --- 2. ファイル名から年月を取得 ---
@@ -84,16 +89,16 @@ def shift_cal(key, target_date, col_idx, shift_info, other_staff_shift, time_sch
             if current_val.lower() in ['nan', 'none']: current_val = ""
             if current_val != prev_val:
                 if current_val != "":
+                    # 交代相手の検索（他のスタッフのシフトセルからも、改行位置を考慮して抽出）
                     mask_t = (time_schedule.iloc[:, t_col].astype(str) == current_val) & (time_schedule.iloc[:, 1] != shift_info)
                     target_codes = time_schedule.loc[mask_t, time_schedule.columns[1]].tolist()
                     
-                    # 他人のシフトセルからも改行を考慮して名前を抽出
-                    target_rows = other_staff_shift[other_staff_shift.iloc[:, col_idx].str.contains('|'.join(target_codes), na=False)]
                     names = []
-                    for _, r in target_rows.iterrows():
-                        # セル内のどの位置にコードがあるかを探し、対応する位置の名前を出す
-                        s_cell = str(r.iloc[col_idx]).split('\n')
-                        n_cell = str(r.iloc[0]).split('\n')
+                    # 他人の行をスキャン
+                    for _, row in other_staff_shift.iterrows():
+                        s_cell = str(row.iloc[col_idx]).split('\n')
+                        n_cell = str(row.iloc[0]).split('\n')
+                        # どの改行位置にコードがあるか特定
                         for s_idx, s_txt in enumerate(s_cell):
                             if any(c in s_txt for c in target_codes):
                                 if s_idx < len(n_cell):
@@ -111,23 +116,25 @@ def shift_cal(key, target_date, col_idx, shift_info, other_staff_shift, time_sch
 def process_full_month(integrated_dic, year, month):
     final_rows = [["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"]]
     _, last_day = calendar.monthrange(year, month)
+    
     for day in range(1, last_day + 1):
         target_date = f"{year}/{month:02d}/{day:02d}"
         for place_key, (my_daily, others, time_sched) in integrated_dic.items():
-            # my_daily.iloc[0,0] には "名前_offset_1" のような形式で保存してある
+            # 内部保存したオフセットを取得
             meta = str(my_daily.iloc[0, 0])
             offset = 0
             if "_offset_" in meta:
                 offset = int(meta.split("_offset_")[-1])
             
-            col_idx = day 
+            col_idx = day # 1日がインデックス1に対応
             if col_idx >= my_daily.shape[1]: continue
             
-            # シフトのセルを改行で分割
+            # シフトセルを改行で分割
             raw_val = str(my_daily.iloc[0, col_idx])
             val_lines = raw_val.split('\n')
             
-            # 名前と同じ位置のデータを取り出す（なければ全体から探す）
+            # 名前と同じ改行位置のシフト記号を取得
+            # 1つのセルに1人しかいない場合はそのまま使う
             shift_text = val_lines[offset] if offset < len(val_lines) else raw_val
             
             shifts = re.findall(r'[A-Z\d]+|公|有|明', shift_text)
@@ -147,6 +154,7 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
     with open(temp_path, "wb") as f: f.write(pdf_stream.getbuffer())
     
     table_dictionary = {}
+    # Camelotの2種類のエンジンで試行
     for flavor in ['lattice', 'stream']:
         try:
             tables = camelot.read_pdf(temp_path, pages='all', flavor=flavor)
@@ -157,20 +165,22 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             is_valid, msg, work_place = verify_pdf_calendar(df, year, month)
             if not is_valid: continue
 
+            # 全行をスキャンして名前を探す
             for i in range(len(df)):
                 cell_name_col = str(df.iloc[i, 0])
+                # 改行の数に基づいた特定（西村様案）
                 found, offset = find_name_and_index_in_cell(target_staff, cell_name_col)
                 
                 if found:
-                    # 発見：その行をキープ
+                    # 発見：その行とインデックスを保持
                     my_daily = df.iloc[i : i + 1, :].copy().reset_index(drop=True)
                     others = df.copy().reset_index(drop=True)
                     
-                    # 重要：名前が何番目だったかをメタデータとして埋め込む
+                    # 名前が何個目の \n の後にあったかを記録
                     my_daily.iloc[0, 0] = f"{target_staff}_offset_{offset}"
                     
                     table_dictionary[work_place] = [my_daily, others]
-                    st.success(f"🎯 '{target_staff}' 様をセル内の {offset+1} 番目に発見しました。")
+                    st.success(f"🎯 '{target_staff}' 様をセル内の {offset + 1} 行目に発見しました。")
                     return table_dictionary, year, month
 
     return table_dictionary, year, month
