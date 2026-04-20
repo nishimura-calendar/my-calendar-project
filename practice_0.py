@@ -21,7 +21,7 @@ def normalize_text(text):
 def is_name_match(target_name, cell_text):
     """
     名前のヒット率を最大化するロジック
-    PDF抽出時に名字と名前が逆転したり、間にノイズ(Cなど)が入る場合に対応
+    PDF抽出時に名字と名前が大きく離れたり（改行連打）、ノイズが入る場合に対応
     """
     clean_target = normalize_text(target_name)
     clean_cell = normalize_text(cell_text)
@@ -29,24 +29,26 @@ def is_name_match(target_name, cell_text):
     if not clean_target or not clean_cell:
         return False
         
-    # パターン1: そのまま含まれているか
+    # パターン1: 単純な部分一致（西村文宏）
     if clean_target in clean_cell:
         return True
     
-    # パターン2: 名字と名前を入れ替えて判定（例: 文宏西村）
+    # パターン2: 名字と名前の逆転（文宏西村）
     if len(clean_target) >= 4:
-        # 名字2文字、名前2文字を想定した入れ替え
         reversed_name = clean_target[2:] + clean_target[:2]
         if reversed_name in clean_cell:
             return True
 
-    # パターン3: 包含判定（ターゲットの各文字がバラバラでも全て含まれているか）
-    # 西村文宏の「西」「村」「文」「宏」が全てセル内に存在すればOK
-    match_count = sum(1 for char in clean_target if char in clean_cell)
-    if match_count == len(clean_target):
-        return True
-            
-    return False
+    # パターン3: 「バラバラ文字包含」判定（究極の解決策）
+    # ターゲット「西」「村」「文」「宏」の全文字が、セルの中に順番を問わず存在するか
+    # 間にどれだけ改行や「C」などのゴミが入っていても、文字さえ揃っていればヒットさせます
+    all_chars_found = True
+    for char in clean_target:
+        if char not in clean_cell:
+            all_chars_found = False
+            break
+    
+    return all_chars_found
 
 # --- 2. ファイル名から「期待値」を取得 ---
 def extract_year_month_from_filename(file_name):
@@ -145,12 +147,12 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         is_valid, _, work_place = verify_pdf_calendar(df, year, month)
         if not is_valid: continue
 
-        # 2. ターゲットの検索（包含判定・逆転対応）
+        # 2. ターゲットの検索
         found = False
         for i in range(len(df)):
             cell_text = str(df.iloc[i, 0])
+            # 改行削除+全文字包含チェックで西村文宏様を確実に捉える
             if is_name_match(target_staff, cell_text):
-                # 発見：自分用2行、他人用は1行として抽出
                 my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
                 table_dictionary[work_place] = [my_daily, others]
