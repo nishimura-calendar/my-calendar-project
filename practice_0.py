@@ -10,7 +10,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
 
-# --- 追加: app.py から呼び出されるユーティリティ関数 ---
+# --- app.py から呼び出されるユーティリティ関数 ---
 
 def extract_year_month_from_text(text):
     """
@@ -18,10 +18,7 @@ def extract_year_month_from_text(text):
     """
     if not text: return None, None
     text = unicodedata.normalize('NFKC', text)
-    
-    # 年の抽出 (2020-2029年想定)
     year_match = re.search(r'(202\d)', text)
-    # 月の抽出 (1-12月)
     month_match = re.search(r'(\d{1,2})月', text)
     
     y = int(year_match.group(1)) if year_match else datetime.datetime.now().year
@@ -31,30 +28,47 @@ def extract_year_month_from_text(text):
 
 def extract_max_day_from_pdf(pdf_stream):
     """
-    PDFのテーブルから最大の日数（列数から推測）を取得する
+    PDFのテーブルから最大の日数を取得
     """
     pdf_stream.seek(0)
     with pdfplumber.open(pdf_stream) as pdf:
-        # 最初のページのテーブルを確認
-        table = pdf.pages[0].extract_table()
-        if not table: return None
-        # ヘッダー行（通常1行目）から数字のみの列を数える
-        header = table[0]
-        days = [int(s) for s in header if s and str(s).isdigit()]
-        return max(days) if days else None
+        for page in pdf.pages:
+            table = page.extract_table()
+            if not table: continue
+            header = table[0]
+            days = [int(s) for s in header if s and str(s).isdigit()]
+            if days: return max(days)
+    return None
 
 def extract_first_weekday_from_pdf(pdf_stream):
     """
-    PDFから1日の曜日を特定しようと試みる
+    カレンダーとの整合性チェック用。1日の曜日をテキストから探す
     """
     pdf_stream.seek(0)
     with pdfplumber.open(pdf_stream) as pdf:
         page_text = pdf.pages[0].extract_text()
-        # "1(月)" や "1 月" のようなパターンを探す（簡易実装）
         match = re.search(r'1\s*\(?([月火水木金土日])\)?', page_text)
         return match.group(1) if match else None
 
-# --- 既存のロジック (維持) ---
+# --- 内部計算用 ---
+
+def convert_float_to_time(val):
+    """
+    6.25 などの数値を "06:15" 形式の文字列に変換する
+    """
+    try:
+        f_val = float(val)
+        # エクセルのシリアル値(1=24h)ではなく、24時間表記の数値(6.25=6時15分)として扱う
+        hours = int(f_val)
+        minutes = int(round((f_val - hours) * 60))
+        if minutes >= 60:
+            hours += 1
+            minutes = 0
+        return f"{hours:02d}:{minutes:02d}"
+    except:
+        return str(val)
+
+# --- 既存のメインロジック ---
 
 def get_gdrive_service(secrets):
     creds = service_account.Credentials.from_service_account_info(
@@ -68,6 +82,9 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def time_schedule_from_drive(service, file_id):
+    """
+    Google Driveから時程表を取得し、時刻をHH:MM形式で保持する
+    """
     try:
         request = service.files().get_media(fileId=file_id)
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -104,14 +121,11 @@ def time_schedule_from_drive(service, file_id):
                 all_indices = sorted(list(set(base_indices + time_indices)))
                 final_block = temp_range.iloc[:, all_indices].copy().reset_index(drop=True)
                 
+                # 時刻ヘッダーのクレンジング (6.25 -> 06:15)
                 for c in range(len(final_block.columns)):
                     if all_indices[c] in time_indices:
-                        v = final_block.iloc[0, c]
-                        try:
-                            fv = float(v)
-                            total_min = int(round(fv * 24 * 60))
-                            final_block.iloc[0, c] = f"{total_min//60}:{total_min%60:02d}"
-                        except: pass
+                        final_block.iloc[0, c] = convert_float_to_time(final_block.iloc[0, c])
+                
                 location_data_dic[location_name] = final_block
         return location_data_dic
     except Exception as e:
@@ -132,6 +146,7 @@ def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedul
         time_header = ts.iloc[0, t_col].strip()
         
         if current_val != prev_val:
+            # 終了処理
             if prev_val != "" and final_rows and final_rows[-1][5] == "False":
                 final_rows[-1][4] = time_header
                 mask_next = (ts.iloc[:, t_col] == prev_val) & (ts.iloc[:, 1] != shift_info)
@@ -146,6 +161,7 @@ def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedul
                 elif all(my_row[k].strip() == "" for k in range(t_col, num_cols)):
                     final_rows[-1][0] += " => (退勤)"
 
+            # 開始処理
             if current_val != "":
                 mask_prev = (ts.iloc[:, t_col - 1] == current_val) & (ts.iloc[:, 1] != shift_info)
                 prev_codes = ts.loc[mask_prev, ts.columns[1]].tolist()
@@ -186,6 +202,7 @@ def pdf_reader(pdf_stream, target_staff):
     pdf_stream.seek(0)
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
     try:
+        # PDFの読み込み（lattice flavorを使用）
         tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
     except: return {}
     table_dictionary = {}
