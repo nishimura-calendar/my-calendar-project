@@ -26,7 +26,6 @@ def extract_date_info(text):
 def get_workplace_from_cell(cell_text):
     """
     左上セル(iloc[0,0])から勤務地名を特定。
-    基本事項.docx準拠：改行数の中央行を取得。
     """
     if not cell_text or str(cell_text).lower() == 'nan': return "Unknown"
     lines = [l.strip() for l in cell_text.split('\n') if l.strip()]
@@ -36,19 +35,19 @@ def get_workplace_from_cell(cell_text):
     if "t1" in full_norm: return "T1"
     if "t2" in full_norm: return "T2"
     
+    # 改行数の中央行を取得
     target_idx = cell_text.count('\n') // 2
     return lines[target_idx] if target_idx < len(lines) else lines[-1]
 
 # --- PDF解析 (Camelot) ---
 def pdf_reader(pdf_stream, target_staff):
-    """Ghostscriptを利用してPDFから表を抽出。勤務地・スタッフ行を特定。"""
+    """Ghostscriptを利用してPDFから表を抽出。"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     temp_path = "temp_process.pdf"
     with open(temp_path, "wb") as f:
         f.write(pdf_stream.getbuffer())
     
-    # 年月の特定 (pdfplumber)
     with pdfplumber.open(temp_path) as pdf:
         full_text = "\n".join([p.extract_text() or "" for p in pdf.pages])
         y_m = re.search(r'(202\d)年\s*(\d{1,2})月', full_text)
@@ -57,17 +56,15 @@ def pdf_reader(pdf_stream, target_staff):
 
     table_results = {}
     try:
-        # Ghostscriptがインストールされていれば、flavor='stream'または'lattice'が動作
+        # flavor='stream' は罫線がなくても文字の配置で表を認識するモード
         tables = camelot.read_pdf(temp_path, pages='all', flavor='stream')
         
         for table in tables:
             df = table.df
             if df.empty: continue
             
-            # 1. 勤務地アンカー特定
             work_place = get_workplace_from_cell(str(df.iloc[0, 0]))
             
-            # 2. 列マップ（日付）
             col_map = {}
             for c_idx in range(len(df.columns)):
                 day, wday = extract_date_info(str(df.iloc[0, c_idx]))
@@ -75,7 +72,6 @@ def pdf_reader(pdf_stream, target_staff):
             
             if not col_map: continue
 
-            # 3. スタッフ行抽出
             my_row = None
             other_rows = []
             for r_idx in range(len(df)):
@@ -105,34 +101,45 @@ def get_sheets_service(secrets):
     return build('sheets', 'v4', credentials=creds)
 
 def fetch_time_schedule(service, spreadsheet_id):
-    """勤務地名をキーに時程表を取得"""
     try:
         res = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range='Sheet1!A:Z').execute()
         values = res.get('values', [])
-        return {normalize_text(r[0]).upper(): r for r in values if r}
-    except: return {}
+        # 1行目は時間ヘッダー
+        return pd.DataFrame(values)
+    except: return pd.DataFrame()
 
-# --- スケジュール生成ロジック (打合.py由来) ---
-def shift_cal(key, target_date, col_idx, shift_info, others, time_schedule_row, final_rows):
+# --- スケジュール生成ロジック ---
+def shift_cal(key, target_date, col_idx, shift_info, others, time_schedule, final_rows):
     """
-    時程表(SS)に基づいた詳細スケジュールの生成。
-    time_schedule_row[0]は勤務地、[1]はシフトコードを想定。
+    時程表(DataFrame)に基づいた詳細スケジュールの生成。
     """
-    # 終日予定（勤務地_シフト名）
+    # 終日予定
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", f"コード: {shift_info}", key])
     
-    # 時程詳細（簡易実装：SSのA列(勤務地)と一致するデータを使用）
-    # ※ 本来はここで詳細な時間割ループを行う
-    pass
+    # 時程詳細の探索 (2列目がシフトコードと一致する行を探す)
+    if not time_schedule.empty:
+        my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
+        if not my_time_shift.empty:
+            prev_val = ""
+            for t_col in range(2, time_schedule.shape[1]):
+                current_val = str(my_time_shift.iloc[0, t_col]) if t_col < my_time_shift.shape[1] else ""
+                if current_val != prev_val:
+                    if current_val != "" and current_val != 'None':
+                        start_t = str(time_schedule.iloc[0, t_col])
+                        final_rows.append([f"【{current_val}】", target_date, start_t, target_date, "", "False", "", key])
+                    else:
+                        if final_rows and final_rows[-1][5] == "False":
+                            final_rows[-1][4] = str(time_schedule.iloc[0, t_col])
+                prev_val = current_val
 
 def build_calendar_df(integrated_data, year, month):
     final_rows = []
     num_days = calendar.monthrange(year, month)[1]
     
     for loc, content in integrated_data.items():
-        pdf = content["pdf"]
-        ss_row = content["times"]
-        my_row, col_map, others = pdf["my_row"], pdf["col_map"], pdf["others"]
+        pdf_data = content["pdf"]
+        time_schedule = content["times"]
+        my_row, col_map, others = pdf_data["my_row"], pdf_data["col_map"], pdf_data["others"]
         
         for d in range(1, num_days + 1):
             date_str = f"{year}-{month:02d}-{d:02d}"
@@ -140,12 +147,13 @@ def build_calendar_df(integrated_data, year, month):
             if c_idx is None: continue
             
             cell_val = str(my_row.iloc[0, c_idx]).strip()
+            # 数字や曜日を除いたシフトコードを抽出
             codes = [p for p in re.split(r'[\s\n]+', cell_val) if p and not p.isdigit() and p not in "月火水木金土日"]
             
             for code in codes:
                 if any(k in code for k in "休公有特欠振替"):
                     final_rows.append([f"【{code}】", date_str, "", date_str, "", "True", "休暇", loc])
                 else:
-                    shift_cal(loc, date_str, c_idx, code, others, ss_row, final_rows)
+                    shift_cal(loc, date_str, c_idx, code, others, time_schedule, final_rows)
                     
     return final_rows
