@@ -9,7 +9,7 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- 1. テキストの正規化（ノイズ除去と全角半角統一） ---
+# --- 1. テキストの正規化 ---
 def normalize_text(text):
     if not isinstance(text, str): return ""
     # 全角を半角に変換
@@ -18,37 +18,23 @@ def normalize_text(text):
     clean = re.sub(r'[\s　\n\r\t\.\,・-]', '', text).lower()
     return clean
 
-def is_name_match(target_name, cell_text):
+def is_name_match(target_name, text_to_check):
     """
-    名前のヒット率を最大化するロジック
-    PDF抽出時に名字と名前が大きく離れたり（改行連打）、ノイズが入る場合に対応
+    名前のヒット率を最大化するロジック。
+    ターゲットの各文字が、チェック対象のテキスト内に全て含まれているか判定。
     """
     clean_target = normalize_text(target_name)
-    clean_cell = normalize_text(cell_text)
+    clean_cell = normalize_text(text_to_check)
     
     if not clean_target or not clean_cell:
         return False
         
-    # パターン1: 単純な部分一致（西村文宏）
-    if clean_target in clean_cell:
+    # パターン1: 包含判定（バラバラでも全文字あればOK）
+    match_count = sum(1 for char in clean_target if char in clean_cell)
+    if match_count == len(clean_target):
         return True
-    
-    # パターン2: 名字と名前の逆転（文宏西村）
-    if len(clean_target) >= 4:
-        reversed_name = clean_target[2:] + clean_target[:2]
-        if reversed_name in clean_cell:
-            return True
-
-    # パターン3: 「バラバラ文字包含」判定（究極の解決策）
-    # ターゲット「西」「村」「文」「宏」の全文字が、セルの中に順番を問わず存在するか
-    # 間にどれだけ改行や「C」などのゴミが入っていても、文字さえ揃っていればヒットさせます
-    all_chars_found = True
-    for char in clean_target:
-        if char not in clean_cell:
-            all_chars_found = False
-            break
-    
-    return all_chars_found
+            
+    return False
 
 # --- 2. ファイル名から「期待値」を取得 ---
 def extract_year_month_from_filename(file_name):
@@ -67,22 +53,16 @@ def extract_year_month_from_filename(file_name):
             break
     return y_val, m_val
 
-# --- 3. カレンダー整合性チェックと結果表示 ---
+# --- 3. カレンダー整合性チェック ---
 def verify_pdf_calendar(df, expected_year, expected_month):
-    """
-    ファイル名から算出した「正解」と、PDF内容から抽出した「実測値」を比較表示する
-    """
     if not expected_year or not expected_month:
         return False, "年月特定不能", "Unknown"
 
-    # カレンダー上の正解（期待値）
     first_wday_idx, last_day = calendar.monthrange(expected_year, expected_month)
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_first_wday = weekdays_jp[first_wday_idx]
     
-    # PDFからの抽出（実測値）
     pdf_days = []
-    # 1行目をスキャンして数字と曜日を探す
     for col in range(1, df.shape[1]):
         cell_val = str(df.iloc[0, col])
         d_match = re.search(r'(\d+)', cell_val)
@@ -97,26 +77,18 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     day_one = next((x for x in pdf_days if x["d"] == 1), None)
     actual_first_wday = day_one["w"] if day_one else "不明"
 
-    # --- UI表示 ---
+    # UI表示
     st.markdown("### 📊 ファイル整合性チェック")
     col1, col2 = st.columns(2)
     with col1:
-        st.write("**【ファイル名（期待値）】**")
-        st.write(f"対象: {expected_year}年{expected_month}月")
-        st.write(f"日数: {last_day}日間")
-        st.write(f"1日の曜日: {expected_first_wday}")
+        st.write("**【期待値】**")
+        st.write(f"{expected_year}年{expected_month}月 / {last_day}日 / 1日({expected_first_wday})")
     with col2:
-        st.write("**【PDFデータ（実測値）】**")
-        st.write(f"最大日数: {actual_max_day}日")
-        st.write(f"読み取れた1日: {actual_first_wday}")
+        st.write("**【PDF実測値】**")
+        st.write(f"最大{actual_max_day}日 / 1日({actual_first_wday})")
 
     is_match = (actual_max_day == last_day) and (actual_first_wday == expected_first_wday)
     
-    if is_match:
-        st.success("✅ ファイル名と中身のカレンダーが一致しました。")
-    else:
-        st.error("❌ カレンダーの整合性が取れません。ファイルを確認してください。")
-
     header_cell = str(df.iloc[0, 0])
     work_place = header_cell.splitlines()[len(header_cell.splitlines())//2].strip() if header_cell else "Unknown"
 
@@ -143,16 +115,19 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         df = table.df
         if df.empty: continue
         
-        # 1. カレンダーの照合
         is_valid, _, work_place = verify_pdf_calendar(df, year, month)
         if not is_valid: continue
 
-        # 2. ターゲットの検索
         found = False
         for i in range(len(df)):
-            cell_text = str(df.iloc[i, 0])
-            # 改行削除+全文字包含チェックで西村文宏様を確実に捉える
-            if is_name_match(target_staff, cell_text):
+            # 現在の行のテキスト
+            current_row_text = str(df.iloc[i, 0])
+            # 念のため、次の行のテキストも結合してチェック（泣き別れ対策）
+            next_row_text = str(df.iloc[i+1, 0]) if i+1 < len(df) else ""
+            combined_text = current_row_text + next_row_text
+
+            if is_name_match(target_staff, combined_text):
+                # 発見
                 my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
                 table_dictionary[work_place] = [my_daily, others]
@@ -161,6 +136,11 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         
         if found:
             st.success(f"👤 '{target_staff}' さんのデータを抽出しました。")
+        else:
+            # デバッグ用：見つからない場合に1列目の内容を一部表示
+            with st.expander("名前が見つからない場合のデバッグ情報"):
+                st.write("PDFの1列目から抽出されたテキスト一覧:")
+                st.write(df.iloc[:, 0].tolist())
                 
     return table_dictionary, year, month
 
