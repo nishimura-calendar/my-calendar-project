@@ -1,13 +1,3 @@
-import shutil
-import streamlit as st
-
-# Ghostscriptの実行ファイルを探す
-gs_path = shutil.which("gs") or shutil.which("gswin64c") or shutil.which("gswin32c")
-
-if gs_path:
-    st.success(f"Ghostscriptが見つかりました: {gs_path}")
-else:
-    st.error("Ghostscriptが見つかりません。packages.txtを確認してください。")
 import streamlit as st
 import pandas as pd
 import io
@@ -15,7 +5,55 @@ import practice_0 as p0
 import datetime
 import calendar
 import pdfplumber
+import streamlit as st
+import shutil
+import os
+import platform
 
+def ensure_ghostscript():
+    """
+    Ghostscriptのパスを確認し、見つからない場合は標準的なインストール先を探索して
+    環境変数PATHに追加する関数。
+    """
+    # 既に認識されているかチェック
+    gs_executable = shutil.which("gs") or shutil.which("gswin64c") or shutil.which("gswin32c")
+    
+    if not gs_executable and platform.system() == "Windows":
+        # Windowsの場合、標準的なインストール先をいくつか探索
+        possible_paths = [
+            r"C:\Program Files\gs",
+            r"C:\Program Files (x86)\gs"
+        ]
+        
+        for base in possible_paths:
+            if os.path.exists(base):
+                # gs10.03.1 などのバージョン名フォルダを探す
+                versions = os.listdir(base)
+                for v in sorted(versions, reverse=True): # 最新バージョンを優先
+                    bin_path = os.path.join(base, v, "bin")
+                    if os.path.exists(bin_path):
+                        # 見つかったbinフォルダをPATHの先頭に追加
+                        os.environ["PATH"] = bin_path + os.pathsep + os.environ["PATH"]
+                        gs_executable = shutil.which("gswin64c") or shutil.which("gswin32c")
+                        if gs_executable:
+                            return gs_executable
+                            
+    return gs_executable
+
+# --- 実行確認 ---
+st.set_page_config(page_title="シフト解析システム", layout="wide")
+
+gs_final_path = ensure_ghostscript()
+
+if gs_final_path:
+    st.success(f"✅ Ghostscriptを認識しました: {gs_final_path}")
+else:
+    st.error("❌ Ghostscriptがまだ見つかりません。")
+    st.info("【解決策】PCで実行中の場合、Ghostscriptをインストールし、PCを再起動してから再度お試しください。サーバー(Streamlit Cloud)の場合は packages.txt が正しいか確認してください。")
+
+# --- 以降、メインのアプリ処理 ---
+st.title("🛡️ 免税店シフト解析 (Camelot版)")
+# target_name = st.text_input(...) などのコードが続く
 def main():
     st.set_page_config(page_title="勤務スケジュール抽出", layout="centered")
     
