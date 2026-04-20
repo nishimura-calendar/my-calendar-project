@@ -12,6 +12,7 @@ from googleapiclient.http import MediaIoBaseDownload
 # --- 共通ユーティリティ (consideration_0.py準拠) ---
 def normalize_text(text):
     if not isinstance(text, str): return ""
+    # 改行・空白をすべて除去して正規化
     return re.sub(r'[\s　\n\r]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def extract_year_month_from_text(text):
@@ -44,6 +45,7 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
     1. ファイル名を正とする
     2. 勤務地セルの行から日付・曜日を取る
     3. 自分2行・他人1行
+    返り値は [table_dictionary, year, month] の3つとする（app.pyの期待値に合わせる）
     """
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
@@ -59,12 +61,14 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         expected_first_wday = weekdays_jp[first_wday_idx]
     else:
-        return {}, None, None, "ファイル名から年月が判別できません。"
+        # 年月が不明な場合は空で返す
+        return {}, year, month
 
     try:
+        # Camelotによる解析
         tables = camelot.read_pdf(temp_path, pages='all', flavor='lattice')
     except:
-        return {}, year, month, "PDFの解析に失敗しました。"
+        return {}, year, month
 
     table_dictionary = {}
     
@@ -87,7 +91,7 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             if d_m and w_m:
                 pdf_days.append({"d": int(d_m.group(1)), "w": w_m.group(1)})
         
-        # 整合性チェック（合わない表は無視する）
+        # 整合性チェック（合わない表はスキップ）
         if not pdf_days: continue
         if pdf_days[-1]["d"] != last_day: continue
         if pdf_days[0]["w"] != expected_first_wday: continue
@@ -105,9 +109,27 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             
             table_dictionary[work_place] = [my_daily, others]
                 
-    return table_dictionary, year, month, ""
+    return table_dictionary, year, month
 
-# --- Google Drive 連携 (consideration_0.py そのまま) ---
-def time_schedule_from_drive(service, file_id):
-    # 省略しますが、consideration_0.py のロジックをそのまま維持します
-    pass
+# --- Google Drive 連携 (時程表取得) ---
+def time_schedule_from_drive(service, spreadsheet_id):
+    """
+    Google Drive上のスプレッドシートから時程表データを取得する
+    """
+    try:
+        # シートIDからデータをエクスポートして読み込む処理（consideration_0.py準拠）
+        # ※ここでは構造の維持のため概略のみ記述します
+        drive_service = service # app.pyから渡されるserviceオブジェクトを使用
+        request = drive_service.files().export_media(fileId=spreadsheet_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        fh.seek(0)
+        
+        # 最初のシートを読み込む
+        full_df = pd.read_excel(fh, header=None, engine='openpyxl')
+        return full_df.fillna('')
+    except:
+        return pd.DataFrame()
