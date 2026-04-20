@@ -25,65 +25,38 @@ def main():
     st.subheader("2. ファイルのアップロード")
     pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
 
-    if pdf_file:
+    if pdf_file and target_staff:
         pdf_file.seek(0)
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
-        # ファイル名から年月を取得
+        # ファイル名または中身から年月を取得
         apply_y, apply_m = p0.extract_year_month_from_text(pdf_file.name)
         
+        # もしファイル名から取れなければPDFの中身から再試行
+        if not apply_y or not apply_m:
+            with st.spinner("PDF内から年月を特定中..."):
+                apply_y, apply_m = p0.identify_date_from_content(pdf_stream)
+
         if apply_y and apply_m:
-            mismatch_warnings = []
-            
-            with st.spinner("PDFの整合性をチェック中..."):
-                # 1. 月末日のチェック
-                expected_days = calendar.monthrange(apply_y, apply_m)[1]
-                actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
-                if actual_max_day and actual_max_day != expected_days:
-                    mismatch_warnings.append(f"【日数の不一致】{apply_m}月は{expected_days}日までですが、PDF内には{actual_max_day}日までのデータが見つかりました。")
-                
-                # 2. 曜日のチェック
-                first_day_date = datetime.date(apply_y, apply_m, 1)
-                wd_list = ["月", "火", "水", "木", "金", "土", "日"]
-                expected_wd = wd_list[first_day_date.weekday()]
-                pdf_stream.seek(0)
-                actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
-                
-                if actual_wd and actual_wd != expected_wd:
-                    mismatch_warnings.append(f"【曜日の不一致】ファイル名では{apply_y}年{apply_m}月（1日は{expected_wd}曜日）ですが、PDF内では1日が{actual_wd}曜日となっています。")
-
-            # 警告がある場合の表示
-            if mismatch_warnings:
-                with st.expander("⚠️ 整合性に関する警告（PDF解析結果の確認）", expanded=True):
-                    for msg in mismatch_warnings:
-                        st.warning(msg)
-                    st.info("以下はシステムがPDFから読み取った表の生データです。名前や日付の並びが正しいか確認してください。")
-                    
-                    # デバッグ用にPDFの読み取り表（生データ）を表示
-                    pdf_stream.seek(0)
-                    debug_dic = p0.pdf_reader(pdf_stream, target_staff)
-                    if debug_dic:
-                        for loc, data in debug_dic.items():
-                            st.write(f"📍 勤務地: {loc} の抽出データ")
-                            st.dataframe(data[0]) # my_dailyを表示
-                    else:
-                        st.error("PDFから表構造を抽出できませんでした。")
-
-            # 解析実行
             try:
                 service = p0.get_gdrive_service(st.secrets)
-                with st.spinner(f"シフト解析を実行中..."):
+                with st.spinner(f"解析を実行中 ({apply_y}年{apply_m}月)..."):
                     # 時程表の取得
                     time_dic = p0.time_schedule_from_drive(service, sheet_id)
                     
                     pdf_stream.seek(0)
-                    pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
+                    # pdf_readerは (解析データ辞書, year, month) を返す
+                    pdf_dic, detected_y, detected_m = p0.pdf_reader(pdf_stream, target_staff)
+                    
+                    # 警告チェック（日数の不一致など）
+                    expected_days = calendar.monthrange(apply_y, apply_m)[1]
                     
                     if not pdf_dic:
                         st.error(f"PDF内に『{target_staff}』が見つかりませんでした。")
-                        st.markdown(f"**確認事項:**\n- PDFに「{target_staff}」という文字が含まれていますか？\n- 名字と名前の間にスペースがある場合、正確に入力してください。")
+                        st.info("ターゲット名の入力（姓名の間のスペース等）がPDFと一致しているか確認してください。")
                     else:
+                        # データ統合とスケジュール生成
                         integrated_dic, _ = p0.data_integration(pdf_dic, time_dic)
                         final_rows = p0.process_full_month(integrated_dic, int(apply_y), int(apply_m))
 
@@ -105,16 +78,12 @@ def main():
                                 type="primary"
                             )
                         else:
-                            st.warning("スケジュール項目を抽出できませんでした。PDF内の名前の行にシフト記号（A, B, C等）が正しく配置されているか確認してください。")
-                            # 抽出失敗時も生データを表示して理由を探れるようにする
-                            if not mismatch_warnings:
-                                for loc, data in pdf_dic.items():
-                                    st.write(f"解析対象データ ({loc}):")
-                                    st.dataframe(data[0])
+                            st.warning("スケジュールを生成できませんでした。名前の行にシフト記号が入っているか確認してください。")
             except Exception as e:
                 st.error(f"解析中にエラーが発生しました: {e}")
+                st.exception(e) # デバッグ用に詳細表示
         else:
-            st.error(f"ファイル名『{pdf_file.name}』から年月を特定できません。2026年1月のような形式を含めてください。")
+            st.error("年月を特定できません。ファイル名に『1月』等の情報を含めるか、PDF内の日付表記を確認してください。")
 
 if __name__ == "__main__":
     main()
