@@ -19,8 +19,33 @@ def normalize_text(text):
     if not isinstance(text, str): return ""
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
+def extract_year_month_from_text(text):
+    """ファイル名等から年月を抽出する（エラー回避のため完全実装）"""
+    if not text: return None, None
+    text = unicodedata.normalize('NFKC', text)
+    clean_text = re.sub(r'\s+', '', text)
+    y_val, m_val = None, None
+    
+    # 月の抽出 (例: 12月)
+    month_match = re.search(r'(\d{1,2})月', clean_text)
+    if month_match:
+        m_val = int(month_match.group(1))
+    
+    # 年の抽出 (4桁または2桁)
+    nums = re.findall(r'\d+', clean_text)
+    for n in nums:
+        val = int(n)
+        if len(n) == 4:
+            y_val = val
+        elif len(n) == 2:
+            if m_val is None or (val != m_val):
+                if y_val is None:
+                    y_val = 2000 + val
+                    
+    return y_val, m_val
+
 def time_schedule_from_drive(service, file_id):
-    """時程表スプレッドシートを解析し、勤務地ごとの動的範囲を抽出（consideration_0.py準拠）"""
+    """時程表スプレッドシートを解析"""
     try:
         request = service.files().get_media(fileId=file_id)
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -52,13 +77,11 @@ def time_schedule_from_drive(service, file_id):
                 except: continue
             
             if first_num_col is not None:
-                # 前の時間(t_col-1)を参照するため、数値列の1つ前から抽出
                 start_c = max(1, first_num_col - 1)
                 end_c = last_num_col + 1
                 selected_cols = [0, 1] + list(range(start_c, end_c))
                 temp_range = temp_range.iloc[:, selected_cols].copy()
                 
-                # 時刻変換
                 for c in range(2, len(temp_range.columns)):
                     v = temp_range.iloc[0, c]
                     try:
@@ -74,34 +97,34 @@ def time_schedule_from_drive(service, file_id):
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     """
-    引継ぎロジック完全実装
+    引継ぎロジックの実装
     受取(From): 自分の開始時、t_col-1 に同じ場所を担当していた人を探す
     渡却(To): 自分の終了時、t_col にその場所を引き継ぐ人を探す
     """
     time_shift = time_schedule.fillna("").astype(str)
     
-    # 終日予定(シフトコード)
+    # 終日イベント(シフトコード)
     if (time_shift.iloc[:, 1] == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
         
         my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
         if not my_time_shift.empty:
             prev_val = ""
-            # 時間列をスキャン (インデックス2以降)
+            # 時間列をスキャン
             for t_col in range(2, my_time_shift.shape[1]):
                 current_val = my_time_shift.iloc[0, t_col]
                 time_header = time_shift.iloc[0, t_col]
 
                 if current_val != prev_val:
                     # --- 渡却 (Handing over / To) ---
-                    # 自分が担当していた prev_val が終了し、今の列(t_col)からそれを始める人を探す
+                    # 前に業務(prev_val)があり、現在(t_col)で変化した場合
                     if final_rows and final_rows[-1][5] == "False":
-                        # 前の予定の終了時間を確定 (iloc[0, t_col])
+                        # 終了時間を確定
                         final_rows[-1][4] = time_header
                         
                         handing_over_staff = ""
                         if prev_val != "":
-                            # 今の列(t_col)で、前の業務(prev_val)を担当している自分以外のスタッフ記号を取得
+                            # t_col（現在）で、さっきまで自分がやっていた業務(prev_val)を引き継ぐ人を探す
                             mask_to = (time_shift.iloc[:, t_col] == prev_val) & (time_shift.iloc[:, 1] != shift_info)
                             to_codes = time_shift.loc[mask_to, time_shift.columns[1]].tolist()
                             
@@ -115,17 +138,20 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                         if handing_over_staff:
                             final_rows[-1][0] += f" => {handing_over_staff}"
                         
-                        # 退勤判定
+                        # 退勤判定: この後一切業務がない場合
                         if current_val == "" and (my_time_shift.iloc[0, t_col:] == "").all():
-                            final_rows[-1][0] += " (退勤)" if "=>" in final_rows[-1][0] else " => (退勤)"
+                            if "=>" not in final_rows[-1][0]:
+                                final_rows[-1][0] += " => (退勤)"
+                            else:
+                                final_rows[-1][0] += " (退勤)"
 
                     # --- 受取 (Taking over / From) ---
-                    # 自分が新しい業務(current_val)を開始し、一つ前の列(t_col-1)でそれをしていた人を探す
+                    # 新しい業務(current_val)が始まった場合
                     if current_val != "":
                         taking_over_department = f"【{current_val}】"
                         taking_over_staff = ""
                         
-                        # t_col-1 を参照。出勤直後（t_col=2）の場合は参照せず空欄
+                        # t_col-1 (一つ前の時間) で、今から自分がやる業務(current_val)をしていた人を探す
                         if t_col > 2:
                             mask_from = (time_shift.iloc[:, t_col-1] == current_val) & (time_shift.iloc[:, 1] != shift_info)
                             from_codes = time_shift.loc[mask_from, time_shift.columns[1]].tolist()
@@ -139,7 +165,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                         
                         subject = f"{taking_over_staff}{taking_over_department}"
                         
-                        # 新規行の追加 (開始時間は入力するが、終了時間は空)
+                        # 新規予定追加 (終了時間は次のループの「渡却」でセットされる)
                         final_rows.append([
                             subject, target_date, time_header, target_date, "", "False", "", key
                         ])
@@ -147,7 +173,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 prev_val = current_val
 
 def pdf_reader(pdf_stream, target_staff):
-    """consideration_0.py準拠"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
