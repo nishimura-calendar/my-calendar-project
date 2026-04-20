@@ -1,16 +1,4 @@
 import streamlit as st
-import pandas as pd
-import io
-import practice_0 as p0
-import datetime
-import calendar
-import pdfplumber
-import streamlit as st
-import shutil
-import os
-import platform
-
-import streamlit as st
 import shutil
 import os
 import platform
@@ -26,7 +14,6 @@ def ensure_ghostscript():
     gs_executable = shutil.which("gs") or shutil.which("gswin64c") or shutil.which("gswin32c")
     
     if not gs_executable and platform.system() == "Windows":
-        # Windowsの場合、標準的なインストール先をいくつか探索
         possible_paths = [
             r"C:\Program Files\gs",
             r"C:\Program Files\x86\gs"
@@ -34,13 +21,11 @@ def ensure_ghostscript():
         
         for base in possible_paths:
             if os.path.exists(base):
-                # gs10.03.1 などのバージョン名フォルダを探す
                 try:
                     versions = os.listdir(base)
-                    for v in sorted(versions, reverse=True): # 最新バージョンを優先
+                    for v in sorted(versions, reverse=True):
                         bin_path = os.path.join(base, v, "bin")
                         if os.path.exists(bin_path):
-                            # 見つかったbinフォルダをPATHの先頭に追加
                             os.environ["PATH"] = bin_path + os.pathsep + os.environ["PATH"]
                             gs_executable = shutil.which("gswin64c") or shutil.which("gswin32c")
                             if gs_executable:
@@ -50,187 +35,91 @@ def ensure_ghostscript():
                             
     return gs_executable
 
-# --- ページ設定 ---
-st.set_page_config(page_title="勤務スケジュール抽出システム", layout="wide")
-
-# --- Ghostscript実行確認 ---
-gs_final_path = ensure_ghostscript()
-
-if gs_final_path:
-    st.sidebar.success(f"✅ Ghostscript 接続済み")
-else:
-    st.error("❌ Ghostscriptがまだ見つかりません。")
-    with st.expander("詳細な解決策を表示"):
-        st.markdown("""
-        **PC（ローカル）で実行中の場合:**
-        1. [Ghostscript公式サイト](https://ghostscript.com/releases/gsdnld.html) からインストーラーをダウンロードして実行してください。
-        2. インストール後、**PCを再起動**してからこのアプリを再度立ち上げてください。
-        
-        **サーバー（Streamlit Cloud）の場合:**
-        - リポジトリのルート直下に `packages.txt` があり、中身が `ghostscript` となっているか確認してください。
-        """)
-
-# --- メインUI ---
-st.title("🛡️ 免税店シフト解析 (Camelot版)")
-st.subheader("📅 勤務スケジュール抽出システム")
-st.markdown("PDFのシフト表からGoogleカレンダー用CSVを自動生成します。")
-
-st.divider()
-
-# 1. 基本設定
-st.header("1. 基本設定")
-col1, col2 = st.columns(2)
-with col1:
-    target_name = st.text_input("あなたの名前", value="西村 文宏", help="名字と名前の間にスペースを入れてください")
-with col2:
-    ss_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
-
-# 2. ファイルのアップロード
-st.header("2. ファイルのアップロード")
-uploaded_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
-
-if uploaded_file and target_name:
-    if not gs_final_path:
-        st.warning("Ghostscriptが未設定のため、解析を開始できません。")
-    else:
-        pdf_stream = io.BytesIO(uploaded_file.read())
-        
-        try:
-            with st.spinner("PDFを解析中... (これには数十秒かかる場合があります)"):
-                # practice_0.py の解析ロジックを呼び出し
-                pdf_results, year, month = p0.pdf_reader(pdf_stream, target_name)
-            
-            if not pdf_results:
-                st.error("指定された名前のデータが見つかりませんでした。PDFの内容や名前の入力を確認してください。")
-            else:
-                st.success(f"解析完了: {year}年{month}月度")
-                
-                # スプレッドシート連携とCSV生成のロジックがここに入ります
-                # (既存の統合ロジックを継続)
-                
-        except Exception as e:
-            st.error(f"エラーが発生しました: {e}")
-            
-# --- 実行確認 ---
-st.set_page_config(page_title="シフト解析システム", layout="wide")
-
-gs_final_path = ensure_ghostscript()
-
-if gs_final_path:
-    st.success(f"✅ Ghostscriptを認識しました: {gs_final_path}")
-else:
-    st.error("❌ Ghostscriptがまだ見つかりません。")
-    st.info("【解決策】PCで実行中の場合、Ghostscriptをインストールし、PCを再起動してから再度お試しください。サーバー(Streamlit Cloud)の場合は packages.txt が正しいか確認してください。")
-
-# --- 以降、メインのアプリ処理 ---
-st.title("🛡️ 免税店シフト解析 (Camelot版)")
-# target_name = st.text_input(...) などのコードが続く
 def main():
-    st.set_page_config(page_title="勤務スケジュール抽出", layout="centered")
-    
-    if 'staff_name' not in st.session_state: 
-        st.session_state.staff_name = "西村 文宏"
+    # --- 1. ページ設定とGhostscript確認 ---
+    st.set_page_config(page_title="勤務スケジュール抽出システム", layout="wide")
 
-    st.title("📅 勤務スケジュール抽出システム")
+    # Ghostscript実行確認（サイドバーで静かに報告するように変更し、重複を避ける）
+    gs_final_path = ensure_ghostscript()
+
+    # --- 2. メインUI表示 ---
+    st.title("🛡️ 免税店シフト解析 (Camelot版)")
+    st.subheader("📅 勤務スケジュール抽出システム")
     st.markdown("PDFのシフト表からGoogleカレンダー用CSVを自動生成します。")
 
-    st.subheader("1. 基本設定")
-    col_name, col_sheet = st.columns([1, 1])
-    with col_name:
-        target_staff = st.text_input("あなたの名前", value=st.session_state.staff_name)
-        st.session_state.staff_name = target_staff
-    with col_sheet:
-        sheet_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
-
-    st.subheader("2. ファイルのアップロード")
-    pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
-
-    if pdf_file:
-        # ファイル読み込み
-        pdf_file.seek(0)
-        pdf_bytes = pdf_file.read()
-        pdf_stream = io.BytesIO(pdf_bytes)
-        
-        # 1. ファイル名から年月を抽出（改善版ロジック）
-        apply_y, apply_m = p0.extract_year_month_from_text(pdf_file.name)
-        
-        if apply_y and apply_m:
-            # 2. 整合性チェック
-            mismatch_reasons = []
+    # サイドバーでステータス表示
+    if gs_final_path:
+        st.sidebar.success(f"✅ Ghostscript 接続済み")
+    else:
+        st.sidebar.error("❌ Ghostscript未検出")
+        with st.expander("⚠️ Ghostscriptが見つかりません。解決策を確認してください"):
+            st.markdown("""
+            **PC（ローカル）で実行中の場合:**
+            1. [Ghostscript公式サイト](https://ghostscript.com/releases/gsdnld.html) からインストーラーをダウンロードして実行。
+            2. インストール後、**PCを再起動**してください。
             
-            with st.spinner("PDFの整合性を自動検証中..."):
-                # (A) 月末日のチェック
-                expected_days = calendar.monthrange(apply_y, apply_m)[1]
-                actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
-                if actual_max_day and actual_max_day != expected_days:
-                    mismatch_reasons.append(f"日数の不一致: {apply_m}月は{expected_days}日までですが、PDFは{actual_max_day}日まであります。")
-                
-                # (B) 1日の曜日のチェック
-                first_day_date = datetime.date(apply_y, apply_m, 1)
-                wd_list = ["月", "火", "水", "木", "金", "土", "日"]
-                expected_wd = wd_list[first_day_date.weekday()]
-                actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
-                if actual_wd and actual_wd != expected_wd:
-                    mismatch_reasons.append(f"曜日の不一致: {apply_y}年{apply_m}月1日は({expected_wd})曜日ですが、PDFは({actual_wd})曜日となっています。")
+            **サーバー（Streamlit Cloud）の場合:**
+            - `packages.txt` に `ghostscript` と記載があるか確認。
+            """)
 
-            # --- 条件分岐 ---
-            if mismatch_reasons:
-                # 【相違がある場合】 エラー表示して停止
-                st.error("⚠️ ファイル名とPDFの内容に相違が見つかりました")
-                for reason in mismatch_reasons:
-                    st.write(f"- {reason}")
-                
-                st.markdown("---")
-                st.subheader("📝 アップロードされたPDFの確認")
-                try:
-                    pdf_stream.seek(0)
-                    with pdfplumber.open(pdf_stream) as pdf:
-                        if len(pdf.pages) > 0:
-                            img = pdf.pages[0].to_image(resolution=150)
-                            st.image(img.original, use_container_width=True, caption=f"プレビュー: {pdf_file.name}")
-                except Exception as e:
-                    st.error(f"プレビュー表示失敗: {e}")
-                
-                st.warning("内容を確認し、正しいファイルを再アップロードしてください。")
+    st.divider()
 
-            else:
-                # 【相違がない場合】 自動的にカレンダー生成へ進む
-                st.success(f"✅ 整合性確認OK: {apply_y}年{apply_m}月の解析を自動開始します。")
-                
-                try:
-                    service = p0.get_gdrive_service(st.secrets)
-                    with st.spinner(f"{apply_y}年{apply_m}月のシフトを解析中..."):
-                        time_dic = p0.time_schedule_from_drive(service, sheet_id)
-                        pdf_stream.seek(0)
-                        pdf_dic = p0.pdf_reader(pdf_stream, target_staff)
-                        
-                        if not pdf_dic:
-                            st.error(f"PDF内に『{target_staff}』が見つかりませんでした。")
-                        else:
-                            integrated_dic, _ = p0.data_integration(pdf_dic, time_dic)
-                            final_rows = p0.process_full_month(integrated_dic, int(apply_y), int(apply_m))
+    # 3. 基本設定
+    st.header("1. 基本設定")
+    col1, col2 = st.columns(2)
+    with col1:
+        target_name = st.text_input("あなたの名前", value="西村 文宏", key="input_name")
+    with col2:
+        ss_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE", key="input_ss_id")
 
-                            if final_rows:
-                                st.subheader("3. 生成結果（CSV）")
-                                df_res = pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
-                                st.dataframe(df_res, use_container_width=True)
-                                
-                                csv_buffer = io.StringIO()
-                                df_res.to_csv(csv_buffer, index=False, encoding="utf_8_sig")
-                                st.download_button(
-                                    label="📥 カレンダー用CSVをダウンロード",
-                                    data=csv_buffer.getvalue(),
-                                    file_name=f"schedule_{apply_y}{apply_m:02d}_{target_staff}.csv",
-                                    mime="text/csv",
-                                    use_container_width=True,
-                                    type="primary"
-                                )
-                            else:
-                                st.warning("該当する勤務データが生成されませんでした。")
-                except Exception as e:
-                    st.error(f"解析中にエラーが発生しました: {e}")
+    # 4. ファイルのアップロード
+    st.header("2. ファイルのアップロード")
+    uploaded_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf", key="pdf_uploader")
+
+    if uploaded_file and target_name:
+        if not gs_final_path:
+            st.warning("Ghostscriptが未設定のため、解析を開始できません。")
         else:
-            st.error(f"ファイル名『{pdf_file.name}』から年月を特定できません。")
+            pdf_stream = io.BytesIO(uploaded_file.read())
+            
+            try:
+                with st.spinner("PDFを解析中... (これには数十秒かかる場合があります)"):
+                    # practice_0.py の解析ロジックを呼び出し
+                    pdf_results, year, month = p0.pdf_reader(pdf_stream, target_name)
+                
+                if not pdf_results:
+                    st.error("指定された名前のデータが見つかりませんでした。")
+                else:
+                    st.success(f"解析完了: {year}年{month}月度")
+                    
+                    # スプレッドシート連携
+                    try:
+                        service = p0.get_sheets_service(st.secrets)
+                        time_map = p0.fetch_time_schedule(service, ss_id)
+                        
+                        integrated = {loc: {"pdf": d, "times": time_map.get(p0.normalize_text(loc).upper(), [])} 
+                                      for loc, d in pdf_results.items()}
+                        
+                        rows = p0.build_calendar_df(integrated, year, month)
+                        
+                        if rows:
+                            df = pd.DataFrame(rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
+                            st.subheader("抽出されたスケジュール案")
+                            st.dataframe(df, use_container_width=True)
+                            
+                            csv = df.to_csv(index=False, encoding="utf_8_sig")
+                            st.download_button(
+                                label="📥 Googleカレンダー用CSVをダウンロード",
+                                data=csv,
+                                file_name=f"shift_{year}_{month}_{target_name}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                    except Exception as e:
+                        st.error(f"スプレッドシート連携エラー: {e}")
+                    
+            except Exception as e:
+                st.error(f"解析エラー: {e}")
 
 if __name__ == "__main__":
     main()
