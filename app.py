@@ -10,6 +10,13 @@ import shutil
 import os
 import platform
 
+import streamlit as st
+import shutil
+import os
+import platform
+import io
+import practice_0 as p0
+
 def ensure_ghostscript():
     """
     Ghostscriptのパスを確認し、見つからない場合は標準的なインストール先を探索して
@@ -22,24 +29,88 @@ def ensure_ghostscript():
         # Windowsの場合、標準的なインストール先をいくつか探索
         possible_paths = [
             r"C:\Program Files\gs",
-            r"C:\Program Files (x86)\gs"
+            r"C:\Program Files\x86\gs"
         ]
         
         for base in possible_paths:
             if os.path.exists(base):
                 # gs10.03.1 などのバージョン名フォルダを探す
-                versions = os.listdir(base)
-                for v in sorted(versions, reverse=True): # 最新バージョンを優先
-                    bin_path = os.path.join(base, v, "bin")
-                    if os.path.exists(bin_path):
-                        # 見つかったbinフォルダをPATHの先頭に追加
-                        os.environ["PATH"] = bin_path + os.pathsep + os.environ["PATH"]
-                        gs_executable = shutil.which("gswin64c") or shutil.which("gswin32c")
-                        if gs_executable:
-                            return gs_executable
+                try:
+                    versions = os.listdir(base)
+                    for v in sorted(versions, reverse=True): # 最新バージョンを優先
+                        bin_path = os.path.join(base, v, "bin")
+                        if os.path.exists(bin_path):
+                            # 見つかったbinフォルダをPATHの先頭に追加
+                            os.environ["PATH"] = bin_path + os.pathsep + os.environ["PATH"]
+                            gs_executable = shutil.which("gswin64c") or shutil.which("gswin32c")
+                            if gs_executable:
+                                return gs_executable
+                except:
+                    continue
                             
     return gs_executable
 
+# --- ページ設定 ---
+st.set_page_config(page_title="勤務スケジュール抽出システム", layout="wide")
+
+# --- Ghostscript実行確認 ---
+gs_final_path = ensure_ghostscript()
+
+if gs_final_path:
+    st.sidebar.success(f"✅ Ghostscript 接続済み")
+else:
+    st.error("❌ Ghostscriptがまだ見つかりません。")
+    with st.expander("詳細な解決策を表示"):
+        st.markdown("""
+        **PC（ローカル）で実行中の場合:**
+        1. [Ghostscript公式サイト](https://ghostscript.com/releases/gsdnld.html) からインストーラーをダウンロードして実行してください。
+        2. インストール後、**PCを再起動**してからこのアプリを再度立ち上げてください。
+        
+        **サーバー（Streamlit Cloud）の場合:**
+        - リポジトリのルート直下に `packages.txt` があり、中身が `ghostscript` となっているか確認してください。
+        """)
+
+# --- メインUI ---
+st.title("🛡️ 免税店シフト解析 (Camelot版)")
+st.subheader("📅 勤務スケジュール抽出システム")
+st.markdown("PDFのシフト表からGoogleカレンダー用CSVを自動生成します。")
+
+st.divider()
+
+# 1. 基本設定
+st.header("1. 基本設定")
+col1, col2 = st.columns(2)
+with col1:
+    target_name = st.text_input("あなたの名前", value="西村 文宏", help="名字と名前の間にスペースを入れてください")
+with col2:
+    ss_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
+
+# 2. ファイルのアップロード
+st.header("2. ファイルのアップロード")
+uploaded_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
+
+if uploaded_file and target_name:
+    if not gs_final_path:
+        st.warning("Ghostscriptが未設定のため、解析を開始できません。")
+    else:
+        pdf_stream = io.BytesIO(uploaded_file.read())
+        
+        try:
+            with st.spinner("PDFを解析中... (これには数十秒かかる場合があります)"):
+                # practice_0.py の解析ロジックを呼び出し
+                pdf_results, year, month = p0.pdf_reader(pdf_stream, target_name)
+            
+            if not pdf_results:
+                st.error("指定された名前のデータが見つかりませんでした。PDFの内容や名前の入力を確認してください。")
+            else:
+                st.success(f"解析完了: {year}年{month}月度")
+                
+                # スプレッドシート連携とCSV生成のロジックがここに入ります
+                # (既存の統合ロジックを継続)
+                
+        except Exception as e:
+            st.error(f"エラーが発生しました: {e}")
+            
 # --- 実行確認 ---
 st.set_page_config(page_title="シフト解析システム", layout="wide")
 
