@@ -9,36 +9,31 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- 1. テキストの正規化（全角・半角・改行の壁をなくす） ---
+# --- 1. テキストの正規化 ---
 def normalize_text(text):
     if not isinstance(text, str): return ""
-    # 全角を半角に、濁点を結合
     text = unicodedata.normalize('NFKC', text)
-    # 改行、空白、記号を完全に消し去る
-    clean = re.sub(r'[\s　\n\r\t\.\,・\-|_]', '', text).lower()
-    return clean
+    # 比較用には空白を消すが、改行 \n は構造解析に使うためここでは残す
+    return text
 
-def is_name_match(target_name, text_to_check):
+def find_name_in_cell_and_offset(target_name, cell_text):
     """
-    ターゲットの名前（例：西村文宏）が、セルの塊（例：大喜多晃\n西村文宏）の中に
-    含まれているかを判定します。
+    セル内の改行を数えて、名前が「何番目」に登場するかを判定する。
+    戻り値: (見つかったか, 相対的な行オフセット)
     """
-    clean_target = normalize_text(target_name)
-    clean_cell = normalize_text(text_to_check)
+    clean_target = re.sub(r'[\s　]', '', normalize_text(target_name)).lower()
+    # セルを改行で分割し、空要素を除去してリスト化
+    lines = [l.strip() for l in cell_text.split('\n') if l.strip()]
     
-    if not clean_target or not clean_cell:
-        return False
-        
-    # 方法1: 名前がまるごと含まれているか（スペース無視）
-    if clean_target in clean_cell:
-        return True
-    
-    # 方法2: 名字（最初の2文字）が含まれているか
-    surname = clean_target[:2]
-    if surname in clean_cell:
-        return True
-        
-    return False
+    for idx, line in enumerate(lines):
+        clean_line = re.sub(r'[\s　]', '', line).lower()
+        # 名字または名前が含まれているか
+        if clean_target in clean_line or clean_target[:2] in clean_line:
+            # 1つのセルに2人入っている構造（例: 嵯峨根 \n 大喜多）の場合、
+            # 1人目ならオフセット0, 2人目ならオフセット1を返すイメージ
+            # PDFのシフト行が名前の行と1対1で対応しているか、2行1セットかにより調整
+            return True, idx
+    return False, 0
 
 # --- 2. ファイル名から年月を取得 ---
 def extract_year_month_from_filename(file_name):
@@ -63,7 +58,6 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     expected_first_wday = weekdays_jp[first_wday_idx]
     
     pdf_days = []
-    # 広めに探す（15行目まで）
     for r in range(min(15, len(df))):
         for col in range(df.shape[1]):
             cell_val = str(df.iloc[r, col])
@@ -83,7 +77,7 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     work_place = "第2ターミナル" if "2" in header_all or "T2" in header_all else "免税店"
     return is_match, "OK", work_place
 
-# --- 4. シフト計算ロジック（そのまま） ---
+# --- 4. シフト詳細計算 ---
 def shift_cal(key, target_date, col_idx, shift_info, other_staff_shift, time_schedule, final_rows):
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
     if not my_time_shift.empty:
@@ -115,7 +109,14 @@ def process_full_month(integrated_dic, year, month):
             if col_idx >= my_daily.shape[1]: continue
             shift_val = str(my_daily.iloc[0, col_idx]).strip()
             if not shift_val or shift_val.lower() == 'nan': continue
-            shifts = re.findall(r'[A-Z\d]+|公|有|明', shift_val)
+            
+            # シフトセル内も改行で分かれている場合があるため、適切に分割
+            # (名前がセル内2番目なら、シフトも2番目の要素を取るなどの処理)
+            lines = [l.strip() for l in shift_val.split('\n') if l.strip()]
+            # 基本は最初の要素、複数あればオフセットに合わせる（要調整）
+            current_s_text = lines[0] if lines else ""
+            
+            shifts = re.findall(r'[A-Z\d]+|公|有|明', current_s_text)
             for s_info in shifts:
                 if s_info in ["公", "有"]:
                     final_rows.append([f"【{s_info}】", target_date, "", target_date, "", "True", "", place_key])
@@ -143,28 +144,23 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             if not is_valid: continue
 
             for i in range(len(df)):
-                # 名前が含まれているかチェック（行全体を結合して探す）
-                row_full_text = "".join(df.iloc[i, :].astype(str))
-                if is_name_match(target_staff, row_full_text):
-                    # 発見：西村さんのデータ（2行セット）を抽出
-                    my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
-                    # 他の人のデータを抽出
-                    others = df.drop(index=[i, i+1] if i+1 < len(df) else [i]).copy().reset_index(drop=True)
+                cell_content = str(df.iloc[i, 0])
+                found, offset = find_name_in_cell_and_offset(target_staff, cell_content)
+                
+                if found:
+                    # 発見！
+                    # my_daily は、その人のシフト行（このPDF構造だと名前の行と同一）
+                    # 1つのセルに2人いる場合、shift_valの取り方を工夫する必要がある
+                    my_daily = df.iloc[i : i + 1, :].copy().reset_index(drop=True)
+                    others = df.drop(index=[i]).copy().reset_index(drop=True)
+                    
+                    # 内部で「何番目の名前か」を my_daily に持たせておく（後の抽出用）
+                    my_daily.iloc[0, 0] = f"{target_staff}_offset_{offset}"
+                    
                     table_dictionary[work_place] = [my_daily, others]
-                    st.success(f"🎯 西村様のデータを自動検出しました（行 {i}）")
+                    st.success(f"🎯 構造解析により '{target_staff}' 様を特定しました（{work_place}）")
                     return table_dictionary, year, month
 
-    # 万が一見つからない場合
-    st.warning(f"'{target_staff}' 様を特定できませんでした。")
-    with st.expander("🛠️ 手動指定（最終手段）"):
-        manual_row = st.number_input("行番号を入力", min_value=0, value=20)
-        if st.button("この行で確定する"):
-            my_daily = df.iloc[manual_row : manual_row + 2, :].copy().reset_index(drop=True)
-            others = df.drop(index=[manual_row, manual_row+1] if manual_row+1 < len(df) else [manual_row]).copy().reset_index(drop=True)
-            table_dictionary[work_place] = [my_daily, others]
-            return table_dictionary, year, month
-        for r in range(len(df)):
-            st.text(f"行 {r}: {str(df.iloc[r, 0])[:50]}")
     return table_dictionary, year, month
 
 def time_schedule_from_drive(service, spreadsheet_id):
