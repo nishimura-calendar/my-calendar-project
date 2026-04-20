@@ -20,8 +20,8 @@ def normalize_text(text):
 
 def is_name_match(target_name, text_to_check):
     """
-    名前のヒット率を最大化するロジック。
-    ターゲット(例:西村文宏)の全文字が、セルの中にバラバラでも存在すればTrue。
+    名前の全文字が含まれているか判定。
+    順番がバラバラでも、改行で泣き別れていても検知します。
     """
     clean_target = normalize_text(target_name)
     clean_cell = normalize_text(text_to_check)
@@ -29,14 +29,9 @@ def is_name_match(target_name, text_to_check):
     if not clean_target or not clean_cell:
         return False
         
-    # 各文字が含まれているかチェック
+    # 「西」「村」「文」「宏」が全て含まれているか
     match_count = sum(1 for char in clean_target if char in clean_cell)
-    
-    # ターゲットが4文字（西村文宏）なら、4文字すべて見つかれば一致とみなす
-    if match_count >= len(clean_target):
-        return True
-            
-    return False
+    return match_count >= len(clean_target)
 
 # --- 2. ファイル名から「期待値」を取得 ---
 def extract_year_month_from_filename(file_name):
@@ -65,12 +60,15 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     expected_first_wday = weekdays_jp[first_wday_idx]
     
     pdf_days = []
-    for col in range(1, df.shape[1]):
-        cell_val = str(df.iloc[0, col])
-        d_match = re.search(r'(\d+)', cell_val)
-        w_match = re.search(r'([月火水木金土日])', cell_val)
-        if d_match and w_match:
-            pdf_days.append({"d": int(d_match.group(1)), "w": w_match.group(1)})
+    # 全列をスキャンして日付行を探す（1行目とは限らないため）
+    for r in range(min(3, len(df))):
+        for col in range(1, df.shape[1]):
+            cell_val = str(df.iloc[r, col])
+            d_match = re.search(r'(\d+)', cell_val)
+            w_match = re.search(r'([月火水木金土日])', cell_val)
+            if d_match and w_match:
+                pdf_days.append({"d": int(d_match.group(1)), "w": w_match.group(1)})
+        if pdf_days: break
 
     if not pdf_days:
         return False, "日付行が認識できません", "Unknown"
@@ -83,18 +81,13 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     st.markdown("### 📊 ファイル整合性チェック")
     col1, col2 = st.columns(2)
     with col1:
-        st.write("**【ファイル名からの期待値】**")
-        st.write(f"{expected_year}年{expected_month}月")
-        st.write(f"1日: {expected_first_wday}曜日")
+        st.write(f"**【期待値】** {expected_year}年{expected_month}月 / 1日:{expected_first_wday}")
     with col2:
-        st.write("**【PDFデータからの実測値】**")
-        st.write(f"最大日数: {actual_max_day}日")
-        st.write(f"1日: {actual_first_wday}曜日")
+        st.write(f"**【実測値】** 最大{actual_max_day}日 / 1日:{actual_first_wday}")
 
     is_match = (actual_max_day == last_day) and (actual_first_wday == expected_first_wday)
-    
     header_cell = str(df.iloc[0, 0])
-    work_place = header_cell.splitlines()[len(header_cell.splitlines())//2].strip() if header_cell else "Unknown"
+    work_place = "第2ターミナル" if "第2" in header_cell or "T2" in header_cell else "免税店"
 
     return is_match, "OK", work_place
 
@@ -108,6 +101,7 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         f.write(pdf_stream.getbuffer())
     
     try:
+        # flavor='lattice'（罫線重視）で読み込み
         tables = camelot.read_pdf(temp_path, pages='all', flavor='lattice')
     except Exception as e:
         st.error(f"解析失敗: {e}")
@@ -123,18 +117,21 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         if not is_valid: continue
 
         found = False
-        all_row_names = [] # デバッグ用
+        all_text_rows = []
 
         for i in range(len(df)):
-            current_row_text = str(df.iloc[i, 0])
-            next_row_text = str(df.iloc[i+1, 0]) if i+1 < len(df) else ""
-            combined_text = current_row_text + next_row_text
+            # ★最重要変更点：1列目だけでなく、行全体の文字を合体させて検索
+            # これにより、名前が列をはみ出していたり、日付と混ざっていても検知可能
+            full_row_text = "".join(df.iloc[i, :].astype(str))
             
-            # デバッグ用に正規化前のテキストを保持
-            all_row_names.append(current_row_text.replace('\n', ' '))
+            # 2行セットで名前が泣き別れている可能性も考慮
+            next_row_text = "".join(df.iloc[i+1, :].astype(str)) if i+1 < len(df) else ""
+            combined_search_area = full_row_text + next_row_text
+            
+            all_text_rows.append(full_row_text[:50] + "...") # デバッグ用
 
-            if is_name_match(target_staff, combined_text):
-                # 発見
+            if is_name_match(target_staff, combined_search_area):
+                # 発見：自分用2行、他人用は除外
                 my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
                 table_dictionary[work_place] = [my_daily, others]
@@ -142,15 +139,12 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
                 break
         
         if found:
-            st.success(f"👤 '{target_staff}' さんのデータを抽出しました。")
+            st.success(f"👤 '{target_staff}' さんの行を特定しました。")
         else:
-            # 見つからなかった場合にデバッグリストを表示
-            st.warning(f"'{target_staff}' という名前がPDFの1列目に見つかりません。")
-            with st.expander("🔍 システムがPDFから読み取った名前一覧を確認する"):
-                st.write("以下のリストにあなたの名前が含まれているか確認してください。")
-                for idx, name in enumerate(all_row_names):
-                    st.text(f"行 {idx}: {name}")
-                st.info("ヒント: 名前が他の文字と繋がっていたり、一文字だけ違っていたりする場合は教えてください。")
+            st.warning(f"'{target_staff}' 様の名前を行データから検出できませんでした。")
+            with st.expander("🔍 PDFから読み取られた各行の先頭データ"):
+                for idx, txt in enumerate(all_text_rows):
+                    st.text(f"行 {idx}: {txt}")
                 
     return table_dictionary, year, month
 
