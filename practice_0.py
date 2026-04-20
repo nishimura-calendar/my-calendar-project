@@ -13,25 +13,22 @@ from googleapiclient.http import MediaIoBaseDownload
 def normalize_text(text):
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFKC', text)
-    # 比較用には空白を消すが、改行 \n は構造解析に使うためここでは残す
+    # 構造解析のため改行 \n は維持する
     return text
 
-def find_name_in_cell_and_offset(target_name, cell_text):
+def find_name_and_index_in_cell(target_name, cell_text):
     """
-    セル内の改行を数えて、名前が「何番目」に登場するかを判定する。
-    戻り値: (見つかったか, 相対的な行オフセット)
+    セル内の改行を分割し、名前が「何番目の行」にあるかを返す。
+    例: "嵯峨根\n大喜多" に対して "大喜多" を探すと (True, 1) を返す。
     """
     clean_target = re.sub(r'[\s　]', '', normalize_text(target_name)).lower()
-    # セルを改行で分割し、空要素を除去してリスト化
-    lines = [l.strip() for l in cell_text.split('\n') if l.strip()]
+    # 空行を除外せずに分割（シフト側の改行数と合わせるため）
+    lines = [l.strip() for l in cell_text.split('\n')]
     
+    # 有効なデータ（空文字以外）の中での順番を探す
     for idx, line in enumerate(lines):
         clean_line = re.sub(r'[\s　]', '', line).lower()
-        # 名字または名前が含まれているか
-        if clean_target in clean_line or clean_target[:2] in clean_line:
-            # 1つのセルに2人入っている構造（例: 嵯峨根 \n 大喜多）の場合、
-            # 1人目ならオフセット0, 2人目ならオフセット1を返すイメージ
-            # PDFのシフト行が名前の行と1対1で対応しているか、2行1セットかにより調整
+        if clean_target and (clean_target in clean_line or clean_target[:2] in clean_line):
             return True, idx
     return False, 0
 
@@ -77,7 +74,7 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     work_place = "第2ターミナル" if "2" in header_all or "T2" in header_all else "免税店"
     return is_match, "OK", work_place
 
-# --- 4. シフト詳細計算 ---
+# --- 4. シフト詳細計算ロジック ---
 def shift_cal(key, target_date, col_idx, shift_info, other_staff_shift, time_schedule, final_rows):
     my_time_shift = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
     if not my_time_shift.empty:
@@ -89,8 +86,20 @@ def shift_cal(key, target_date, col_idx, shift_info, other_staff_shift, time_sch
                 if current_val != "":
                     mask_t = (time_schedule.iloc[:, t_col].astype(str) == current_val) & (time_schedule.iloc[:, 1] != shift_info)
                     target_codes = time_schedule.loc[mask_t, time_schedule.columns[1]].tolist()
-                    target_rows = other_staff_shift[other_staff_shift.iloc[:, col_idx].isin(target_codes)]
-                    names = [str(n).split('\n')[0].strip() for n in target_rows.iloc[:, 0].unique() if n and str(n).lower() != 'nan']
+                    
+                    # 他人のシフトセルからも改行を考慮して名前を抽出
+                    target_rows = other_staff_shift[other_staff_shift.iloc[:, col_idx].str.contains('|'.join(target_codes), na=False)]
+                    names = []
+                    for _, r in target_rows.iterrows():
+                        # セル内のどの位置にコードがあるかを探し、対応する位置の名前を出す
+                        s_cell = str(r.iloc[col_idx]).split('\n')
+                        n_cell = str(r.iloc[0]).split('\n')
+                        for s_idx, s_txt in enumerate(s_cell):
+                            if any(c in s_txt for c in target_codes):
+                                if s_idx < len(n_cell):
+                                    names.append(n_cell[s_idx].strip())
+                    
+                    names = list(set([n for n in names if n]))
                     t_info = f"【{current_val}】" + (f" with {'・'.join(names)}" if names else "")
                     start_t = str(time_schedule.iloc[0, t_col])
                     final_rows.append([t_info, target_date, start_t, target_date, "", "False", "", key])
@@ -105,18 +114,23 @@ def process_full_month(integrated_dic, year, month):
     for day in range(1, last_day + 1):
         target_date = f"{year}/{month:02d}/{day:02d}"
         for place_key, (my_daily, others, time_sched) in integrated_dic.items():
+            # my_daily.iloc[0,0] には "名前_offset_1" のような形式で保存してある
+            meta = str(my_daily.iloc[0, 0])
+            offset = 0
+            if "_offset_" in meta:
+                offset = int(meta.split("_offset_")[-1])
+            
             col_idx = day 
             if col_idx >= my_daily.shape[1]: continue
-            shift_val = str(my_daily.iloc[0, col_idx]).strip()
-            if not shift_val or shift_val.lower() == 'nan': continue
             
-            # シフトセル内も改行で分かれている場合があるため、適切に分割
-            # (名前がセル内2番目なら、シフトも2番目の要素を取るなどの処理)
-            lines = [l.strip() for l in shift_val.split('\n') if l.strip()]
-            # 基本は最初の要素、複数あればオフセットに合わせる（要調整）
-            current_s_text = lines[0] if lines else ""
+            # シフトのセルを改行で分割
+            raw_val = str(my_daily.iloc[0, col_idx])
+            val_lines = raw_val.split('\n')
             
-            shifts = re.findall(r'[A-Z\d]+|公|有|明', current_s_text)
+            # 名前と同じ位置のデータを取り出す（なければ全体から探す）
+            shift_text = val_lines[offset] if offset < len(val_lines) else raw_val
+            
+            shifts = re.findall(r'[A-Z\d]+|公|有|明', shift_text)
             for s_info in shifts:
                 if s_info in ["公", "有"]:
                     final_rows.append([f"【{s_info}】", target_date, "", target_date, "", "True", "", place_key])
@@ -144,21 +158,19 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             if not is_valid: continue
 
             for i in range(len(df)):
-                cell_content = str(df.iloc[i, 0])
-                found, offset = find_name_in_cell_and_offset(target_staff, cell_content)
+                cell_name_col = str(df.iloc[i, 0])
+                found, offset = find_name_and_index_in_cell(target_staff, cell_name_col)
                 
                 if found:
-                    # 発見！
-                    # my_daily は、その人のシフト行（このPDF構造だと名前の行と同一）
-                    # 1つのセルに2人いる場合、shift_valの取り方を工夫する必要がある
+                    # 発見：その行をキープ
                     my_daily = df.iloc[i : i + 1, :].copy().reset_index(drop=True)
-                    others = df.drop(index=[i]).copy().reset_index(drop=True)
+                    others = df.copy().reset_index(drop=True)
                     
-                    # 内部で「何番目の名前か」を my_daily に持たせておく（後の抽出用）
+                    # 重要：名前が何番目だったかをメタデータとして埋め込む
                     my_daily.iloc[0, 0] = f"{target_staff}_offset_{offset}"
                     
                     table_dictionary[work_place] = [my_daily, others]
-                    st.success(f"🎯 構造解析により '{target_staff}' 様を特定しました（{work_place}）")
+                    st.success(f"🎯 '{target_staff}' 様をセル内の {offset+1} 番目に発見しました。")
                     return table_dictionary, year, month
 
     return table_dictionary, year, month
