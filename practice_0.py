@@ -39,108 +39,103 @@ def extract_year_month_from_text(text):
                     y_val = 2000 + val
     return y_val, m_val
 
-def extract_max_day_from_pdf(pdf_stream):
-    try:
-        pdf_stream.seek(0)
-        with pdfplumber.open(pdf_stream) as pdf:
-            text = pdf.pages[0].extract_text()
-            if not text: return None
-            days = re.findall(r'\b(28|29|30|31)\b', text)
-            if days:
-                return int(max(days))
-    except:
-        pass
-    return None
-
-def extract_first_weekday_from_pdf(pdf_stream):
-    try:
-        pdf_stream.seek(0)
-        with pdfplumber.open(pdf_stream) as pdf:
-            page = pdf.pages[0]
-            text = page.extract_text()
-            if not text: return None
-            match = re.search(r'\b1\s*[\(\（]([月火水木金土日])[\)\）]', text)
-            if match: return match.group(1)
-            match_near = re.search(r'\b1\b.{0,15}([月火水木金土日])', text, re.DOTALL)
-            if match_near: return match_near.group(1)
-            return None
-    except:
-        pass
-    return None
-
 def time_schedule_from_drive(service, file_id):
-    """Google Driveからスプレッドシートを読み込む"""
+    """
+    Google Driveからスプレッドシートを読み込む。
+    【再構築版】幅方向の整合性を重視し、列不足によるIndexErrorを防ぐ。
+    """
     try:
         request = service.files().get_media(fileId=file_id)
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
+        
+        # スプレッドシートの場合はExcel形式でエクスポート
         if file_metadata.get('mimeType') == 'application/vnd.google-apps.spreadsheet':
             request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
-        while not done: _, done = downloader.next_chunk()
+        while not done:
+            _, done = downloader.next_chunk()
         fh.seek(0)
-        # dtype=str で読み込み、構造を維持
+        
+        # dtype=str で読み込み、すべてのセルを文字列として扱う
+        # header=None にして1行目（時間行）もデータとして保持
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
+        full_df = full_df.fillna('') # NaNを空文字に統一
         
-        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
+        # --- 幅方向のチェック ---
+        # A列(iloc[:, 0])に勤務地名が入っている行を起点とする
+        location_rows = full_df[full_df.iloc[:, 0].str.strip() != ''].index.tolist()
+        
         location_data_dic = {}
-        
         for i, start_row in enumerate(location_rows):
-            end_row = location_rows[i+1] if i+1 < len(full_df) else len(full_df)
-            location_name = str(full_df.iloc[start_row, 0]).strip()
+            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+            
+            # 各勤務地ブロックを切り出し
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+            location_name = temp_range.iloc[0, 0].strip()
             
-            # 1行目（時間行）を整形
-            for c in range(2, len(temp_range.columns)):
-                v = temp_range.iloc[0, c]
-                try:
-                    fv = float(v)
-                    h = int(fv); m = int(round((fv - h) * 60))
-                    temp_range.iloc[0, c] = f"{h}:{m:02d}"
-                except: pass
+            # 【重要】時間行（ブロックの1行目）のシリアル値を時刻文字列に変換
+            # D列（インデックス3）以降が時間データという前提で処理
+            for c in range(3, len(temp_range.columns)):
+                val = temp_range.iloc[0, c]
+                if val and val.replace('.', '', 1).isdigit():
+                    try:
+                        fv = float(val)
+                        if fv < 1: # シリアル値（0.25など）の場合
+                            h = int(fv * 24)
+                            m = int(round((fv * 24 - h) * 60))
+                            temp_range.iloc[0, c] = f"{h}:{m:02d}"
+                        else: # 既に数値（6.25など）の場合
+                            h = int(fv)
+                            m = int(round((fv - h) * 60))
+                            temp_range.iloc[0, c] = f"{h}:{m:02d}"
+                    except:
+                        pass
             
-            location_data_dic[location_name] = temp_range.fillna('')
+            location_data_dic[location_name] = temp_range
+            
         return location_data_dic
     except Exception as e:
-        raise e
+        # どこで止まったか特定しやすくするためエラーを再送
+        raise Exception(f"時程表の構築中にエラーが発生しました: {str(e)}")
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     """
-    【観察用】t_col-1を使用しない、自身の予定変化のみを抽出するシンプル版
+    【観察用】t_col-1を使用しないシンプル版
     """
-    time_shift = time_schedule.fillna("").astype(str)
+    # 読み込んだ time_schedule の形状を確認
+    num_rows, num_cols = time_schedule.shape
     
-    # 1. シフトコード自体の終日予定（存在確認用）
-    if (time_shift.iloc[:, 1] == shift_info).any():
-        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "観察用：シフト一致", key])
-        
-        # そのシフト（'C'など）の行を特定
-        my_rows = time_shift[time_shift.iloc[:, 1] == shift_info]
-        if not my_rows.empty:
-            prev_val = ""
-            num_cols = time_shift.shape[1]
+    # 1. シフトコード自体の終日予定
+    # B列（インデックス1）がシフトコード列という前提
+    if num_cols > 1:
+        match_rows = time_schedule[time_schedule.iloc[:, 1].astype(str) == shift_info]
+        if not match_rows.empty:
+            final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "観察用：シフト一致", key])
             
-            # 列インデックス2（時間データの開始）からループ
-            for t_col in range(2, num_cols):
-                try:
-                    current_val = my_rows.iloc[0, t_col]
-                    time_header = time_shift.iloc[0, t_col] # 1行目の時間
-                except:
-                    continue
-
-                # 予定が変化した瞬間だけを捉える（t_col-1を使わず、prev_valと比較）
+            # 自分の予定行（最初の1行）
+            my_task_row = match_rows.iloc[0]
+            prev_val = ""
+            
+            # 時間のデータはD列（インデックス3）から開始
+            # rangeの終端を実際の列数(num_cols)に合わせることで安全にループ
+            for t_col in range(3, num_cols):
+                current_val = str(my_task_row[t_col]).strip()
+                time_header = str(time_schedule.iloc[0, t_col]).strip()
+                
                 if current_val != prev_val:
-                    # 予定が終わった（空になった）場合
                     if current_val == "":
+                        # 終了処理
                         if final_rows and final_rows[-1][5] == "False":
                             final_rows[-1][4] = time_header
                             final_rows[-1][0] += " (終了)"
-                    # 予定が始まった場合
                     else:
+                        # 開始処理
                         subject = f"【{current_val}】"
                         final_rows.append([subject, target_date, time_header, target_date, "", "False", "観察用：詳細", key])
-                        
+                
                 prev_val = current_val
 
 def pdf_reader(pdf_stream, target_staff):
@@ -179,6 +174,7 @@ def process_full_month(integrated_dic, year, month):
         target_date_str = f"{year}-{month:02d}-{day:02d}"
         for place_key, data_list in integrated_dic.items():
             my_row, others, time_sched = data_list[0], data_list[1], data_list[2]
+            # PDF側の日付列チェック
             if day + 1 >= my_row.shape[1]: continue
             val = str(my_row.iloc[0, day + 1])
             if not val or val.strip() == "" or val.lower() == 'nan': continue
