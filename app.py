@@ -27,57 +27,37 @@ def main():
     pdf_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
 
     if pdf_file:
-        # ファイル読み込み
         pdf_file.seek(0)
         pdf_bytes = pdf_file.read()
         pdf_stream = io.BytesIO(pdf_bytes)
         
-        # 1. ファイル名から年月を抽出（改善版ロジック）
         apply_y, apply_m = p0.extract_year_month_from_text(pdf_file.name)
         
         if apply_y and apply_m:
-            # 2. 整合性チェック
             mismatch_reasons = []
             
             with st.spinner("PDFの整合性を自動検証中..."):
-                # (A) 月末日のチェック
+                # 月末日のチェック
                 expected_days = calendar.monthrange(apply_y, apply_m)[1]
                 actual_max_day = p0.extract_max_day_from_pdf(pdf_stream)
                 if actual_max_day and actual_max_day != expected_days:
                     mismatch_reasons.append(f"日数の不一致: {apply_m}月は{expected_days}日までですが、PDFは{actual_max_day}日まであります。")
                 
-                # (B) 1日の曜日のチェック
+                # 曜日のチェック（判定をマイルドに）
                 first_day_date = datetime.date(apply_y, apply_m, 1)
                 wd_list = ["月", "火", "水", "木", "金", "土", "日"]
                 expected_wd = wd_list[first_day_date.weekday()]
                 actual_wd = p0.extract_first_weekday_from_pdf(pdf_stream)
                 if actual_wd and actual_wd != expected_wd:
-                    mismatch_reasons.append(f"曜日の不一致: {apply_y}年{apply_m}月1日は({expected_wd})曜日ですが、PDFは({actual_wd})曜日となっています。")
+                    # 警告のみにするか、無視して進めるためのフラグ
+                    st.warning(f"⚠️ 曜日の判定が一致しませんでした（PDFから読み取れた曜日: {actual_wd} / 期待される曜日: {expected_wd}）。PDFのレイアウトにより誤判定された可能性があります。")
 
-            # --- 条件分岐 ---
-            if mismatch_reasons:
-                # 【相違がある場合】 エラー表示して停止
-                st.error("⚠️ ファイル名とPDFの内容に相違が見つかりました")
-                for reason in mismatch_reasons:
-                    st.write(f"- {reason}")
-                
-                st.markdown("---")
-                st.subheader("📝 アップロードされたPDFの確認")
-                try:
-                    pdf_stream.seek(0)
-                    with pdfplumber.open(pdf_stream) as pdf:
-                        if len(pdf.pages) > 0:
-                            img = pdf.pages[0].to_image(resolution=150)
-                            st.image(img.original, use_container_width=True, caption=f"プレビュー: {pdf_file.name}")
-                except Exception as e:
-                    st.error(f"プレビュー表示失敗: {e}")
-                
-                st.warning("内容を確認し、正しいファイルを再アップロードしてください。")
-
+            # 重大な不一致（日数など）がなければ続行ボタンを表示、または自動実行
+            if any("日数" in r for r in mismatch_reasons):
+                st.error("❌ ファイルの月とPDFの日数が大きく異なります。")
+                for r in mismatch_reasons: st.write(r)
             else:
-                # 【相違がない場合】 自動的にカレンダー生成へ進む
-                st.success(f"✅ 整合性確認OK: {apply_y}年{apply_m}月の解析を自動開始します。")
-                
+                # 解析実行
                 try:
                     service = p0.get_gdrive_service(st.secrets)
                     with st.spinner(f"{apply_y}年{apply_m}月のシフトを解析中..."):
@@ -92,7 +72,7 @@ def main():
                             final_rows = p0.process_full_month(integrated_dic, int(apply_y), int(apply_m))
 
                             if final_rows:
-                                st.subheader("3. 生成結果（CSV）")
+                                st.success(f"✅ {apply_y}年{apply_m}月のスケジュールを生成しました。")
                                 df_res = pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
                                 st.dataframe(df_res, use_container_width=True)
                                 
@@ -106,8 +86,6 @@ def main():
                                     use_container_width=True,
                                     type="primary"
                                 )
-                            else:
-                                st.warning("該当する勤務データが生成されませんでした。")
                 except Exception as e:
                     st.error(f"解析中にエラーが発生しました: {e}")
         else:
