@@ -20,8 +20,8 @@ def normalize_text(text):
 
 def is_name_match(target_name, text_to_check):
     """
-    名前のヒット率を極限まで高めるロジック。
-    ターゲット(西村文宏)の各文字が、バラバラの状態でも含まれているかカウントします。
+    名前のヒット率を最大化するロジック。
+    名字（西村）と名前（文宏）を分けて、名字さえあればOKとする緩和策を導入。
     """
     clean_target = normalize_text(target_name)
     clean_cell = normalize_text(text_to_check)
@@ -29,17 +29,22 @@ def is_name_match(target_name, text_to_check):
     if not clean_target or not clean_cell:
         return False
         
-    # 「西」「村」「文」「宏」がそれぞれ何文字含まれているか
-    match_chars = [char for char in clean_target if char in clean_cell]
-    match_count = len(set(match_chars)) # 重複を除いた一致数
-    
-    # 4文字中4文字一致（完全一致）
-    if match_count >= len(clean_target):
+    # ターゲットから「名字」と「名前」を推測（西村文宏 -> 西村, 文宏）
+    surname = clean_target[:2] # 西村
+    first_name = clean_target[2:] # 文宏
+
+    # 1. 名字が含まれているか？
+    has_surname = all(char in clean_cell for char in surname)
+    # 2. 名前が含まれているか？
+    has_firstname = all(char in clean_cell for char in first_name) if first_name else True
+
+    # 名字さえ合っていれば、ほぼ確定とする（他の方と被る可能性が低いため）
+    if has_surname:
         return True
     
-    # 4文字中3文字一致（1文字欠落・誤字許容）
-    # PDFの読み取りミス（例: 宏→広）をカバーします
-    if len(clean_target) >= 4 and match_count >= 3:
+    # 万が一名字が1文字欠けても、全体で3文字以上合致すればOK
+    match_count = sum(1 for char in clean_target if char in clean_cell)
+    if match_count >= 3:
         return True
             
     return False
@@ -71,9 +76,9 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     expected_first_wday = weekdays_jp[first_wday_idx]
     
     pdf_days = []
-    # 最初の5行以内をスキャンして日付行を探す
-    for r in range(min(5, len(df))):
-        for col in range(1, df.shape[1]):
+    # 最初の10行以内を広範囲にスキャンして日付行を探す
+    for r in range(min(10, len(df))):
+        for col in range(df.shape[1]):
             cell_val = str(df.iloc[r, col])
             d_match = re.search(r'(\d+)', cell_val)
             w_match = re.search(r'([月火水木金土日])', cell_val)
@@ -87,14 +92,6 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     actual_max_day = max([x["d"] for x in pdf_days])
     day_one = next((x for x in pdf_days if x["d"] == 1), None)
     actual_first_wday = day_one["w"] if day_one else "不明"
-
-    # UI表示
-    st.markdown("### 📊 ファイル構成の確認")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info(f"📁 期待値: {expected_year}年{expected_month}月 ({last_day}日間)")
-    with col2:
-        st.info(f"📄 PDF実測: {actual_max_day}日分を検出 (1日={actual_first_wday})")
 
     is_match = (actual_max_day == last_day) and (actual_first_wday == expected_first_wday)
     header_cell = str(df.iloc[0, 0])
@@ -111,56 +108,48 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
     with open(temp_path, "wb") as f:
         f.write(pdf_stream.getbuffer())
     
-    try:
-        # flavor='lattice'（格子状の表）で読み込み
-        tables = camelot.read_pdf(temp_path, pages='all', flavor='lattice')
-    except Exception as e:
-        st.error(f"PDF解析ライブラリでエラーが発生しました: {e}")
-        return {}, year, month
-
     table_dictionary = {}
     
-    for table in tables:
-        df = table.df
-        if df.empty: continue
-        
-        is_valid, _, work_place = verify_pdf_calendar(df, year, month)
-        if not is_valid: continue
+    # 読み込みモードを2パターン試す
+    for flavor in ['lattice', 'stream']:
+        try:
+            tables = camelot.read_pdf(temp_path, pages='all', flavor=flavor)
+        except:
+            continue
 
-        found = False
-        all_row_previews = []
+        for table in tables:
+            df = table.df
+            if df.empty: continue
+            
+            # カレンダー構造を持っているか確認
+            is_valid, msg, work_place = verify_pdf_calendar(df, year, month)
+            if not is_valid: continue
 
-        for i in range(len(df)):
-            # 行全体の文字列を結合（名前がどの列に飛んでいても捕まえる）
-            row_content = "".join(df.iloc[i, :].astype(str))
-            
-            # 前後の行と繋がっている可能性も考慮
-            prev_row = "".join(df.iloc[i-1, :].astype(str)) if i > 0 else ""
-            next_row = "".join(df.iloc[i+1, :].astype(str)) if i+1 < len(df) else ""
-            
-            # 3行分の巨大な検索範囲を作成
-            search_area = prev_row + row_content + next_row
-            
-            # デバッグ用に最初の数文字を表示
-            preview_txt = re.sub(r'\s+', ' ', row_content[:50])
-            all_row_previews.append(preview_txt)
+            all_row_previews = []
+            for i in range(len(df)):
+                # 全列のテキストを結合
+                row_content = "".join(df.iloc[i, :].astype(str))
+                # 前後の行も含めて検索
+                search_area = row_content
+                if i > 0: search_area += "".join(df.iloc[i-1, :].astype(str))
+                if i+1 < len(df): search_area += "".join(df.iloc[i+1, :].astype(str))
+                
+                # プレビュー用
+                all_row_previews.append(row_content[:60])
 
-            if is_name_match(target_staff, search_area):
-                # 発見：自分用として2行分（泣き別れ対策）を確保
-                my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
-                others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
-                table_dictionary[work_place] = [my_daily, others]
-                found = True
-                break
-        
-        if found:
-            st.success(f"🎯 '{target_staff}' 様のシフト行を特定しました。")
-        else:
-            st.warning(f"'{target_staff}' 様の名前が検出できませんでした。")
-            with st.expander("🔍 内部データを確認する（名前が見当たらない場合）"):
-                st.write("システムが読み取った各行のデータです。ここにお名前（または断片）があるか確認してください。")
-                for idx, txt in enumerate(all_row_previews):
-                    st.text(f"行 {idx}: {txt}")
+                if is_name_match(target_staff, search_area):
+                    my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
+                    others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
+                    table_dictionary[work_place] = [my_daily, others]
+                    st.success(f"👤 '{target_staff}' 様の行を発見しました（モード: {flavor}）")
+                    return table_dictionary, year, month
+
+    # 見つからない場合
+    st.warning(f"'{target_staff}' 様の名前が検出できませんでした。")
+    with st.expander("🔍 内部データを確認する（こちらを開いて内容を教えてください）"):
+        st.write("解析された各行のテキストです：")
+        for idx, txt in enumerate(all_row_previews if 'all_row_previews' in locals() else []):
+            st.text(f"行 {idx}: {txt}")
                 
     return table_dictionary, year, month
 
