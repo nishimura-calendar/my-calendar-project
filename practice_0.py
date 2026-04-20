@@ -21,7 +21,7 @@ def normalize_text(text):
 def is_name_match(target_name, text_to_check):
     """
     名前のヒット率を最大化するロジック。
-    名字（西村）と名前（文宏）を分けて、名字さえあればOKとする緩和策を導入。
+    名字（西村）の2文字が含まれているだけで『西村さん』と断定します。
     """
     clean_target = normalize_text(target_name)
     clean_cell = normalize_text(text_to_check)
@@ -29,20 +29,14 @@ def is_name_match(target_name, text_to_check):
     if not clean_target or not clean_cell:
         return False
         
-    # ターゲットから「名字」と「名前」を推測（西村文宏 -> 西村, 文宏）
-    surname = clean_target[:2] # 西村
-    first_name = clean_target[2:] # 文宏
+    # 「西村」という名字の各文字を個別にチェック（「西」と「村」が離れていてもOK）
+    surname_chars = ["西", "村"]
+    has_surname = all(char in clean_cell for char in surname_chars)
 
-    # 1. 名字が含まれているか？
-    has_surname = all(char in clean_cell for char in surname)
-    # 2. 名前が含まれているか？
-    has_firstname = all(char in clean_cell for char in first_name) if first_name else True
-
-    # 名字さえ合っていれば、ほぼ確定とする（他の方と被る可能性が低いため）
     if has_surname:
         return True
     
-    # 万が一名字が1文字欠けても、全体で3文字以上合致すればOK
+    # 念のため、フルネームから3文字以上一致する場合も救済
     match_count = sum(1 for char in clean_target if char in clean_cell)
     if match_count >= 3:
         return True
@@ -121,7 +115,6 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             df = table.df
             if df.empty: continue
             
-            # カレンダー構造を持っているか確認
             is_valid, msg, work_place = verify_pdf_calendar(df, year, month)
             if not is_valid: continue
 
@@ -129,25 +122,27 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
             for i in range(len(df)):
                 # 全列のテキストを結合
                 row_content = "".join(df.iloc[i, :].astype(str))
-                # 前後の行も含めて検索
+                
+                # 前後の行も含めて「エリア」として検索
                 search_area = row_content
                 if i > 0: search_area += "".join(df.iloc[i-1, :].astype(str))
                 if i+1 < len(df): search_area += "".join(df.iloc[i+1, :].astype(str))
                 
-                # プレビュー用
-                all_row_previews.append(row_content[:60])
+                # デバッグ用に記録
+                all_row_previews.append(row_content[:80])
 
                 if is_name_match(target_staff, search_area):
+                    # 発見！
                     my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
                     others = df.drop([0, i, i+1] if i+1 < len(df) else [0, i]).copy().reset_index(drop=True)
                     table_dictionary[work_place] = [my_daily, others]
-                    st.success(f"👤 '{target_staff}' 様の行を発見しました（モード: {flavor}）")
+                    st.success(f"👤 '{target_staff}' 様のデータを特定しました。")
                     return table_dictionary, year, month
 
     # 見つからない場合
     st.warning(f"'{target_staff}' 様の名前が検出できませんでした。")
-    with st.expander("🔍 内部データを確認する（こちらを開いて内容を教えてください）"):
-        st.write("解析された各行のテキストです：")
+    with st.expander("🔍 内部データを確認する"):
+        st.write("PDFから抽出されたテキストの各行です。お名前の文字が含まれている行があるか確認してください。")
         for idx, txt in enumerate(all_row_previews if 'all_row_previews' in locals() else []):
             st.text(f"行 {idx}: {txt}")
                 
