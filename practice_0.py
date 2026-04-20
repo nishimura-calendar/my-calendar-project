@@ -12,16 +12,16 @@ from googleapiclient.http import MediaIoBaseDownload
 # --- 1. テキストの正規化 ---
 def normalize_text(text):
     if not isinstance(text, str): return ""
-    # 全角を半角に変換
+    # 全角を半角に、濁点などを結合
     text = unicodedata.normalize('NFKC', text)
-    # 改行、空白、タブ、特定の記号を完全に削除
-    clean = re.sub(r'[\s　\n\r\t\.\,・-]', '', text).lower()
+    # 改行、空白、記号を完全に削除
+    clean = re.sub(r'[\s　\n\r\t\.\,・\-|_]', '', text).lower()
     return clean
 
 def is_name_match(target_name, text_to_check):
     """
     名前のヒット率を最大化するロジック。
-    ターゲットの各文字が、チェック対象のテキスト内に全て含まれているか判定。
+    ターゲット(例:西村文宏)の全文字が、セルの中にバラバラでも存在すればTrue。
     """
     clean_target = normalize_text(target_name)
     clean_cell = normalize_text(text_to_check)
@@ -29,9 +29,11 @@ def is_name_match(target_name, text_to_check):
     if not clean_target or not clean_cell:
         return False
         
-    # パターン1: 包含判定（バラバラでも全文字あればOK）
+    # 各文字が含まれているかチェック
     match_count = sum(1 for char in clean_target if char in clean_cell)
-    if match_count == len(clean_target):
+    
+    # ターゲットが4文字（西村文宏）なら、4文字すべて見つかれば一致とみなす
+    if match_count >= len(clean_target):
         return True
             
     return False
@@ -81,11 +83,13 @@ def verify_pdf_calendar(df, expected_year, expected_month):
     st.markdown("### 📊 ファイル整合性チェック")
     col1, col2 = st.columns(2)
     with col1:
-        st.write("**【期待値】**")
-        st.write(f"{expected_year}年{expected_month}月 / {last_day}日 / 1日({expected_first_wday})")
+        st.write("**【ファイル名からの期待値】**")
+        st.write(f"{expected_year}年{expected_month}月")
+        st.write(f"1日: {expected_first_wday}曜日")
     with col2:
-        st.write("**【PDF実測値】**")
-        st.write(f"最大{actual_max_day}日 / 1日({actual_first_wday})")
+        st.write("**【PDFデータからの実測値】**")
+        st.write(f"最大日数: {actual_max_day}日")
+        st.write(f"1日: {actual_first_wday}曜日")
 
     is_match = (actual_max_day == last_day) and (actual_first_wday == expected_first_wday)
     
@@ -119,12 +123,15 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         if not is_valid: continue
 
         found = False
+        all_row_names = [] # デバッグ用
+
         for i in range(len(df)):
-            # 現在の行のテキスト
             current_row_text = str(df.iloc[i, 0])
-            # 念のため、次の行のテキストも結合してチェック（泣き別れ対策）
             next_row_text = str(df.iloc[i+1, 0]) if i+1 < len(df) else ""
             combined_text = current_row_text + next_row_text
+            
+            # デバッグ用に正規化前のテキストを保持
+            all_row_names.append(current_row_text.replace('\n', ' '))
 
             if is_name_match(target_staff, combined_text):
                 # 発見
@@ -137,10 +144,13 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
         if found:
             st.success(f"👤 '{target_staff}' さんのデータを抽出しました。")
         else:
-            # デバッグ用：見つからない場合に1列目の内容を一部表示
-            with st.expander("名前が見つからない場合のデバッグ情報"):
-                st.write("PDFの1列目から抽出されたテキスト一覧:")
-                st.write(df.iloc[:, 0].tolist())
+            # 見つからなかった場合にデバッグリストを表示
+            st.warning(f"'{target_staff}' という名前がPDFの1列目に見つかりません。")
+            with st.expander("🔍 システムがPDFから読み取った名前一覧を確認する"):
+                st.write("以下のリストにあなたの名前が含まれているか確認してください。")
+                for idx, name in enumerate(all_row_names):
+                    st.text(f"行 {idx}: {name}")
+                st.info("ヒント: 名前が他の文字と繋がっていたり、一文字だけ違っていたりする場合は教えてください。")
                 
     return table_dictionary, year, month
 
