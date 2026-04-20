@@ -59,25 +59,30 @@ def main():
             
             try:
                 with st.spinner("PDFを解析中..."):
-                    # PDFから表と年月を抽出
                     pdf_results, year, month = p0.pdf_reader(pdf_stream, target_name)
                 
                 if not pdf_results:
                     st.error("指定された名前のデータが見つかりませんでした。")
-                    # デバッグ機能：見つかった名前の候補を表示するなどのヒント
-                    st.info("💡 ヒント: 名前が「名字 名前」のようにスペースを含んでいるか、PDFの表記と一致しているか確認してください。")
+                    st.info("💡 ヒント: 名前がPDFの表記と一致しているか確認してください。")
                 else:
                     st.success(f"✅ 解析完了: {year}年{month}月度")
                     
                     # 3. スプレッドシート連携
                     with st.spinner("スプレッドシートから時程を取得中..."):
                         try:
-                            # secretsにgcp_service_accountの設定があることが前提
+                            # 認証情報の存在確認
+                            if "gcp_service_account" not in st.secrets:
+                                st.error("StreamlitのSecretsに 'gcp_service_account' が設定されていません。")
+                                return
+
                             service = p0.get_sheets_service(st.secrets)
                             time_schedule_df = p0.fetch_time_schedule(service, ss_id)
                             
-                            if time_schedule_df.empty:
-                                st.warning("時程表の取得に失敗しました。スプレッドシートIDまたは権限を確認してください。")
+                            if time_schedule_df is None or time_schedule_df.empty:
+                                st.warning("時程表の取得に失敗しました。以下の点を確認してください：")
+                                st.write("- スプレッドシートIDが正しいか")
+                                st.write("- サービスアカウントに共有権限があるか")
+                                st.write("- シート名が 'Sheet1' になっているか")
                                 return
 
                             # 勤務地ごとに統合
@@ -105,15 +110,14 @@ def main():
                                     use_container_width=True
                                 )
                             else:
-                                st.warning("スケジュール行の生成に失敗しました（該当日のシフトが空の可能性があります）。")
+                                st.warning("スケジュール行の生成に失敗しました。")
                                 
                         except Exception as e:
-                            st.error(f"データ統合エラー: {e}")
-                            st.exception(e) # 詳細なエラーを表示
+                            st.error(f"スプレッドシート連携エラーの詳細: {e}")
+                            st.info("Secretsの設定またはGoogle Cloud Consoleの権限設定を確認してください。")
                     
             except Exception as e:
                 st.error(f"解析エラー: {e}")
-                st.exception(e)
 
 if __name__ == "__main__":
     main()
