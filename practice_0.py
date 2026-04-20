@@ -4,6 +4,7 @@ import unicodedata
 import re
 import io
 import calendar
+import pdfplumber
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2 import service_account
@@ -20,18 +21,16 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def extract_year_month_from_text(text):
-    """ファイル名等から年月を抽出する（エラー回避のため完全実装）"""
+    """ファイル名等から年月を抽出する"""
     if not text: return None, None
     text = unicodedata.normalize('NFKC', text)
     clean_text = re.sub(r'\s+', '', text)
     y_val, m_val = None, None
     
-    # 月の抽出 (例: 12月)
     month_match = re.search(r'(\d{1,2})月', clean_text)
     if month_match:
         m_val = int(month_match.group(1))
     
-    # 年の抽出 (4桁または2桁)
     nums = re.findall(r'\d+', clean_text)
     for n in nums:
         val = int(n)
@@ -43,6 +42,39 @@ def extract_year_month_from_text(text):
                     y_val = 2000 + val
                     
     return y_val, m_val
+
+def extract_max_day_from_pdf(pdf_stream):
+    """PDFの1ページ目から最大の日付（月末日）を探す"""
+    try:
+        pdf_stream.seek(0)
+        with pdfplumber.open(pdf_stream) as pdf:
+            text = pdf.pages[0].extract_text()
+            # 28〜31の数字を探す（カレンダーの末尾付近）
+            days = re.findall(r'\b(28|29|30|31)\b', text)
+            if days:
+                return int(max(days))
+    except:
+        pass
+    return None
+
+def extract_first_weekday_from_pdf(pdf_stream):
+    """PDFの1ページ目から1日の曜日を探す"""
+    try:
+        pdf_stream.seek(0)
+        with pdfplumber.open(pdf_stream) as pdf:
+            text = pdf.pages[0].extract_text()
+            # 「1」の直後または付近にある曜日（月〜日）を抽出
+            # シンプルにテキスト全体から最初の曜日記号を探すか、1の周辺を特定
+            match = re.search(r'1\s*[\(\（]([月火水木金土日])[\)\）]', text)
+            if match:
+                return match.group(1)
+            # 見つからない場合は最初に出てくる単独の曜日
+            match_fallback = re.search(r'([月火水木金土日])', text)
+            if match_fallback:
+                return match_fallback.group(1)
+    except:
+        pass
+    return None
 
 def time_schedule_from_drive(service, file_id):
     """時程表スプレッドシートを解析"""
@@ -96,40 +128,29 @@ def time_schedule_from_drive(service, file_id):
         raise e
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """
-    引継ぎロジックの実装
-    受取(From): 自分の開始時、t_col-1 に同じ場所を担当していた人を探す
-    渡却(To): 自分の終了時、t_col にその場所を引き継ぐ人を探す
-    """
+    """引継ぎロジックの実装"""
     time_shift = time_schedule.fillna("").astype(str)
     
-    # 終日イベント(シフトコード)
     if (time_shift.iloc[:, 1] == shift_info).any():
         final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
         
         my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
         if not my_time_shift.empty:
             prev_val = ""
-            # 時間列をスキャン
             for t_col in range(2, my_time_shift.shape[1]):
                 current_val = my_time_shift.iloc[0, t_col]
                 time_header = time_shift.iloc[0, t_col]
 
                 if current_val != prev_val:
-                    # --- 渡却 (Handing over / To) ---
-                    # 前に業務(prev_val)があり、現在(t_col)で変化した場合
                     if final_rows and final_rows[-1][5] == "False":
-                        # 終了時間を確定
                         final_rows[-1][4] = time_header
                         
                         handing_over_staff = ""
                         if prev_val != "":
-                            # t_col（現在）で、さっきまで自分がやっていた業務(prev_val)を引き継ぐ人を探す
                             mask_to = (time_shift.iloc[:, t_col] == prev_val) & (time_shift.iloc[:, 1] != shift_info)
                             to_codes = time_shift.loc[mask_to, time_shift.columns[1]].tolist()
-                            
                             for c in to_codes:
-                                if c == "": continue
+                                if not c: continue
                                 match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
                                 if not match.empty:
                                     handing_over_staff = str(match.iloc[0, 0]).split('\n')[0].strip()
@@ -138,37 +159,24 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                         if handing_over_staff:
                             final_rows[-1][0] += f" => {handing_over_staff}"
                         
-                        # 退勤判定: この後一切業務がない場合
                         if current_val == "" and (my_time_shift.iloc[0, t_col:] == "").all():
-                            if "=>" not in final_rows[-1][0]:
-                                final_rows[-1][0] += " => (退勤)"
-                            else:
-                                final_rows[-1][0] += " (退勤)"
+                            final_rows[-1][0] += " (退勤)"
 
-                    # --- 受取 (Taking over / From) ---
-                    # 新しい業務(current_val)が始まった場合
                     if current_val != "":
                         taking_over_department = f"【{current_val}】"
                         taking_over_staff = ""
-                        
-                        # t_col-1 (一つ前の時間) で、今から自分がやる業務(current_val)をしていた人を探す
                         if t_col > 2:
                             mask_from = (time_shift.iloc[:, t_col-1] == current_val) & (time_shift.iloc[:, 1] != shift_info)
                             from_codes = time_shift.loc[mask_from, time_shift.columns[1]].tolist()
-                            
                             for c in from_codes:
-                                if c == "": continue
+                                if not c: continue
                                 match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
                                 if not match.empty:
                                     taking_over_staff = f"{str(match.iloc[0, 0]).split('\n')[0].strip()} => "
                                     break
                         
                         subject = f"{taking_over_staff}{taking_over_department}"
-                        
-                        # 新規予定追加 (終了時間は次のループの「渡却」でセットされる)
-                        final_rows.append([
-                            subject, target_date, time_header, target_date, "", "False", "", key
-                        ])
+                        final_rows.append([subject, target_date, time_header, target_date, "", "False", "", key])
                         
                 prev_val = current_val
 
