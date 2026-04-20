@@ -21,16 +21,13 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def extract_year_month_from_text(text):
-    """ファイル名等から年月を抽出する"""
     if not text: return None, None
     text = unicodedata.normalize('NFKC', text)
     clean_text = re.sub(r'\s+', '', text)
     y_val, m_val = None, None
-    
     month_match = re.search(r'(\d{1,2})月', clean_text)
     if month_match:
         m_val = int(month_match.group(1))
-    
     nums = re.findall(r'\d+', clean_text)
     for n in nums:
         val = int(n)
@@ -40,11 +37,9 @@ def extract_year_month_from_text(text):
             if m_val is None or (val != m_val):
                 if y_val is None:
                     y_val = 2000 + val
-                    
     return y_val, m_val
 
 def extract_max_day_from_pdf(pdf_stream):
-    """PDFの1ページ目から最大の日付（月末日）を探す"""
     try:
         pdf_stream.seek(0)
         with pdfplumber.open(pdf_stream) as pdf:
@@ -58,29 +53,23 @@ def extract_max_day_from_pdf(pdf_stream):
     return None
 
 def extract_first_weekday_from_pdf(pdf_stream):
-    """PDFから1日の曜日を抽出（誤検知防止強化版）"""
     try:
         pdf_stream.seek(0)
         with pdfplumber.open(pdf_stream) as pdf:
             page = pdf.pages[0]
             text = page.extract_text()
             if not text: return None
-
-            # 1. 「1(月)」形式
             match = re.search(r'\b1\s*[\(\（]([月火水木金土日])[\)\）]', text)
             if match: return match.group(1)
-
-            # 2. 数字の1の近くにある曜日
             match_near = re.search(r'\b1\b.{0,15}([月火水木金土日])', text, re.DOTALL)
             if match_near: return match_near.group(1)
-            
             return None
     except:
         pass
     return None
 
 def time_schedule_from_drive(service, file_id):
-    """時程表スプレッドシートを解析"""
+    """Google Driveからスプレッドシートを読み込む"""
     try:
         request = service.files().get_media(fileId=file_id)
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
@@ -91,8 +80,9 @@ def time_schedule_from_drive(service, file_id):
         done = False
         while not done: _, done = downloader.next_chunk()
         fh.seek(0)
-        
+        # dtype=str で読み込み、構造を維持
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
+        
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         location_data_dic = {}
         
@@ -101,29 +91,14 @@ def time_schedule_from_drive(service, file_id):
             location_name = str(full_df.iloc[start_row, 0]).strip()
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            time_row = temp_range.iloc[0, :]
-            first_num_col, last_num_col = None, None
-            for idx, val in enumerate(time_row):
-                if idx < 1: continue 
+            # 1行目（時間行）を整形
+            for c in range(2, len(temp_range.columns)):
+                v = temp_range.iloc[0, c]
                 try:
-                    float(val)
-                    if first_num_col is None: first_num_col = idx
-                    last_num_col = idx
-                except: continue
-            
-            if first_num_col is not None:
-                start_c = max(1, first_num_col - 1)
-                end_c = last_num_col + 1
-                selected_cols = [0, 1] + list(range(start_c, end_c))
-                temp_range = temp_range.iloc[:, selected_cols].copy()
-                
-                for c in range(2, len(temp_range.columns)):
-                    v = temp_range.iloc[0, c]
-                    try:
-                        fv = float(v)
-                        h = int(fv); m = int(round((fv - h) * 60))
-                        temp_range.iloc[0, c] = f"{h}:{m:02d}"
-                    except: pass
+                    fv = float(v)
+                    h = int(fv); m = int(round((fv - h) * 60))
+                    temp_range.iloc[0, c] = f"{h}:{m:02d}"
+                except: pass
             
             location_data_dic[location_name] = temp_range.fillna('')
         return location_data_dic
@@ -131,45 +106,40 @@ def time_schedule_from_drive(service, file_id):
         raise e
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    """詳細な引継ぎロジックを含む計算関数"""
+    """
+    【観察用】t_col-1を使用しない、自身の予定変化のみを抽出するシンプル版
+    """
     time_shift = time_schedule.fillna("").astype(str)
     
-    # シフトコード自体の終日予定
+    # 1. シフトコード自体の終日予定（存在確認用）
     if (time_shift.iloc[:, 1] == shift_info).any():
-        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", key])
+        final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "観察用：シフト一致", key])
         
-        my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
-        if not my_time_shift.empty:
+        # そのシフト（'C'など）の行を特定
+        my_rows = time_shift[time_shift.iloc[:, 1] == shift_info]
+        if not my_rows.empty:
             prev_val = ""
-            for t_col in range(2, time_shift.shape[1]):
-                current_val = my_time_shift.iloc[0, t_col]
-                time_header = time_shift.iloc[0, t_col]
+            num_cols = time_shift.shape[1]
+            
+            # 列インデックス2（時間データの開始）からループ
+            for t_col in range(2, num_cols):
+                try:
+                    current_val = my_rows.iloc[0, t_col]
+                    time_header = time_shift.iloc[0, t_col] # 1行目の時間
+                except:
+                    continue
 
+                # 予定が変化した瞬間だけを捉える（t_col-1を使わず、prev_valと比較）
                 if current_val != prev_val:
-                    if final_rows and final_rows[-1][5] == "False":
-                        final_rows[-1][4] = time_header
-                        
-                        # 終了時の退勤判定
-                        if current_val == "" and (my_time_shift.iloc[0, t_col:] == "").all():
-                            final_rows[-1][0] += " => (退勤)"
-
-                    if current_val != "":
-                        # --- 誰から受け取り、誰へ渡すかの判定 ---
-                        taking_over_staff = ""
-                        handing_over_staff = ""
-                        
-                        # From: 前の時刻に自分以外の同じ場所にいた人
-                        if t_col > 2:
-                            mask_from = (time_shift.iloc[:, t_col-1] == current_val) & (time_shift.iloc[:, 1] != shift_info)
-                            from_codes = time_shift.loc[mask_from, time_shift.columns[1]].tolist()
-                            for c in from_codes:
-                                match = other_staff_shift[other_staff_shift.iloc[:, col].astype(str).str.contains(re.escape(str(c)), na=False)]
-                                if not match.empty:
-                                    taking_over_staff = f"{str(match.iloc[0, 0]).splitlines()[0].strip()} => "
-                                    break
-                        
-                        subject = f"{taking_over_staff}【{current_val}】"
-                        final_rows.append([subject, target_date, time_header, target_date, "", "False", "", key])
+                    # 予定が終わった（空になった）場合
+                    if current_val == "":
+                        if final_rows and final_rows[-1][5] == "False":
+                            final_rows[-1][4] = time_header
+                            final_rows[-1][0] += " (終了)"
+                    # 予定が始まった場合
+                    else:
+                        subject = f"【{current_val}】"
+                        final_rows.append([subject, target_date, time_header, target_date, "", "False", "観察用：詳細", key])
                         
                 prev_val = current_val
 
@@ -207,7 +177,8 @@ def process_full_month(integrated_dic, year, month):
     num_days = calendar.monthrange(year, month)[1]
     for day in range(1, num_days + 1):
         target_date_str = f"{year}-{month:02d}-{day:02d}"
-        for place_key, (my_row, others, time_sched) in integrated_dic.items():
+        for place_key, data_list in integrated_dic.items():
+            my_row, others, time_sched = data_list[0], data_list[1], data_list[2]
             if day + 1 >= my_row.shape[1]: continue
             val = str(my_row.iloc[0, day + 1])
             if not val or val.strip() == "" or val.lower() == 'nan': continue
