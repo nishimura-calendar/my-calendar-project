@@ -74,7 +74,7 @@ def time_schedule_from_drive(service, file_id):
     except Exception as e:
         raise e
 
-# --- 3. PDF解析（修正：自分を除外、日付行を除外） ---
+# --- 3. PDF解析（修正：自分を除外、日付・曜日ヘッダー行を除外） ---
 def pdf_reader(pdf_stream, target_staff, file_name=""):
     pdf_stream.seek(0)
     year, month = None, None
@@ -94,15 +94,13 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
                 df = table.df
                 if df.empty: continue
                 
-                # A1セルのテキストから勤務地(T1/T2等)を推測
+                # A1セルのテキストから勤務地(T1/T2等)を特定
                 header_text = str(df.iloc[0, 0])
-                header_lines = header_text.splitlines()
                 work_place = "Unknown"
-                for line in header_lines:
-                    if "T1" in line.upper(): work_place = "T1"; break
-                    if "T2" in line.upper(): work_place = "T2"; break
+                if "T1" in header_text.upper(): work_place = "T1"
+                elif "T2" in header_text.upper(): work_place = "T2"
                 
-                # スタッフ行の特定
+                # 自分(target_staff)の行を探す
                 target_row_idx = -1
                 target_offset = 0
                 for i in range(len(df)):
@@ -114,39 +112,55 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
                         break
                 
                 if target_row_idx != -1:
-                    # 自分のシフトデータ（2行分）
+                    # 自分のシフトデータ（氏名行とその下の記号行の2行分）
                     my_daily = df.iloc[target_row_idx : target_row_idx + 2, :].copy()
                     my_daily.columns = range(len(my_daily.columns))
                     my_daily = my_daily.reset_index(drop=True)
                     my_daily.iloc[0, 0] = f"{target_staff}_offset_{target_offset}"
 
-                    # 他スタッフのデータ構築（修正ポイント）
-                    # 1. ヘッダー（日付・曜日行）を除外するために、数値や曜日の列が多い行を特定して捨てる
-                    cleaned_others = []
+                    # 他スタッフのリストを作成（自分とヘッダー行を除外）
+                    cleaned_others_rows = []
                     for i in range(len(df)):
-                        # 自分の行(target_row_idx)と、その下の記号行(target_row_idx+1)は除外
+                        # 自分自身の行（名前行とシフト記号行）はスキップ
                         if i == target_row_idx or i == target_row_idx + 1:
                             continue
                         
-                        row_head = str(df.iloc[i, 0])
-                        # 数値(1 2 3...)や曜日(日 月 火...)のみの行、または空の行はスタッフ行ではないとみなして除外
-                        if not row_head.strip(): continue
-                        if re.match(r'^[\d\s]+$', row_head.replace('\n', '')): continue # 日付のみ行
-                        if any(day in row_head for day in ["日", "月", "火", "水", "木", "金", "土"]):
-                            # 名前が含まれていない曜日行をスキップ
-                            if len(row_head.strip()) <= 2: continue
+                        row_head = str(df.iloc[i, 0]).strip()
                         
-                        cleaned_others.append(df.iloc[i, :])
+                        # 空行は除外
+                        if not row_head: continue
+                        
+                        # 日付行（"1 2 3 ... 31" のような数値のみの行）を除外
+                        # 空白や改行を除去して数字だけになるかチェック
+                        just_nums = re.sub(r'[\s\n　]', '', row_head)
+                        if just_nums.isdigit() and len(just_nums) > 5:
+                            continue
+                        
+                        # 曜日行（"日 月 火 ..." のような文字が含まれ、名前としては不自然に短い行）を除外
+                        weekdays = ["日", "月", "火", "水", "木", "金", "土"]
+                        if any(wd in row_head for wd in weekdays):
+                            # 曜日が含まれていて、かつ1行が非常に短い場合はヘッダーとみなす
+                            if len(row_head.replace('\n', '')) < 5:
+                                continue
+                        
+                        # その他、明らかにスタッフ名ではないキーワード（T1, T2, 勤務予定表など）をスキップ
+                        if any(k in row_head for k in ["T1", "T2", "勤務予定表", "都市環境"]):
+                            continue
+
+                        cleaned_others_rows.append(df.iloc[i, :])
                     
-                    others = pd.DataFrame(cleaned_others)
+                    others = pd.DataFrame(cleaned_others_rows)
                     others.columns = range(len(others.columns))
                     others = others.reset_index(drop=True)
                     
                     pdf_results[work_place] = [my_daily, others]
+                    # 1ページ内でターゲットが見つかればそのページの解析で確定とする（通常1人1箇所のため）
                     break
+            
             if pdf_results: break
-        except Exception as e:
+        except Exception:
             continue
+            
     return pdf_results, year, month
 
 # --- 4. 統合 ---
@@ -172,16 +186,21 @@ def process_full_month(integrated_dic, year, month):
             meta = str(my_daily.iloc[0, 0])
             offset = int(meta.split("_offset_")[-1]) if "_offset_" in meta else 0
             
-            # PDF上の日付列を特定 (3列目以降を想定)
-            # Camelotのパース結果により列位置がズレるため、柔軟に対応
+            # 日付に対応する列を特定
             found_col = -1
-            for col in range(2, my_daily.shape[1]):
-                col_head = str(my_daily.iloc[0, col])
-                if str(day) in col_head.replace('\n', ' '):
+            for col in range(1, my_daily.shape[1]):
+                # セル内にその日の日付(day)が単独の数値として含まれているかチェック
+                cell_str = str(my_daily.iloc[0, col]).replace('\n', ' ')
+                if re.search(rf'\b{day}\b', cell_str):
                     found_col = col
                     break
             
-            if found_col == -1: continue
+            if found_col == -1: 
+                # 列が見つからない場合は、day+1などを試みる古いロジックの代替（Camelotの精度に依存）
+                if day + 1 < my_daily.shape[1]:
+                    found_col = day + 1
+                else:
+                    continue
             
             raw_val = str(my_daily.iloc[0, found_col])
             val_lines = raw_val.split('\n')
