@@ -25,12 +25,8 @@ def find_name_and_index_in_cell(target_name, cell_text):
             return True, idx
     return False, 0
 
-# --- 2. 時程表の取得 (D列開始スキャンロジック) ---
+# --- 2. 時程表の取得 ---
 def time_schedule_from_drive(service, file_id):
-    """
-    時程表スプレッドシートを解析。
-    A=勤務地, B=シフト, C=ロッカー。D列(index 3)から数値スキャンを開始する。
-    """
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         request = service.files().get_media(fileId=file_id)
@@ -44,49 +40,33 @@ def time_schedule_from_drive(service, file_id):
         fh.seek(0)
         
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-        
-        # A列に値がある行（勤務地行）を特定
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         location_data_dic = {}
         
         for i, start_row in enumerate(location_rows):
             end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
             location_name = str(full_df.iloc[start_row, 0]).strip()
-            
-            # その勤務地ブロックの抽出
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # --- 時間列のスタート特定 (D列から検索) ---
             time_row = temp_range.iloc[0, :]
             first_num_col = None
             last_num_col = None
-            
-            # ご指定通り、D列(インデックス3)からスキャンを開始
             for col_idx in range(len(time_row)):
-                if col_idx < 3: continue # A, B, C列はスキップ
-                
+                if col_idx < 3: continue 
                 val = time_row[col_idx]
                 try:
-                    # 数値(float)として解釈可能かチェック
                     f_val = float(val)
-                    if first_num_col is None:
-                        first_num_col = col_idx
+                    if first_num_col is None: first_num_col = col_idx
                     last_num_col = col_idx
-                    
-                    # 内部表示用に "6:15" などの形式に変換
                     h = int(f_val)
                     m = int(round((f_val - h) * 60))
                     temp_range.iloc[0, col_idx] = f"{h}:{m:02d}"
-                except (ValueError, TypeError):
-                    continue
+                except: continue
             
-            # 抽出範囲の確定
             if first_num_col is not None:
-                # A(0), B(1), C(2) 列と、見つかった時間列以降を結合
                 target_cols = [0, 1, 2] + list(range(first_num_col, last_num_col + 1))
                 temp_range = temp_range.iloc[:, target_cols].copy()
             
-            # Streamlit表示エラー回避
             temp_range.columns = range(len(temp_range.columns))
             location_data_dic[location_name] = temp_range.fillna('')
             
@@ -94,7 +74,7 @@ def time_schedule_from_drive(service, file_id):
     except Exception as e:
         raise e
 
-# --- 3. PDF解析 ---
+# --- 3. PDF解析（修正：自分を除外、日付行を除外） ---
 def pdf_reader(pdf_stream, target_staff, file_name=""):
     pdf_stream.seek(0)
     year, month = None, None
@@ -114,27 +94,59 @@ def pdf_reader(pdf_stream, target_staff, file_name=""):
                 df = table.df
                 if df.empty: continue
                 
-                header_lines = str(df.iloc[0, 0]).splitlines()
-                work_place = header_lines[len(header_lines)//2] if header_lines else "Unknown"
-                work_place = work_place.strip()
-
+                # A1セルのテキストから勤務地(T1/T2等)を推測
+                header_text = str(df.iloc[0, 0])
+                header_lines = header_text.splitlines()
+                work_place = "Unknown"
+                for line in header_lines:
+                    if "T1" in line.upper(): work_place = "T1"; break
+                    if "T2" in line.upper(): work_place = "T2"; break
+                
+                # スタッフ行の特定
+                target_row_idx = -1
+                target_offset = 0
                 for i in range(len(df)):
                     cell_val = str(df.iloc[i, 0])
                     found, offset = find_name_and_index_in_cell(target_staff, cell_val)
                     if found:
-                        my_daily = df.iloc[i : i + 2, :].copy()
-                        my_daily.columns = range(len(my_daily.columns))
-                        my_daily = my_daily.reset_index(drop=True)
-                        
-                        others = df.copy()
-                        others.columns = range(len(others.columns))
-                        others = others.reset_index(drop=True)
-                        
-                        my_daily.iloc[0, 0] = f"{target_staff}_offset_{offset}"
-                        pdf_results[work_place] = [my_daily, others]
+                        target_row_idx = i
+                        target_offset = offset
                         break
+                
+                if target_row_idx != -1:
+                    # 自分のシフトデータ（2行分）
+                    my_daily = df.iloc[target_row_idx : target_row_idx + 2, :].copy()
+                    my_daily.columns = range(len(my_daily.columns))
+                    my_daily = my_daily.reset_index(drop=True)
+                    my_daily.iloc[0, 0] = f"{target_staff}_offset_{target_offset}"
+
+                    # 他スタッフのデータ構築（修正ポイント）
+                    # 1. ヘッダー（日付・曜日行）を除外するために、数値や曜日の列が多い行を特定して捨てる
+                    cleaned_others = []
+                    for i in range(len(df)):
+                        # 自分の行(target_row_idx)と、その下の記号行(target_row_idx+1)は除外
+                        if i == target_row_idx or i == target_row_idx + 1:
+                            continue
+                        
+                        row_head = str(df.iloc[i, 0])
+                        # 数値(1 2 3...)や曜日(日 月 火...)のみの行、または空の行はスタッフ行ではないとみなして除外
+                        if not row_head.strip(): continue
+                        if re.match(r'^[\d\s]+$', row_head.replace('\n', '')): continue # 日付のみ行
+                        if any(day in row_head for day in ["日", "月", "火", "水", "木", "金", "土"]):
+                            # 名前が含まれていない曜日行をスキップ
+                            if len(row_head.strip()) <= 2: continue
+                        
+                        cleaned_others.append(df.iloc[i, :])
+                    
+                    others = pd.DataFrame(cleaned_others)
+                    others.columns = range(len(others.columns))
+                    others = others.reset_index(drop=True)
+                    
+                    pdf_results[work_place] = [my_daily, others]
+                    break
             if pdf_results: break
-        except: continue
+        except Exception as e:
+            continue
     return pdf_results, year, month
 
 # --- 4. 統合 ---
@@ -160,9 +172,18 @@ def process_full_month(integrated_dic, year, month):
             meta = str(my_daily.iloc[0, 0])
             offset = int(meta.split("_offset_")[-1]) if "_offset_" in meta else 0
             
-            if day >= my_daily.shape[1]: continue
+            # PDF上の日付列を特定 (3列目以降を想定)
+            # Camelotのパース結果により列位置がズレるため、柔軟に対応
+            found_col = -1
+            for col in range(2, my_daily.shape[1]):
+                col_head = str(my_daily.iloc[0, col])
+                if str(day) in col_head.replace('\n', ' '):
+                    found_col = col
+                    break
             
-            raw_val = str(my_daily.iloc[0, day])
+            if found_col == -1: continue
+            
+            raw_val = str(my_daily.iloc[0, found_col])
             val_lines = raw_val.split('\n')
             shift_text = val_lines[offset].strip() if offset < len(val_lines) else raw_val
 
@@ -173,6 +194,6 @@ def process_full_month(integrated_dic, year, month):
                 else:
                     import consideration as cons
                     try:
-                        cons.shift_cal(place_key, target_date, day, s_info, my_daily, others, time_sched, final_rows)
+                        cons.shift_cal(place_key, target_date, found_col, s_info, my_daily, others, time_sched, final_rows)
                     except: pass
     return final_rows
