@@ -1,104 +1,88 @@
 import streamlit as st
-import shutil
-import io
-import pandas as pd
 import practice_0 as p0
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
+import pandas as pd
+import io
+import os
 
-def main():
-    st.set_page_config(page_title="免税店シフト解析システム", layout="wide")
-    st.title("🛡️ 免税店シフト解析 (デバッグ表示付)")
+# --- 1. サービスアカウント認証・Drive連携設定 ---
+# (実際には secrets.toml から取得)
+# service = p0.get_gdrive_service(st.secrets)
+# sheet_id = "YOUR_SPREADSHEET_ID"
 
-    # サイドバー：基本設定
-    with st.sidebar:
-        st.header("⚙️ 設定")
-        target_name = st.text_input("解析する名前", value="西村 文宏")
-        ss_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
-        show_debug = st.checkbox("【デバッグ】解析途中の表を表示する", value=True)
-        
-        if "gcp_service_account" in st.secrets:
-            try:
-                creds = service_account.Credentials.from_service_account_info(
-                    st.secrets["gcp_service_account"],
-                    scopes=['https://www.googleapis.com/auth/spreadsheets.readonly', 'https://www.googleapis.com/auth/drive.readonly']
-                )
-                service = build('drive', 'v3', credentials=creds)
-            except Exception as e:
-                st.error(f"Google認証に失敗しました: {e}")
-                service = None
-        else:
-            st.warning("SecretsにGoogle認証情報が設定されていません。")
-            service = None
+st.set_page_config(page_title="シフト解析・カレンダー生成", layout="wide")
 
-    uploaded_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
+st.title("📅 個別シフトカレンダー生成")
+st.markdown("""
+PDFのシフト予定表から、**あなたの名前**のデータを探し出し、
+時程表と組み合わせてGoogleカレンダー用のCSVを作成します。
+""")
 
-    if uploaded_file and target_name:
-        pdf_stream = io.BytesIO(uploaded_file.read())
-        
+# サイドバー：設定
+with st.sidebar:
+    st.header("設定")
+    # ユーザーが自分の名前を入力
+    target_staff = st.text_input("1. 解析する名前を入力", placeholder="例: 西村 文宏")
+    st.caption("※名字と名前の間のスペースは自動で詰められます。")
+
+    # PDFアップロード
+    uploaded_pdf = st.file_uploader("2. PDFをアップロード", type="pdf")
+
+if not target_staff:
+    st.info("左側のサイドバーに「解析する名前」を入力してください。")
+    st.stop()
+
+if not uploaded_pdf:
+    st.warning("左側のサイドバーから「シフト表PDF」をアップロードしてください。")
+    st.stop()
+
+# --- 解析開始 ---
+if st.sidebar.button("解析実行"):
+    with st.spinner(f"{target_staff} さんのデータを解析中..."):
         try:
-            # 1. PDF解析
-            with st.spinner("PDFを解析中..."):
-                pdf_results, year, month = p0.pdf_reader(pdf_stream, target_name, uploaded_file.name)
+            # 1. PDFの解析 (practice_0.py の pdf_reader を使用)
+            # ※戻り値: pdf_results={勤務地: [my_daily, others]}, year, month
+            pdf_results, year, month = p0.pdf_reader(uploaded_pdf, target_staff, uploaded_pdf.name)
             
-            # 2. 時程表取得
-            time_sched_dic = {}
-            if service:
-                with st.spinner("時程表を取得中..."):
-                    time_sched_dic = p0.time_schedule_from_drive(service, ss_id)
+            if not pdf_results:
+                st.error(f"PDF内に「{target_staff}」さんのデータが見つかりませんでした。")
+                st.write("ヒント: 名前が正確か、またはPDFのパース形式(格子/ストリーム)が合っているか確認してください。")
+                st.stop()
 
-            if pdf_results:
-                st.success(f"✅ 解析完了: {year}年{month}月度")
+            # 2. 時程表の取得 (本来は Drive から)
+            # 現状はデバッグ用に空の辞書またはダミーを想定
+            # time_dic = p0.time_schedule_from_drive(service, sheet_id)
+            time_dic = {} # ダミー。実際にはDrive連携を有効にします。
 
-                # --- デバッグ表示セクション ---
-                if show_debug:
-                    with st.expander("🔍 解析データの中身を確認する", expanded=True):
-                        for place, data in pdf_results.items():
-                            st.write(f"### 勤務地: {place}")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.write("📅 **my_daily_shift (あなたの抽出シフト)**")
-                                st.dataframe(data[0]) # data[0] = my_daily
-                            
-                            with col2:
-                                st.write("👥 **other_daily_shift (他スタッフのデータ)**")
-                                st.dataframe(data[1]) # data[1] = others
-                            
-                            st.write("⏱️ **time_schedule (対応する時程表)**")
-                            if place in time_sched_dic:
-                                st.dataframe(time_sched_dic[place])
-                            else:
-                                st.warning(f"時程表の中に '{place}' というキーが見つかりません。")
+            # 3. データの統合
+            # integrated = p0.integrate_with_warning(pdf_results, time_dic)
+            
+            # --- 解析結果の確認画面 ---
+            st.success(f"解析完了: {year}年{month}月分")
+            
+            for place, data in pdf_results.items():
+                st.divider()
+                st.subheader(f"📍 勤務地: {place}")
                 
-                # 3. データの紐付け
-                integrated_dic = p0.integrate_with_warning(pdf_results, time_sched_dic)
+                col1, col2 = st.columns(2)
                 
-                if integrated_dic:
-                    # 4. カレンダーCSV生成
-                    with st.spinner("カレンダーデータを生成中..."):
-                        final_calendar_rows = p0.process_full_month(integrated_dic, year, month)
-                    
-                    df_csv = pd.DataFrame(final_calendar_rows[1:], columns=final_calendar_rows[0])
-                    
-                    st.subheader("📅 生成されたスケジュール（最終出力）")
-                    st.dataframe(df_csv, use_container_width=True)
-                    
-                    csv_buffer = io.StringIO()
-                    df_csv.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
-                    
-                    st.download_button(
-                        label="📥 Googleカレンダー用CSVをダウンロード",
-                        data=csv_buffer.getvalue(),
-                        file_name=f"shift_{year}_{month}_{target_name}.csv",
-                        mime="text/csv",
-                    )
-            else:
-                st.error(f"'{target_name}' 様のデータが見つかりませんでした。")
+                with col1:
+                    st.write("🟢 **あなたのシフトデータ (my_daily_shift)**")
+                    st.dataframe(data[0])
                 
+                with col2:
+                    st.write("👥 **他スタッフのデータ (other_staff_shift)**")
+                    st.caption("※自分自身の行や日付ヘッダー行が除外されています。")
+                    st.dataframe(data[1])
+
+            # 4. カレンダー行の生成
+            # (実際には時程表とのマッピングが必要ですが、ここでは構造の確認まで)
+            # final_rows = p0.process_full_month(integrated, year, month)
+            
+            # ... CSV変換・ダウンロード処理 ...
+
         except Exception as e:
-            st.error(f"処理中にエラーが発生しました: {e}")
+            st.error(f"エラーが発生しました: {e}")
             st.exception(e)
 
-if __name__ == "__main__":
-    main()
+else:
+    st.write(f"👉 「{target_staff}」さんとして解析を開始するには、サイドバーのボタンを押してください。")
