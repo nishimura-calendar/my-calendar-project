@@ -1,104 +1,183 @@
-import streamlit as st
-import shutil
-import io
 import pandas as pd
-import practice_0 as p0
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
+import camelot
+import unicodedata
+import re
+import io
+import calendar
+import streamlit as st
+from googleapiclient.http import MediaIoBaseDownload
 
-def main():
-    st.set_page_config(page_title="免税店シフト解析システム", layout="wide")
-    st.title("🛡️ 免税店シフト解析 (デバッグ表示付)")
+# --- 1. テキストの正規化 ---
+def normalize_text(text):
+    if not isinstance(text, str): return ""
+    # 空白、全角スペースを除去し、NFKC正規化後に小文字化
+    return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-    # サイドバー：基本設定
-    with st.sidebar:
-        st.header("⚙️ 設定")
-        target_name = st.text_input("解析する名前", value="西村 文宏")
-        ss_id = st.text_input("時程表スプレッドシートID", value="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
-        show_debug = st.checkbox("【デバッグ】解析途中の表を表示する", value=True)
+def find_name_and_index_in_cell(target_name, cell_text):
+    """
+    【4/20 打ち合わせ準拠】
+    セル内を改行で分割し、ターゲット名が含まれる要素のインデックス(offset)を返す。
+    """
+    if not cell_text: return False, 0
+    clean_target = normalize_text(target_name)
+    if not clean_target: return False, 0
+    
+    lines = str(cell_text).split('\n')
+    for idx, line in enumerate(lines):
+        clean_line = normalize_text(line)
+        if clean_target in clean_line or clean_line in clean_target:
+            return True, idx
+    return False, 0
+
+# --- 2. 時程表の取得 (ご提示の最新ロジック) ---
+def time_schedule_from_drive(service, file_id):
+    try:
+        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
+        request = service.files().get_media(fileId=file_id)
+        if file_metadata.get('mimeType') == 'application/vnd.google-apps.spreadsheet':
+            request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         
-        if "gcp_service_account" in st.secrets:
-            try:
-                creds = service_account.Credentials.from_service_account_info(
-                    st.secrets["gcp_service_account"],
-                    scopes=['https://www.googleapis.com/auth/spreadsheets.readonly', 'https://www.googleapis.com/auth/drive.readonly']
-                )
-                service = build('drive', 'v3', credentials=creds)
-            except Exception as e:
-                st.error(f"Google認証に失敗しました: {e}")
-                service = None
-        else:
-            st.warning("SecretsにGoogle認証情報が設定されていません。")
-            service = None
-
-    uploaded_file = st.file_uploader("シフト表（PDF）を選択してください", type="pdf")
-
-    if uploaded_file and target_name:
-        pdf_stream = io.BytesIO(uploaded_file.read())
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done: _, done = downloader.next_chunk()
+        fh.seek(0)
         
-        try:
-            # 1. PDF解析
-            with st.spinner("PDFを解析中..."):
-                pdf_results, year, month = p0.pdf_reader(pdf_stream, target_name, uploaded_file.name)
+        full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
+        
+        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
+        location_data_dic = {}
+        
+        for i, start_row in enumerate(location_rows):
+            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
+            location_name = str(full_df.iloc[start_row, 0]).strip()
+            temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 2. 時程表取得
-            time_sched_dic = {}
-            if service:
-                with st.spinner("時程表を取得中..."):
-                    time_sched_dic = p0.time_schedule_from_drive(service, ss_id)
-
-            if pdf_results:
-                st.success(f"✅ 解析完了: {year}年{month}月度")
-
-                # --- デバッグ表示セクション ---
-                if show_debug:
-                    with st.expander("🔍 解析データの中身を確認する", expanded=True):
-                        for place, data in pdf_results.items():
-                            st.write(f"### 勤務地: {place}")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.write("📅 **my_daily_shift (あなたの抽出シフト)**")
-                                st.dataframe(data[0]) # data[0] = my_daily
-                            
-                            with col2:
-                                st.write("👥 **other_daily_shift (他スタッフのデータ)**")
-                                st.dataframe(data[1]) # data[1] = others
-                            
-                            st.write("⏱️ **time_schedule (対応する時程表)**")
-                            if place in time_sched_dic:
-                                st.dataframe(time_sched_dic[place])
-                            else:
-                                st.warning(f"時程表の中に '{place}' というキーが見つかりません。")
+            time_row = temp_range.iloc[0, :]
+            first_num_col = None
+            last_num_col = None
+            
+            for col_idx, val in enumerate(time_row):
+                if col_idx < 1: continue
+                try:
+                    float(val)
+                    if first_num_col is None: first_num_col = col_idx
+                    last_num_col = col_idx
+                except: continue
+            
+            if first_num_col is not None:
+                start_col = max(1, first_num_col - 1)
+                end_col = last_num_col + 1
+                target_cols = [0, 1] + list(range(start_col, end_col))
+                temp_range = temp_range.iloc[:, target_cols].copy()
                 
-                # 3. データの紐付け
-                integrated_dic = p0.integrate_with_warning(pdf_results, time_sched_dic)
-                
-                if integrated_dic:
-                    # 4. カレンダーCSV生成
-                    with st.spinner("カレンダーデータを生成中..."):
-                        final_calendar_rows = p0.process_full_month(integrated_dic, year, month)
-                    
-                    df_csv = pd.DataFrame(final_calendar_rows[1:], columns=final_calendar_rows[0])
-                    
-                    st.subheader("📅 生成されたスケジュール（最終出力）")
-                    st.dataframe(df_csv, use_container_width=True)
-                    
-                    csv_buffer = io.StringIO()
-                    df_csv.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
-                    
-                    st.download_button(
-                        label="📥 Googleカレンダー用CSVをダウンロード",
-                        data=csv_buffer.getvalue(),
-                        file_name=f"shift_{year}_{month}_{target_name}.csv",
-                        mime="text/csv",
-                    )
-            else:
-                st.error(f"'{target_name}' 様のデータが見つかりませんでした。")
-                
-        except Exception as e:
-            st.error(f"処理中にエラーが発生しました: {e}")
-            st.exception(e)
+                for col in range(len(temp_range.columns)):
+                    if col < 2: continue
+                    v = temp_range.iloc[0, col]
+                    try:
+                        f_v = float(v)
+                        h = int(f_v)
+                        m = int(round((f_v - h) * 60))
+                        temp_range.iloc[0, col] = f"{h}:{m:02d}"
+                    except: pass
+            
+            location_data_dic[location_name] = temp_range.fillna('')
+            
+        return location_data_dic
+    except Exception as e:
+        raise e
 
-if __name__ == "__main__":
-    main()
+# --- 3. PDF解析 (A1セルの中心から勤務地を特定するロジック) ---
+def pdf_reader(pdf_stream, target_staff, file_name=""):
+    pdf_stream.seek(0)
+    year, month = None, None
+    nums = re.findall(r'\d+', normalize_text(file_name))
+    for n in nums:
+        if len(n) == 4: year = int(n)
+        if len(n) <= 2: month = int(n)
+
+    temp_path = "temp_process.pdf"
+    with open(temp_path, "wb") as f: f.write(pdf_stream.getbuffer())
+    
+    pdf_results = {}
+    
+    # 決定された flavor: lattice と stream 両方試行
+    for flavor in ['lattice', 'stream']:
+        try:
+            tables = camelot.read_pdf(temp_path, pages='all', flavor=flavor)
+        except: continue
+        
+        for table in tables:
+            df = table.df
+            if df.empty: continue
+            
+            # 【絶対ルール】A1セルの改行分割から勤務地(T1/T2等)を特定
+            header_lines = str(df.iloc[0, 0]).splitlines()
+            work_place = header_lines[len(header_lines)//2] if header_lines else "Unknown"
+            work_place = work_place.strip()
+
+            for i in range(len(df)):
+                cell_val = str(df.iloc[i, 0])
+                # 名前の一致とセル内での行位置(offset)を取得
+                found, offset = find_name_and_index_in_cell(target_staff, cell_val)
+                
+                if found:
+                    my_daily = df.iloc[i : i + 2, :].copy().reset_index(drop=True)
+                    others = df.copy().reset_index(drop=True)
+                    # 後の処理のために名前+offsetを識別子として埋め込む
+                    my_daily.iloc[0, 0] = f"{target_staff}_offset_{offset}"
+                    pdf_results[work_place] = [my_daily, others]
+                    break
+        if pdf_results: break
+                    
+    return pdf_results, year, month
+
+# --- 4. 統合と警告 ---
+def integrate_with_warning(pdf_results, time_dic):
+    integrated = {}
+    for wp_key in pdf_results:
+        if wp_key not in time_dic:
+            st.error(f"{wp_key}という勤務地は登録されていません確認してください。")
+            continue
+        integrated[wp_key] = [pdf_results[wp_key][0], pdf_results[wp_key][1], time_dic[wp_key]]
+    return integrated
+
+# --- 5. 月間ループ ---
+def process_full_month(integrated_dic, year, month):
+    # CSVヘッダー
+    final_rows = [["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"]]
+    if not year or not month: return final_rows
+    
+    _, last_day = calendar.monthrange(year, month)
+    
+    for day in range(1, last_day + 1):
+        target_date = f"{year}/{month:02d}/{day:02d}"
+        for place_key, data in integrated_dic.items():
+            my_daily, others, time_sched = data[0], data[1], data[2]
+            
+            meta = str(my_daily.iloc[0, 0])
+            offset = int(meta.split("_offset_")[-1]) if "_offset_" in meta else 0
+            
+            # 日付列の特定（PDFの構造上、1列目が名前、2列目が1日...となるケースが多いが、
+            # Camelotの抽出結果に合わせて調整が必要。ここでは day 列目を参照）
+            if day >= my_daily.shape[1]: continue
+            
+            raw_val = str(my_daily.iloc[0, day])
+            val_lines = raw_val.split('\n')
+            shift_text = val_lines[offset].strip() if offset < len(val_lines) else raw_val
+
+            # シフト記号の抽出
+            shifts = re.findall(r'[A-Z\d]+|[公有休特欠]', shift_text)
+            for s_info in shifts:
+                if any(k in s_info for k in ["公", "有", "休", "特", "欠"]):
+                    final_rows.append([f"【{s_info}】", target_date, "", target_date, "", "True", "休暇", place_key])
+                else:
+                    # ここで consideration.py の詳細計算を呼び出す
+                    import consideration as cons
+                    # 引数構成: key, date, col_idx, s_info, my_df, other_df, time_df, results
+                    try:
+                        cons.shift_cal(place_key, target_date, day, s_info, my_daily, others, time_sched, final_rows)
+                    except Exception as e:
+                        st.warning(f"{target_date} {s_info} 解析スキップ: {e}")
+                    
+    return final_rows
