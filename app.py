@@ -1,66 +1,60 @@
 import streamlit as st
-import pandas as pd
-import camelot
 import practice_0 as p0
+import camelot
 import os
 
-st.title("📅 21時テスト用：シフト解析画面")
+SPREADSHEET_ID = '1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE'
 
-# 1. ユーザー入力
-uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
-target_staff = st.text_input("検索する氏名を入力してください", value="四村 和義")
+st.set_page_config(layout="wide")
+st.title("📅 シフト・時程表 統合システム")
 
-# --- 事前準備: 時程表の辞書化（本来はGoogle Driveから取得） ---
-# テスト用に、空の辞書またはダミーデータを用意
-if "time_dic" not in st.session_state:
-    # ここに時程表を読み込む処理が入ります。
-    # 現在はテスト用に空の辞書を作成。本来は p0.time_schedule_from_drive() 等で取得。
-    st.session_state.time_dic = {"t1": pd.DataFrame(), "t2": pd.DataFrame()} 
+uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
+target_staff = st.text_input("検索氏名", value="四村 和義")
 
-time_dic = st.session_state.time_dic
+if 'time_dic' not in st.session_state:
+    try:
+        service = p0.get_gdrive_service(st.secrets)
+        st.session_state.time_dic = p0.time_schedule_from_drive(service, SPREADSHEET_ID)
+        st.sidebar.success("✅ マスター同期完了")
+    except Exception as e:
+        st.sidebar.error(f"⚠️ Drive接続エラー: {e}")
 
-# 2. 解析実行ボタン
-if uploaded_file and st.button("21時の最終解析実行"):
-    
-    # PDFを一時保存してCamelotで読み込む
+if uploaded_file and st.button("解析実行"):
     with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
     
+    # --- 3者比較による動的な列幅決定 ---
+    name_width = len(target_staff) * 15 + 20      # 名前の幅
+    location_width = 10 * 15 + 20               # 勤務地の幅(目安10文字)
+    safe_limit = 120                            # 安定列幅(最低保証)
+    
+    column_boundary = max(name_width, location_width, safe_limit)
+    
     try:
-        # flavor='lattice' で解析。
-        # ここで「名前の幅」に合わせる設定が必要な場合は、table_areas等の指定を追加します。
-        tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
-        
+        tables = camelot.read_pdf(
+            "temp.pdf", 
+            pages='1', 
+            flavor='lattice', 
+            columns=[str(column_boundary)]
+        )
         if not tables:
-            st.error("PDFから表を検出できませんでした。")
-            st.stop()
-            
-        df = tables[0].df
-        
-        # practice_0.py の解析関数を呼び出し
-        loc_key, my_df, other_df = p0.pdf_reader(uploaded_file.name, df, target_staff)
-        
-        # 3. 辞書キーによる紐付け確認
-        if loc_key in time_dic:
-            st.success(f"✅ 勤務地 '{loc_key.upper()}' の紐付けに成功しました")
-            
-            # 三表の一括表示
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("🟢 my_daily_shift")
-                st.dataframe(my_df)
-            with col2:
-                st.subheader("👥 other_daily_shift")
-                st.dataframe(other_df)
-                
-            st.subheader(f"🕒 time_schedule ({loc_key.upper()})")
-            st.dataframe(time_dic[loc_key])
+            st.error("表を検出できませんでした。")
         else:
-            st.error(f"⚠️ 紐付け失敗: PDFから見つかった '{loc_key}' は時程表にありません。")
-            st.info(f"現在の時程表リスト: {list(time_dic.keys())}")
+            loc_key, my_df, other_df = p0.pdf_reader(uploaded_file.name, tables[0].df, target_staff)
             
-    except Exception as e:
-        st.error(f"解析中にエラーが発生しました: {e}")
+            st.success(f"📍 拠点: {loc_key}")
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.subheader("🟢 個人シフト")
+                st.dataframe(my_df, hide_index=True)
+                st.subheader("👥 同拠点の他スタッフ")
+                st.dataframe(other_df, hide_index=True)
+            with c2:
+                time_dic = st.session_state.get('time_dic', {})
+                match = next((k for k in time_dic.keys() if p0.normalize_text(loc_key) in p0.normalize_text(k)), None)
+                if match:
+                    st.subheader(f"🕒 時程表マスター ({match})")
+                    st.dataframe(time_dic[match], hide_index=True)
     finally:
         if os.path.exists("temp.pdf"):
             os.remove("temp.pdf")
