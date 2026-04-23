@@ -30,14 +30,22 @@ if uploaded_file and st.button("解析実行"):
     
     column_boundary = max(name_width, location_width, safe_limit)
     
-    try:
+try:
+        # columnsを使用する場合は flavor='stream' を指定します
         tables = camelot.read_pdf(
             "temp.pdf", 
             pages='1', 
-            flavor='lattice', 
+            flavor='stream',  # 'lattice' から 'stream' に変更
             columns=[str(column_boundary)]
         )
-        if not tables:
+        
+        if not tables or len(tables[0].df) <= 1:
+            # もし stream でうまく取れない場合は、予備として lattice を試す（ただしcolumnsは外す）
+            tables = camelot.read_pdf(
+                "temp.pdf", 
+                pages='1', 
+                flavor='lattice'
+            )        if not tables:
             st.error("表を検出できませんでした。")
         else:
             loc_key, my_df, other_df = p0.pdf_reader(uploaded_file.name, tables[0].df, target_staff)
