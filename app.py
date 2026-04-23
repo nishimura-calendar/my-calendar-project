@@ -2,7 +2,6 @@ import streamlit as st
 import practice_0 as p0
 import camelot
 import os
-import re
 
 st.set_page_config(layout="wide")
 st.title("📅 シフト・時程表 統合システム")
@@ -14,31 +13,34 @@ if uploaded_file and st.button("解析実行"):
     with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    # --- 打ち合わせ通りのロジック：勤務地と名前を比較 ---
+    # --- 境界線の計算 ---
     # 日本語1文字15pt + マージン
     name_width = len(target_staff) * 15 + 20
-    location_width = 10 * 15 + 20 # 勤務地(目安10文字分)
-    
-    # 120は含めず、純粋にどちらか長い方を境界線にする
+    location_width = 60 
     column_boundary = max(name_width, location_width)
     
-    # 安全策：100を超えると日付を飲み込むリスクが高いため上限を設ける
+    # 飲み込み防止の上限
     if column_boundary > 90:
         column_boundary = 90
 
     try:
+        # ご提案の「途中から」を反映
+        # table_areasで「名前の右端」から「ページの右端」までを切り出す
+        # ※座標はPDFにより微調整が必要ですが、ここでは論理的な範囲を指定
         tables = camelot.read_pdf(
             "temp.pdf", 
             pages='1', 
             flavor='stream', 
-            columns=[str(column_boundary)]
+            table_areas=[f'{column_boundary},700,595,100'], # [左, 上, 右, 下]
+            row_tol=2,     # 文字高さに絞る
+            strip_text='\n' # 不要な改行を掃除
         )
         
-        if not tables:
-            st.error("表を検出できませんでした。")
+        if not tables or len(tables) == 0:
+            st.error("指定した範囲に表が見つかりませんでした。")
         else:
-            # 解析エンジン呼び出し
+            # A1セル([0,0])に勤務地が入った状態で解析エンジンへ
             p0.pdf_reader(uploaded_file.name, tables[0].df, target_staff)
             
     except Exception as e:
-        st.error(f"解析中にエラーが発生しました: {e}")
+        st.error(f"解析エラー: {e}")
