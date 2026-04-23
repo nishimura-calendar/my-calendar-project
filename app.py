@@ -3,7 +3,7 @@ import practice_0 as p0
 import camelot
 import os
 
-# 解析するスプレッドシートID
+# 解析対象のスプレッドシートID
 SPREADSHEET_ID = '1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE'
 
 st.set_page_config(layout="wide")
@@ -12,7 +12,7 @@ st.title("📅 シフト・時程表 統合システム")
 uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 target_staff = st.text_input("検索する氏名", value="四村 和義")
 
-# 時程表マスターの読み込み
+# 時程表マスターの読み込み（初回のみ）
 if 'time_dic' not in st.session_state:
     try:
         service = p0.get_gdrive_service(st.secrets)
@@ -22,35 +22,37 @@ if 'time_dic' not in st.session_state:
         st.sidebar.error(f"⚠️ Drive接続エラー: {e}")
 
 if uploaded_file and st.button("解析実行"):
-with open("temp.pdf", "wb") as f:
+    with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    # --- シンプルに名前と勤務地の長さだけで決定 ---
-    # 日本語1文字15pt + マージン
+    # --- シンプルに「名前」と「勤務地」の長さだけで境界線を決定 ---
+    # 日本語1文字あたり15pt + 左右のマージン20ptで計算
     name_width = len(target_staff) * 15 + 20
-    location_width = 10 * 15 + 20 # 勤務地の目安
+    location_width = 10 * 15 + 20  # 勤務地（目安10文字分）
     
-    # 余計な120は含めず、純粋にどちらか長い方を壁にする
+    # 固定値(120)は含めず、純粋にどちらか長い方を採用
     column_boundary = max(name_width, location_width)
     
     try:
+        # columnsを指定するため flavor='stream' を使用
         tables = camelot.read_pdf(
             "temp.pdf", 
             pages='1', 
             flavor='stream', 
-            columns=[str(column_boundary)]
+            columns=[str(column_boundary)],
+            row_tol=10  # 行の結合許容度を調整
         )
         
-        if not tables:
+        if not tables or len(tables[0].df) <= 1:
             st.error("表を検出できませんでした。")
         else:
-            # practice_0.py の解析エンジンを呼び出し
+            # practice_0.py の解析ロジック（検問・抽出）を呼び出し
             loc_key, my_df, other_df = p0.pdf_reader(uploaded_file.name, tables[0].df, target_staff)
             
             st.divider()
             st.success(f"📍 判定された拠点: {loc_key}")
             
-            # 画面を左右に分割して表示
+            # 画面を左右に分割
             c1, c2 = st.columns([1, 1])
             
             with c1:
@@ -58,20 +60,19 @@ with open("temp.pdf", "wb") as f:
                 if my_df is not None:
                     st.dataframe(my_df, hide_index=True)
                 else:
-                    st.warning(f"{target_staff} さんのデータが見つかりませんでした。")
+                    st.warning(f"「{target_staff}」さんのデータが見つかりませんでした。")
                 
                 st.subheader("👥 同拠点の他スタッフ")
                 if other_df is not None:
                     st.dataframe(other_df, hide_index=True)
 
             with c2:
-                # 勤務地名による時程表の自動マッチング
+                # 拠点名による時程表の自動マッチング
                 time_dic = st.session_state.get('time_dic', {})
                 match_key = next((k for k in time_dic.keys() if p0.normalize_text(loc_key) in p0.normalize_text(k)), None)
                 
                 if match_key:
                     st.subheader(f"🕒 時程表マスター ({match_key})")
-                    # practice_0 側で時刻変換(6.25 -> 6:15等)済みの表を表示
                     st.dataframe(time_dic[match_key], hide_index=True)
                 else:
                     st.warning(f"⚠️ 拠点 '{loc_key}' に合致する時程表が見つかりません。")
@@ -79,5 +80,6 @@ with open("temp.pdf", "wb") as f:
     except Exception as e:
         st.error(f"解析中にエラーが発生しました: {e}")
     finally:
+        # 一時ファイルの削除
         if os.path.exists("temp.pdf"):
             os.remove("temp.pdf")
