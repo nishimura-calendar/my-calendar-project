@@ -4,42 +4,41 @@ import calendar
 import streamlit as st
 
 def pdf_reader(file_name, df, target_staff):
-    # 1. ファイル名から「月」を取得 (例: "1月度" -> 1)
+    # 1. ファイル名から「月」を取得
     month_match = re.search(r'(\d{1,2})月', file_name)
     target_month = int(month_match.group(1)) if month_match else 1
-    target_year = 2026 # 年度固定
     
-    # 2. カレンダー上の正解を計算
-    # 1日の曜日
-    first_weekday_idx = calendar.monthrange(target_year, target_month)[0]
-    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    expected_first_day = weekdays_jp[first_weekday_idx]
-    # 月の最終日（日数）
-    expected_last_date = str(calendar.monthrange(target_year, target_month)[1])
-
-    # 3. 表からのデータ取得
-    # [1, 1] の曜日を取得
-    actual_first_day_raw = str(df.iloc[1, 1]).strip()
-    actual_first_day = re.search(r'[月火水木金土日]', actual_first_day_raw).group(0) if re.search(r'[月火水木金土日]', actual_first_day_raw) else ""
+    # 2. カレンダー検問（A1=勤務地、B1=1日、B2=曜日 と想定）
+    # A1セルの勤務地を取得
+    location_key = str(df.iloc[0, 0]).strip()
     
-    # [0, 最終列] の日数を取得
-    actual_last_date = str(df.iloc[0, -1]).strip().split('\n')[-1] # 改行がある場合に対応
+    # B1セルの「1日」と、最終列の「31日」をチェック
+    actual_first_date = str(df.iloc[0, 1]).strip()
+    actual_last_date = str(df.iloc[0, -1]).strip()
+    
+    # B2セルの「曜日」を取得
+    actual_weekday = str(df.iloc[1, 1]).strip() # row_tol=2なら1行下に入る
 
-    # 4. 検問実行
+    # 2026年1月の正解
+    expected_weekday = "木"
+    expected_last = "31"
+
+    # 検問実行
     errors = []
-    if actual_first_day != expected_first_day:
-        errors.append(f"曜日不一致 (表:{actual_first_day}曜 / 暦:{expected_first_day}曜)")
-    
-    if actual_last_date != expected_last_date:
-        errors.append(f"日数不一致 (表:{actual_last_date}日 / 暦:{expected_last_date}日)")
+    if actual_first_date != "1":
+        errors.append(f"開始日ズレ(取得:{actual_first_date})")
+    if actual_weekday != expected_weekday:
+        errors.append(f"曜日不一致(取得:{actual_weekday})")
+    if actual_last_date != expected_last:
+        errors.append(f"日数不一致(取得:{actual_last_date})")
 
     if errors:
-        st.error(f"⚠️ 検問エラー: {' , '.join(errors)}")
-        st.stop() # 一致しない場合は停止
+        st.error(f"⚠️ 検問エラー: {' / '.join(errors)}")
+        st.write("現在の表の左上(A1付近):", df.iloc[:3, :3])
+        return
 
-    # 5. データ抽出処理
-    location_key = str(df.iloc[0, 0]).strip()
-    st.success(f"✅ 検問クリア: {target_month}月シフト（{location_key}）")
+    # 3. 成功時の処理
+    st.success(f"✅ 検問クリア: {target_month}月 {location_key} シフト表")
     
-    # (以下、氏名検索とシフト表示ロジックに続く)
-    # ...
+    # ここにスタッフの行を探してシフトを抽出するコードが続きます
+    # st.dataframe(df) # デバッグ用表示
