@@ -22,19 +22,18 @@ if 'time_dic' not in st.session_state:
         st.sidebar.error(f"⚠️ Drive接続エラー: {e}")
 
 if uploaded_file and st.button("解析実行"):
-    with open("temp.pdf", "wb") as f:
+with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    # --- 動的な列幅決定（3者比較：名前、勤務地、最低保証120） ---
-    # 日本語1文字あたり約15pt + 左右マージン
+    # --- シンプルに名前と勤務地の長さだけで決定 ---
+    # 日本語1文字15pt + マージン
     name_width = len(target_staff) * 15 + 20
-    location_width = 10 * 15 + 20  # 勤務地（目安10文字）
-    safe_limit = 120              # 安定列幅（最低保証：これより狭いと日付列を破壊する）
+    location_width = 10 * 15 + 20 # 勤務地の目安
     
-    column_boundary = max(name_width, location_width, safe_limit)
+    # 余計な120は含めず、純粋にどちらか長い方を壁にする
+    column_boundary = max(name_width, location_width)
     
     try:
-        # 【重要】columnsオプションを使用するため flavor='stream' を指定
         tables = camelot.read_pdf(
             "temp.pdf", 
             pages='1', 
@@ -42,10 +41,6 @@ if uploaded_file and st.button("解析実行"):
             columns=[str(column_boundary)]
         )
         
-        # 万が一 stream で全く表が取れなかった場合のフォールバック（予備）
-        if not tables or len(tables[0].df) <= 1:
-            tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
-            
         if not tables:
             st.error("表を検出できませんでした。")
         else:
