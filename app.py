@@ -26,45 +26,44 @@ if uploaded_pdf and target_staff:
             w_list = ["月", "火", "水", "木", "金", "土", "日"]
             first_weekday_A = w_list[first_w_idx]
 
-            # --- (B) PDF内容の読み取り (打ち合わせの座標定義) ---
-            # 巾 l, 高さ h の計算 (整数切り上げ)
-            # ※名前の文字数 * 15pt + 余白
+            # --- (B) PDF内容の読み取り ---
+            # 巾 l の計算 (整数切り上げ)
             l = math.ceil(max(len("勤務地"), len(target_staff)) * 15) + 10
-            h = math.ceil(15.0)
-            h_yobi = math.ceil(15.0)
 
             try:
-                # PDF解析実行
+                # 打ち合わせ通りの精密解析エンジン
                 df_pdf = p0.pdf_reader_engine(uploaded_pdf, l)
 
-                if df_pdf is None:
+                if df_pdf is None or df_pdf.empty:
                     st.error("PDFの読み取りに失敗しました。")
                 else:
-                    # 実測値(B)の抽出
-                    # A1セルの右隣(0,1)が日付、その下(2,1)が曜日
-                    first_day_B = str(df_pdf.iloc[0, 1]).strip()
-                    first_weekday_B = str(df_pdf.iloc[2, 1]).strip()
+                    # 【検問ロジック B】
+                    # 日数: 0行目の最終列 [0, -1]
+                    # 曜日: 1行目の1列目 [1, 1] (日の真下)
                     last_day_B = str(df_pdf.iloc[0, -1]).strip()
+                    first_weekday_B = str(df_pdf.iloc[1, 1]).strip()
 
-                    # --- 検問 A != B なら終了 ---
+                    # A != B なら終了
                     if str(last_day_A) != last_day_B or first_weekday_A not in first_weekday_B:
-                        st.error("❌ 検問不合格: ファイル名と内容のカレンダーが一致しません。")
-                        st.write(f"理論(A): {last_day_A}日/{first_weekday_A}曜")
-                        st.write(f"実測(B): {last_day_B}日/{first_weekday_B}曜")
+                        st.error("❌ 検問不合格: カレンダー情報が一致しません。")
+                        st.write(f"理論(A): {last_day_A}日 / {first_weekday_A}曜")
+                        st.write(f"実測(B): {last_day_B}日 / {first_weekday_B}曜")
+                        st.info("解析された表の上部構造:")
+                        st.write(df_pdf.iloc[:2, :]) # 0行目と1行目を表示
                         st.stop()
                     
-                    st.success(f"✅ 検問合格: {y_val}年{m_val}月（{last_day_A}日間）")
+                    st.success(f"✅ 検問合格: {y_val}年{m_val}月")
 
                     # --- データ統合フェーズ ---
-                    # ① 時程表の取得 (勤務地が「正」となるマスター)
+                    # ① 時程表を取得 (Master)
                     time_schedule_dic = p0.time_schedule_from_drive(SHEET_ID)
 
-                    # ② シフトの抽出と統合 (data_integration)
+                    # ② シフトの抽出と統合 (勤務地は iloc[1, 0] から取得)
                     final_data = p0.data_integration(df_pdf, time_schedule_dic, target_staff)
 
-                    # 結果の表示
                     if not final_data:
                         st.warning("統合可能なデータが見つかりませんでした。時程表の勤務地名を確認してください。")
+                    
                     for loc, data in final_data.items():
                         st.divider()
                         st.subheader(f"📍 拠点: {loc}")
