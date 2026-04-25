@@ -1,58 +1,62 @@
 import streamlit as st
-import math
-import practice_0 as p0
-import calendar
-import re
+import pandas as pd
+import gspread # スプレッドシート操作用
+from practice_0 import rebuild_shift_table, get_master_data_from_gsheets
 
-st.set_page_config(layout="wide", page_title="シフト・時程表統合システム")
-st.title("📅 高精度シフト管理システム (再構築モード)")
+st.set_page_config(layout="wide")
+st.title("📅 シフト・時程 統合管理システム")
 
-SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+# スプレッドシートIDの設定
+SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
-uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
-target_staff = st.text_input("検索する氏名", value="四村 和義")
+# 1. マスターデータの読み込み
+try:
+    # ※認証設定（st.secrets等）が完了している前提
+    # gc = gspread.service_account(...) 
+    # sh = gc.open_by_key(SPREADSHEET_ID)
+    # master_locations, time_schedules = get_master_data_from_gsheets(sh)
+    
+    # テスト用にCSVから読み込み（認証がない場合）
+    jiteihyo_df = pd.read_csv("時程表.xlsx - Table 1.csv")
+    master_locations = ["T1", "T2", "免税店"] # A列から取得する想定
+except Exception as e:
+    st.error(f"マスターデータの読み込みに失敗しました: {e}")
+    st.stop()
 
-if uploaded_pdf and target_staff:
-    # --- (A) 理論値の算出 ---
-    y_val, m_val = p0.extract_year_month_from_text(uploaded_pdf.name)
-    last_day_theory = calendar.monthrange(y_val, m_val)[1]
-    first_w_idx = calendar.monthrange(y_val, m_val)[0]
-    w_list = ["月", "火", "水", "木", "金", "土", "日"]
-    weekday_theory = w_list[first_w_idx]
+# 設定
+with st.sidebar:
+    target_name = st.text_input("名前", value="四村")
+    expected_days = st.number_input("日数", value=31)
+    expected_weekday = st.selectbox("第1曜日", ["月", "火", "水", "木", "金", "土", "日"], index=3)
 
-    # --- (B) PDFの解析 ---
-    l = math.ceil(max(len("勤務地"), len(target_staff)) * 15) + 15
-    df_pdf = p0.pdf_reader_engine(uploaded_pdf, l)
+uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
 
-    if df_pdf is not None:
-        st.subheader("1. 検問（ファイル名との照合）")
+if uploaded_file:
+    with open("temp.pdf", "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    result, message = rebuild_shift_table(
+        "temp.pdf", target_name, expected_days, expected_weekday, master_locations
+    )
+
+    if not result:
+        # --- 不一致の場合：理由とPDFを表示 ---
+        st.error(f"❌ 解析エラー: {message}")
+        st.write("### PDFの生データ（読み取り内容）")
+        st.dataframe(pd.read_csv("時程表.xlsx - Table 1.csv")) # 代替表示例
+    else:
+        # --- 一致した場合：3つの表を表示 ---
+        st.success(f"✅ 検問通過（勤務地: {result['location']}）")
         
-        # 柔軟な抽出ロジックで実測値を取得
-        last_day_actual, detected_loc = p0.get_actual_info(df_pdf, SHEET_ID)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("末日の判定", f"{last_day_actual}日", f"理論値: {last_day_theory}日", delta_color="normal")
-        with col2:
-            st.metric("検出された勤務地", f"{detected_loc}")
+        # ① 時程表 (Time Schedule)
+        st.subheader("① タイムスケジュール（時程表）")
+        st.write(f"勤務地「{result['location']}」の定義を表示します。")
+        # st.dataframe(time_schedules[result['location']])
 
-        # 検問判定
-        if int(last_day_theory) == int(last_day_actual):
-            st.success(f"✅ 検問合格: {y_val}年{m_val}月のデータとして正しく認識されました。")
-            
-            if st.button("このまま勤務表を再構築する"):
-                # 統合・再構築の実行
-                results = p0.rebuild_shift_data(df_pdf, SHEET_ID, target_staff, detected_loc)
-                
-                if results:
-                    st.divider()
-                    st.subheader(f"📍 再構築完了: {detected_loc}")
-                    st.write("【あなたのシフト】")
-                    st.dataframe(results["my_shift"])
-                    st.write("【適用される時程マスター】")
-                    st.dataframe(results["time_master"])
-                else:
-                    st.error("データの抽出に失敗しました。氏名が正しいか確認してください。")
-        else:
-            st.error("❌ 検問不合格: PDF内の日数とファイル名が一致しません。")
-            st.write("解析された表の構造:", df_pdf.head(3))
+        # ② あなたのシフト (My Daily Shift)
+        st.subheader(f"② {target_name}さんの抽出シフト")
+        st.table(pd.DataFrame([result['my_shift']], columns=[f"{i+1}日" for i in range(len(result['my_shift']))]))
+
+        # ③ 他のスタッフのシフト (Other Staff Shift)
+        st.subheader("③ 他スタッフのシフト（再構築データ）")
+        st.dataframe(pd.DataFrame(result['others_shift']))
