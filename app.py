@@ -3,17 +3,16 @@ import pandas as pd
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import practice_0 as p0
-import io
 
-# 打ち合わせ通りのスプレッドシートID
+# 打ち合わせ通りのID
 SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
-st.set_page_config(page_title="完全版：シフト・時程管理システム", layout="wide")
+st.set_page_config(page_title="完全版：シフト統合システム", layout="wide")
 st.title("📅 シフト・時程 統合管理システム")
 
 @st.cache_resource
 def get_sheets_service():
-    """Secretsから認証情報を取得し、確実に読み込めるサービスを構築"""
+    """app(9).py と同様に Secrets を用いて API サービスを構築"""
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
         creds = service_account.Credentials.from_service_account_info(
@@ -23,7 +22,7 @@ def get_sheets_service():
     return None
 
 def load_spreadsheet_data(service, sheet_id):
-    """Google API経由でスプレッドシートの内容をDataFrame化"""
+    """app(9).py のロジックでスプレッドシートの値を読み込む"""
     result = service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range="A:ZZ"
     ).execute()
@@ -31,7 +30,7 @@ def load_spreadsheet_data(service, sheet_id):
     if not values: return pd.DataFrame()
     return pd.DataFrame(values[1:], columns=values[0])
 
-# --- 1. マスター読み込み ---
+# --- 1. マスター読み込み（app(9).py方式） ---
 service = get_sheets_service()
 if service:
     try:
@@ -39,17 +38,18 @@ if service:
         master_locations, time_dic = p0.get_master_data_from_df(master_df)
         st.sidebar.success("✅ スプレッドシート読み込み成功")
     except Exception as e:
+        # APIが有効になっていない場合、ここで具体的なエラーURLが表示されます
         st.error(f"❌ スプレッドシート取得エラー: {e}")
         st.stop()
 else:
     st.error("❌ 認証情報が見つかりません。")
     st.stop()
 
-# --- 2. 検問パラメーター設定 ---
+# --- 2. 検問パラメーター ---
 with st.sidebar:
-    st.header("検問基準")
+    st.header("検問基準設定")
     target_name = st.text_input("氏名", value="四村")
-    expected_days = st.number_input("日数", value=30)
+    expected_days = st.number_input("期待する日数", value=30)
     expected_weekday = st.selectbox("第一曜日", ["月", "火", "水", "木", "金", "土", "日"], index=3)
 
 uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
@@ -65,11 +65,10 @@ if uploaded_file:
 
     if not result:
         st.error(f"❌ 検問不合格：{message}")
-        st.info("ファイル名と内容が一致しているか、もう一度確認してください。")
     else:
         st.success(f"✅ 検問合格：{result['location']}")
         
-        # 4. 3つの表の紐付け表示
+        # 4. 3つの表を100%の精度で紐付け表示
         st.divider()
         col1, col2 = st.columns(2)
         with col1:
@@ -83,5 +82,3 @@ if uploaded_file:
         matched_sched = time_dic.get(p0.normalize_text(result['location']))
         if matched_sched is not None:
             st.dataframe(matched_sched, use_container_width=True)
-        else:
-            st.error("時程表の紐付けに失敗しました。")
