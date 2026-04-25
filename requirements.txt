@@ -8,3 +8,4 @@ pdfplumber
 camelot-py[cv]
 opencv-python-headless
 numpy
+gspread
