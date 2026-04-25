@@ -1,32 +1,25 @@
 import streamlit as st
 import pandas as pd
-import gspread # スプレッドシート操作用
-from practice_0 import rebuild_shift_table, get_master_data_from_gsheets
+import camelot
+from practice_0 import rebuild_shift_table, get_master_data
 
 st.set_page_config(layout="wide")
 st.title("📅 シフト・時程 統合管理システム")
 
-# スプレッドシートIDの設定
-SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-
-# 1. マスターデータの読み込み
+# スプレッドシート（Excel）の読み込み
 try:
-    # ※認証設定（st.secrets等）が完了している前提
-    # gc = gspread.service_account(...) 
-    # sh = gc.open_by_key(SPREADSHEET_ID)
-    # master_locations, time_schedules = get_master_data_from_gsheets(sh)
-    
-    # テスト用にCSVから読み込み（認証がない場合）
-    jiteihyo_df = pd.read_csv("時程表.xlsx - Table 1.csv")
-    master_locations = ["T1", "T2", "免税店"] # A列から取得する想定
+    # 実際のファイル名に合わせて指定
+    jiteihyo_df = pd.read_excel("時程表 (30).xlsx") 
+    master_locations, time_schedules = get_master_data(jiteihyo_df)
 except Exception as e:
-    st.error(f"マスターデータの読み込みに失敗しました: {e}")
+    st.error(f"マスターデータの読み込み失敗: {e}")
     st.stop()
 
-# 設定
+# サイドバー設定
 with st.sidebar:
-    target_name = st.text_input("名前", value="四村")
-    expected_days = st.number_input("日数", value=31)
+    st.header("検問パラメーター")
+    target_name = st.text_input("氏名", value="四村")
+    expected_days = st.number_input("日数", value=30)
     expected_weekday = st.selectbox("第1曜日", ["月", "火", "水", "木", "金", "土", "日"], index=3)
 
 uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
@@ -35,28 +28,30 @@ if uploaded_file:
     with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
     
+    # 解析実行
     result, message = rebuild_shift_table(
         "temp.pdf", target_name, expected_days, expected_weekday, master_locations
     )
 
     if not result:
-        # --- 不一致の場合：理由とPDFを表示 ---
-        st.error(f"❌ 解析エラー: {message}")
-        st.write("### PDFの生データ（読み取り内容）")
-        st.dataframe(pd.read_csv("時程表.xlsx - Table 1.csv")) # 代替表示例
+        # --- ② 検問不一致時の表示 ---
+        st.error(f"❌ 解析停止: {message}")
+        st.info("理由を確認し、設定またはPDFファイルを見直してください。")
+        st.write("### PDF読み取り生データ（座標確認用）")
+        tables = camelot.read_pdf("temp.pdf", flavor='stream')
+        if tables: st.dataframe(tables[0].df)
     else:
-        # --- 一致した場合：3つの表を表示 ---
-        st.success(f"✅ 検問通過（勤務地: {result['location']}）")
+        # --- ③ 一致時の紐付け表示 ---
+        st.success(f"✅ 検問合格（勤務地: {result['location']}）")
         
-        # ① 時程表 (Time Schedule)
-        st.subheader("① タイムスケジュール（時程表）")
-        st.write(f"勤務地「{result['location']}」の定義を表示します。")
-        # st.dataframe(time_schedules[result['location']])
+        # 3つの表を表示
+        st.subheader("① 紐付け：時程表 (Time Schedule)")
+        st.dataframe(time_schedules[result['location']])
 
-        # ② あなたのシフト (My Daily Shift)
-        st.subheader(f"② {target_name}さんの抽出シフト")
-        st.table(pd.DataFrame([result['my_shift']], columns=[f"{i+1}日" for i in range(len(result['my_shift']))]))
+        st.subheader(f"② {target_name}さんのシフト (My Daily Shift)")
+        my_df = pd.DataFrame([result['my_shift']], columns=[f"{i+1}日" for i in range(len(result['my_shift']))])
+        st.table(my_df)
 
-        # ③ 他のスタッフのシフト (Other Staff Shift)
-        st.subheader("③ 他スタッフのシフト（再構築データ）")
-        st.dataframe(pd.DataFrame(result['others_shift']))
+        st.subheader("③ 他スタッフのシフト (Other Staff Shift)")
+        others_df = pd.DataFrame(result['others_shift'], columns=[f"{i+1}日" for i in range(len(result['my_shift']))])
+        st.dataframe(others_df)
