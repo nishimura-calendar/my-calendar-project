@@ -3,98 +3,93 @@ import re
 import unicodedata
 import os
 import camelot
-import calendar
+import math
 
 def normalize_text(text):
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFKC', text)
     return re.sub(r'[\s　]', '', text).lower()
 
-def extract_year_month_from_text(text):
-    """ファイル名から年月を抽出し、期待される日数と第一曜日を算出"""
-    if not text: return None
-    text = unicodedata.normalize('NFKC', text)
-    clean_text = re.sub(r'\s+', '', text)
-    y_match = re.search(r'(\d{4})', clean_text)
-    m_match = re.search(r'(\d{1,2})月', clean_text)
-    if not y_match or not m_match: return None
-
-    y_val, m_val = int(y_match.group(1)), int(m_match.group(1))
-    first_wd_num, days_in_month = calendar.monthrange(y_val, m_val)
-    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    return {"year": y_val, "month": m_val, "days": days_in_month, "first_wd": weekdays_jp[first_wd_num]}
-
-def time_schedule_from_drive(sheets_service, file_id):
-    """【第一関門用】スプレッドシートから時程表を取得し辞書化"""
-    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
-    sheets = spreadsheet.get('sheets', [])
-    location_data_dic = {}
-    for s in sheets:
-        title = s.get("properties", {}).get("title")
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=file_id, range=f"'{title}'!A1:Z200").execute()
-        vals = result.get('values', [])
-        if not vals: continue
-        
-        df = pd.DataFrame(vals)
-        # 列名のリネーム（重複回避）
-        raw_cols = [str(c).strip() if c else f"Unnamed_{i}" for i, c in enumerate(df.iloc[0])]
-        new_cols = []
-        counts = {}
-        for col in raw_cols:
-            if col in counts:
-                counts[col] += 1
-                new_cols.append(f"{col}_{counts[col]}")
-            else:
-                counts[col] = 0
-                new_cols.append(col)
-        df.columns = new_cols
-        df = df[1:].reset_index(drop=True)
-        
-        # A列(勤務地)補完
-        first_col = df.columns[0]
-        df[first_col] = df[first_col].replace('', None).ffill()
-        
-        for loc in df[first_col].unique():
-            if not loc: continue
-            location_data_dic[normalize_text(str(loc))] = df[df[first_col] == loc].fillna('').reset_index(drop=True)
-    return location_data_dic
-
-def pdf_reader(pdf_stream, target_staff, expected_info):
-    """【第二関門】ilocによる整合性チェック"""
+def pdf_reader(pdf_stream, target_staff, time_dic):
+    """
+    【最終定義ロジック】
+    1. 勤務地: iloc[0,0]から時程表keyを照合して特定
+    2. 日付: iloc[0, 1]から右へ
+    3. 曜日: iloc[1, 1]から日付の下へ
+    4. 描画座標計算: 勤務地/名前の最大長、文字高さを基準に算出
+    """
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
     with open(temp_name, "wb") as f:
         f.write(pdf_stream.getbuffer())
+    
     try:
         tables = camelot.read_pdf(temp_name, pages='all', flavor='lattice')
         res = {}
+        
         for table in tables:
             df = table.df
             if df.empty: continue
             
-            # 第一関門：勤務地 (iloc[0,0]の中央行)
-            cell_0_0 = str(df.iloc[0, 0])
-            lines = cell_0_0.splitlines()
-            target_idx = cell_0_0.count('\n') // 2
-            work_place = lines[target_idx] if target_idx < len(lines) else "unknown"
+            # --- 第1関門: 勤務地の特定 (時程表マスターと照合) ---
+            # iloc[0,0]の混在文字列から、time_dicのkeyが含まれているか探す
+            cell_0_0_raw = str(df.iloc[0, 0])
+            work_place = "Unknown"
+            found_key = None
             
-            # 第二関門：座標チェック
-            pdf_days = str(df.iloc[0, -1]).strip() # 日数 (iloc[0, 最終列])
-            pdf_wd = str(df.iloc[1, 1]).strip()   # 第一曜日 (iloc[1, 1])
+            for t_key in time_dic.keys():
+                if t_key in cell_0_0_raw: # 時程表のkeyが含まれていればそれを勤務地とする
+                    work_place = t_key
+                    found_key = normalize_text(t_key)
+                    break
             
-            if pdf_days != str(expected_info["days"]) or pdf_wd != expected_info["first_wd"]:
-                return {"error": f"不一致：期待値({expected_info['days']}日/{expected_info['first_wd']})に対し、PDFは({pdf_days}日/{pdf_wd})です。", "df": df}
-
-            # 第三関門：スタッフ抽出
+            if not found_key:
+                continue # 勤務地が特定できない表はスキップ
+            
+            # --- 日付と曜日の抽出 ---
+            # 日付: iloc[0, 1:] / 曜日: iloc[1, 1:]
+            dates = df.iloc[0, 1:].tolist()
+            weeks = df.iloc[1, 1:].tolist()
+            
+            # --- 座標計算 (中線・罫線) ---
+            # 1. 名前の最長長さを取得
+            search_col = df.iloc[:, 0].astype(str)
+            max_name_len = search_col.apply(len).max()
+            wp_len = len(work_place)
+            
+            # 中線の開始位置 x座標 (切り上げ)
+            x_border = math.ceil(max(wp_len, max_name_len))
+            
+            # 仮定の文字高さ (実際のPDFから取得できない場合は基準値を設定)
+            char_height_date = 10.0 # 日付文字の最高値(仮)
+            char_height_week = 10.0 # 曜日文字の最高値(仮)
+            
+            # y座標 (日付の文字の最高値を切り上げた高さ)
+            y_mid_line = math.ceil(char_height_date)
+            
+            # iloc[1,0]の底罫線
+            bottom_border = math.ceil(char_height_date + char_height_week)
+            
+            # --- スタッフ抽出 (第3関門) ---
             clean_target = normalize_text(target_staff)
-            search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
-            matches = df.index[search_col == clean_target].tolist()
-            if matches:
-                idx = matches[0]
+            target_indices = df.index[search_col.apply(normalize_text) == clean_target].tolist()
+            
+            if target_indices:
+                idx = target_indices[0]
                 my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
-                res[normalize_text(work_place)] = [my_shift, others, work_place]
+                
+                # 計算した座標情報を付加して保存
+                res[found_key] = {
+                    "my_shift": my_shift,
+                    "others": others,
+                    "wp_name": work_place,
+                    "drawing_info": {
+                        "x_border": x_border,
+                        "y_mid_line": y_mid_line,
+                        "bottom_border": bottom_border
+                    }
+                }
         return res
     finally:
         if os.path.exists(temp_name): os.remove(temp_name)
