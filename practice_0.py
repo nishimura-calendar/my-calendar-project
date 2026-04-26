@@ -3,8 +3,7 @@ import re
 import unicodedata
 import os
 import camelot
-import io
-from googleapiclient.http import MediaIoBaseDownload
+import calendar
 
 def normalize_text(text):
     if not isinstance(text, str): return ""
@@ -12,98 +11,97 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', text).lower()
 
 def extract_year_month_from_text(text):
-    """ファイル名から年・月を抽出。欠落時はNoneを返し、app.py側で停止判断を行う。"""
-    if not text: return None, None
+    """
+    【ファイル名=正】
+    ファイル名から「年」と「月」を抽出し、
+    その年月に基づく「正確な日数」と「第一曜日」を算出する。
+    """
+    if not text: return None
     text = unicodedata.normalize('NFKC', text)
-    y_match = re.search(r'(\d{4})', text)
-    m_match = re.search(r'(\d{1,2})月', text)
-    y = int(y_match.group(1)) if y_match else None
-    m = int(m_match.group(1)) if m_match else None
-    return y, m
+    clean_text = re.sub(r'\s+', '', text)
+    
+    # 年(4桁)と月(1-2桁)を抽出
+    y_match = re.search(r'(\d{4})', clean_text)
+    m_match = re.search(r'(\d{1,2})月', clean_text)
+    
+    if not y_match or not m_match:
+        return None
 
-def time_schedule_from_drive(service, file_id):
-    """
-    時程表をGoogle Driveから取得。
-    通信エラーや権限不足時は、中途半端なデータを返さず例外を投げる。
-    """
-    try:
-        # スプレッドシートをExcel形式でエクスポート
-        request = service.files().export_media(
-            fileId=file_id, 
-            mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-        fh.seek(0)
-        
-        # データ読み込み（すべての値を文字列として扱う）
-        full_df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-        
-        location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
-        location_data_dic = {}
-        
-        for i, start_row in enumerate(location_rows):
-            end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
-            location_name_raw = str(full_df.iloc[start_row, 0]).strip()
-            norm_key = normalize_text(location_name_raw)
-            if not norm_key or norm_key == 'nan': continue
-            
-            temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
-            # 時刻整形（例：6.25 -> 6:15）
-            for col in range(len(temp_range.columns)):
-                v = temp_range.iloc[0, col]
-                try:
-                    f_v = float(v)
-                    if 0 <= f_v <= 28:
-                        h = int(f_v); m = int(round((f_v - h) * 60))
-                        temp_range.iloc[0, col] = f"{h}:{m:02d}"
-                except: pass
-            
-            location_data_dic[norm_key] = {
-                "df": temp_range.fillna(''), 
-                "original_name": location_name_raw
-            }
-        return location_data_dic
-    except Exception as e:
-        # 通信失敗や権限エラー時はそのまま上位に通知
-        raise e
+    y_val = int(y_match.group(1))
+    m_val = int(m_match.group(1))
+    
+    # 指定された年月の情報を取得
+    # monthrangeは (その月の最初の日の曜日, その月の日数) を返す
+    # 曜日: 0=月, 1=火, 2=水, 3=木, 4=金, 5=土, 6=日
+    first_wd_num, days_in_month = calendar.monthrange(y_val, m_val)
+    
+    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+    expected_first_wd = weekdays_jp[first_wd_num]
+    
+    return {
+        "year": y_val,
+        "month": m_val,
+        "days": days_in_month,
+        "first_wd": expected_first_wd
+    }
 
-def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
+def pdf_reader(pdf_stream, target_staff, expected_info):
     """
-    PDFを解析し、時程表(master)の勤務地と照合する。
+    【第二関門】
+    iloc[]座標指定により、ファイル名から導かれた「年・月」の基準と、
+    PDF内の「日数・曜日」が完全に一致するか照合する。
     """
-    clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
-    temp_path = "temp_process.pdf"
-    with open(temp_path, "wb") as f: f.write(pdf_stream.getbuffer())
+    temp_name = "temp_process.pdf"
+    with open(temp_name, "wb") as f:
+        f.write(pdf_stream.getbuffer())
     
     try:
-        tables = camelot.read_pdf(temp_path, pages='all', flavor='lattice')
+        tables = camelot.read_pdf(temp_name, pages='all', flavor='lattice')
         res = {}
+        
         for table in tables:
             df = table.df
             if df.empty: continue
             
-            # 第2関門：日数の厳密な一致確認
-            if (df.shape[1] - 1) != expected_days: continue
+            # --- 第一関門: 勤務地 (iloc[0,0]の中央行) ---
+            cell_0_0 = str(df.iloc[0, 0])
+            lines = cell_0_0.splitlines()
+            target_index = cell_0_0.count('\n') // 2
+            work_place = lines[target_index] if target_index < len(lines) else "unknown"
+            
+            # --- 第二関門: 座標指定チェック ---
+            # 1. 日数確認: iloc[0, 最終列]
+            pdf_days_val = str(df.iloc[0, -1]).strip()
+            # 2. 第一曜日確認: iloc[1, 1]
+            pdf_first_wd = str(df.iloc[1, 1]).strip()
+            
+            # 判定（年月の期待値と比較）
+            is_days_match = (pdf_days_val == str(expected_info["days"]))
+            is_wd_match = (pdf_first_wd == expected_info["first_wd"])
+            
+            if not is_days_match or not is_wd_match:
+                # 不一致の場合、詳細な理由を返して終了
+                error_msg = (
+                    f"【第二関門不通過】ファイル名と中身が一致しません。\n"
+                    f"原因: ファイル名からは {expected_info['year']}年{expected_info['month']}月 "
+                    f"({expected_info['days']}日間 / 1日={expected_info['first_wd']}) を想定しましたが、\n"
+                    f"PDFの座標(iloc)には {pdf_days_val}日間 / 1日={pdf_first_wd} と記載されています。"
+                )
+                return {"error": error_msg, "df_for_display": df}
 
-            # 第1関門：勤務地の一致確認
-            raw_header = "".join(df.iloc[0, 0].splitlines())
-            norm_header = normalize_text(raw_header)
-            matched_key = next((k for k in time_master_dic.keys() if k in norm_header), None)
-            if not matched_key: continue
-
-            # スタッフの抽出
+            # --- 第三関門: スタッフ抽出 ---
+            clean_target = normalize_text(target_staff)
             search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
             matches = df.index[search_col == clean_target].tolist()
+            
             if matches:
                 idx = matches[0]
                 my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
-                res[matched_key] = [my_shift, others, time_master_dic[matched_key]["original_name"]]
+                res[normalize_text(work_place)] = [my_shift, others, work_place]
+        
         return res
     finally:
-        if os.path.exists(temp_path): os.remove(temp_path)
+        if os.path.exists(temp_name):
+            os.remove(temp_name)
