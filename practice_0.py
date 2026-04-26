@@ -15,7 +15,7 @@ def normalize_text(text):
 def extract_year_month_from_text(text):
     """
     ファイル名から年・月を『探す』だけの関数。
-    不完全な場合はNoneを返し、呼び出し側(app.py)で判断させる。
+    戻り値: (year, month)  ※見つからない場合は None
     """
     if not text: return None, None
     text = unicodedata.normalize('NFKC', text)
@@ -29,7 +29,7 @@ def extract_year_month_from_text(text):
     return y, m
 
 def time_schedule_from_drive(service, file_id):
-    """時程表スプレッドシートを構造を維持して読み込み、拠点名をキーに辞書化"""
+    """時程表スプレッドシートを構造を維持して読み込む"""
     try:
         file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         request = service.files().get_media(fileId=file_id)
@@ -42,24 +42,19 @@ def time_schedule_from_drive(service, file_id):
         while not done: _, done = downloader.next_chunk()
         fh.seek(0)
         
-        # すべて文字列として読み込み、構造を維持
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', sheet_name=0, dtype=str)
-        
-        # A列に値がある行（拠点名の開始行）を特定
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
         location_data_dic = {}
         
         for i, start_row in enumerate(location_rows):
             end_row = location_rows[i+1] if i+1 < len(location_rows) else len(full_df)
             location_name_raw = str(full_df.iloc[start_row, 0]).strip()
-            
-            # 検索用の正規化キー
             norm_key = normalize_text(location_name_raw)
             if not norm_key or norm_key == 'nan': continue
             
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 時刻変換 (6.25 -> 6:15) ※1行目のみ
+            # 数値列(6.25等)を時刻形式(6:15)に整形
             for col in range(len(temp_range.columns)):
                 v = temp_range.iloc[0, col]
                 try:
@@ -74,13 +69,12 @@ def time_schedule_from_drive(service, file_id):
                 "df": temp_range.fillna(''),
                 "original_name": location_name_raw
             }
-            
         return location_data_dic
     except Exception as e:
         raise e
 
 def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
-    """PDFからスタッフのシフトを抽出。全拠点を対象に検索し、日数を確認。"""
+    """PDFからスタッフのシフトを抽出"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
@@ -99,7 +93,6 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
             df = table.df
             if df.empty: continue
             
-            # PDFのヘッダー部分から勤務地を特定
             raw_header = "".join(df.iloc[0, 0].splitlines())
             norm_header = normalize_text(raw_header)
             
@@ -109,14 +102,13 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
                     matched_key = key
                     break
             
-            if not matched_key: continue # 登録外の勤務地はスルー
+            if not matched_key: continue
 
-            # 日数チェック（第2関門）
+            # 日数チェック（ユーザーが入力した日数と照合）
             pdf_days = df.shape[1] - 1 
             if pdf_days != expected_days:
                 return {"error_type": "DAY_MISMATCH", "act": pdf_days}
 
-            # スタッフ名の行を探す
             search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
             matches = df.index[search_col == clean_target].tolist()
             
