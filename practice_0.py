@@ -8,10 +8,11 @@ import math
 
 def normalize_text(text):
     if not isinstance(text, str): return ""
-    # 全角・半角を統一し、小文字化
+    # 1. 全角半角を統一し、小文字化
     text = unicodedata.normalize('NFKC', text).lower()
-    # 空白、改行、タブを「完全に」消去
-    return re.sub(r'[\s　\r\n\t]', '', text)
+    # 2. 【重要】改行(\n)、空白、タブをすべて「空文字」に置換して消し去る
+    text = re.sub(r'[\s　\r\n\t]', '', text)
+    return text
 
 def extract_year_month_from_text(text):
     if not text: return None
@@ -41,7 +42,7 @@ def time_schedule_from_drive(sheets_service, file_id):
             df[first_col] = df[first_col].replace('', None).ffill()
             for loc in df[first_col].unique():
                 if not loc: continue
-                # 時程表側のKey（T2など）も正規化して保存
+                # 時程表側のKeyも改行なし・小文字・空白なしで保存
                 norm_loc = normalize_text(str(loc))
                 location_data_dic[norm_loc] = {
                     "df": df[df[first_col] == loc].fillna('').reset_index(drop=True),
@@ -57,61 +58,60 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
         f.write(pdf_stream.getbuffer())
     
     try:
-        # flavor='lattice' で表の枠線を解析
         tables = camelot.read_pdf(temp_name, pages='all', flavor='lattice')
         res = {}
         for table in tables:
             df = table.df.copy()
             if df.empty or len(df) < 2: continue
 
-            # 1. 「1」が含まれる行（日付行）を特定
+            # 1. 「1」で始まるセルを特定（日付行の特定）
             date_row_idx = -1
+            base_col_idx = -1
             for i in range(min(5, len(df))):
-                row_vals = [normalize_text(str(x)) for x in df.iloc[i].tolist()]
-                # セルの先頭が "1" で始まるものを探す
-                if any(v.startswith('1') for v in row_vals):
-                    date_row_idx = i
-                    break
+                for j in range(min(3, len(df.columns))):
+                    val = normalize_text(str(df.iloc[i, j]))
+                    if val.startswith('1'):
+                        date_row_idx = i
+                        base_col_idx = j
+                        break
+                if date_row_idx != -1: break
+            
             if date_row_idx == -1: continue
 
-            # 2. 【核心】日付・曜日・改行をすべて消して勤務地（Key）を抽出
-            # 日付行の0列目付近を調査
-            target_cell = str(df.iloc[date_row_idx, 0])
+            # 2. 【西村様式】日付・曜日・改行をすべて消去して判定
+            raw_cell_text = str(df.iloc[date_row_idx, base_col_idx])
             
-            # ① 数字(日付)を消す
-            text_no_num = re.sub(r'\d+', '', target_cell)
-            # ② 曜日(月〜日)を消す
-            text_no_week = re.sub(r'[月火水木金土日]', '', text_no_num)
-            # ③ 正規化（改行や空白を消して小文字化）
-            cleaned_key = normalize_text(text_no_week)
+            # ① まず改行や空白を消す (normalize_textを利用)
+            clean_text = normalize_text(raw_cell_text)
+            # ② 数字(日付)をすべて消す
+            clean_text = re.sub(r'\d+', '', clean_text)
+            # ③ 曜日(月〜日)をすべて消す
+            clean_text = re.sub(r'[月火水木金土日]', '', clean_text)
             
+            # これで "1\n\nT2\n\n木" が "t2" だけになる
             found_key = None
             work_place_name = "Unknown"
-            # 時程表から読み込んだKey（t2など）と照合
             for t_key, t_val in time_dic.items():
-                if t_key in cleaned_key:
+                if t_key == clean_text or t_key in clean_text:
                     found_key = t_key
                     work_place_name = t_val["original_name"]
                     break
             
             if not found_key: continue
 
-            # 曜日行は、今回のPDF構造では日付行と同じ
+            # 曜日行は日付行と同じ
             week_row_idx = date_row_idx
 
             # 3. スタッフ抽出
             target_norm = normalize_text(target_staff)
-            # 行の中にターゲットの名前が含まれているか（正規化して比較）
             mask = df.apply(lambda row: row.astype(str).apply(normalize_text).str.contains(target_norm)).any(axis=1)
             match_indices = [idx for idx in df[mask].index.tolist() if idx > date_row_idx]
             
             if match_indices:
                 idx = match_indices[0]
-                # 2行1セット（名前行と時間行）で抽出
                 my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 others = df.drop([date_row_idx, week_row_idx, idx, idx+1] if idx+1 < len(df) else [date_row_idx, week_row_idx, idx]).copy().reset_index(drop=True)
                 
-                # 表示用の幅調整
                 max_name_len = df.iloc[date_row_idx+1:, 0].astype(str).apply(len).max()
                 x_border = math.ceil(max(len(work_place_name), max_name_len))
                 
