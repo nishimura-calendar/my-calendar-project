@@ -14,46 +14,49 @@ def get_unified_services():
         if "gcp_service_account" in st.secrets:
             info = st.secrets["gcp_service_account"]
             creds = service_account.Credentials.from_service_account_info(
-                info,
-                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+                info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
             )
-            return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
+            return build('drive', 'v3', credentials=creds)
     except Exception as e:
         st.error(f"❌ 認証エラー: {e}")
-    return None, None
+    return None
 
-drive_service, sheets_service = get_unified_services()
+drive_service = get_unified_services()
 
 with st.sidebar:
     st.header("解析設定")
     target_staff = st.text_input("解析する名前", value="西村 文宏")
     uploaded_pdf = st.file_uploader("PDFアップロード", type="pdf")
 
-if sheets_service:
+if drive_service:
     try:
-        time_master_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
+        # 第1関門（正）の準備：時程表マスターを辞書登録
+        time_master_dic = p0.time_schedule_from_drive(drive_service, SHEET_ID)
         st.sidebar.success("✅ 時程表（マスター）読み込み完了")
     except Exception as e:
         st.error(f"❌ スプレッドシート取得失敗: {e}")
         st.stop()
 else:
-    st.error("❌ サービスに接続できません。")
+    st.error("❌ Googleサービスに接続できません。")
     st.stop()
 
 if target_staff and uploaded_pdf:
     if st.button("解析実行", type="primary"):
-        y, m, exp_days, exp_wd = p0.extract_year_month_from_text(uploaded_pdf.name)
+        # ファイル名（正）：基準情報の算出
+        y, m, exp_days, _ = p0.extract_year_month_from_text(uploaded_pdf.name)
+        
+        # PDF解析と関門チェック（全てのkeyを対象にした検索を含む）
         pdf_res = p0.pdf_reader(uploaded_pdf, target_staff, exp_days, time_master_dic)
         
         if isinstance(pdf_res, dict) and "error_type" in pdf_res:
             if pdf_res["error_type"] == "WP_MISSING":
-                st.error(f"❌ 第1関門突破失敗：PDFの見出しにマスター登録済みの勤務地が見つかりません。")
+                st.error(f"❌ 第1関門失敗：PDFの見出し内に登録済みの勤務地が見つかりません。")
                 st.warning(f"PDF見出し: {pdf_res['wp']}")
-                st.info(f"登録済み: {', '.join([v['original_name'] for v in time_master_dic.values()])}")
+                st.info(f"マスター登録済み: {', '.join([v['original_name'] for v in time_master_dic.values()])}")
             elif pdf_res["error_type"] == "DAY_MISMATCH":
-                st.error(f"❌ 第2関門突破失敗：日程不一致。ファイル名:{pdf_res['exp']}日 / PDF:{pdf_res['act']}日")
-            elif pdf_res["error_type"] == "SYSTEM":
-                st.error(f"❌ エラー: {pdf_res['msg']}")
+                st.error(f"❌ 第2関門失敗：日程不一致。ファイル名:{pdf_res['exp']}日 / PDF:{pdf_res['act']}日")
+            else:
+                st.error(f"❌ 解析失敗: {pdf_res.get('msg')}")
             st.stop()
 
         # 第3関門：表示
@@ -63,8 +66,6 @@ if target_staff and uploaded_pdf:
             st.divider()
             
             st.header(f"📍 勤務地: {original_wp}")
-            
-            # 2カラムレイアウト（構文エラー修正済み）
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader("👤 自分のシフト")
@@ -73,5 +74,5 @@ if target_staff and uploaded_pdf:
                 st.subheader("👥 他スタッフ")
                 st.dataframe(others, use_container_width=True)
 
-            st.subheader("🕒 時程表定義")
+            st.subheader("🕒 時程表 (time_schedule)")
             st.dataframe(time_master_dic[wp_key]["df"], use_container_width=True)
