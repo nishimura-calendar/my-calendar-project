@@ -27,7 +27,7 @@ def get_unified_services():
         st.error(f"❌ 認証エラー: {e}")
     return None, None
 
-# 変数定義順序の最適化 (NameError回避)
+# NameError回避のため最初に関数を実行
 drive_service, sheets_service = get_unified_services()
 
 with st.sidebar:
@@ -57,30 +57,30 @@ if target_staff and uploaded_pdf:
         # PDF解析と第1・第2関門チェック
         pdf_res = p0.pdf_reader(uploaded_pdf, target_staff, exp_days, master_keys)
         
-        # 失敗時の表示ロジック
+        # 失敗時の表示ロジック（pdf_resがエラー辞書の場合）
         if isinstance(pdf_res, dict) and "error_type" in pdf_res:
             if pdf_res["error_type"] == "WP_MISSING":
                 st.error(f"❌ 第1関門突破失敗：PDF内の勤務地『{pdf_res['wp']}』は、時程表（マスター）に登録されていません。")
             elif pdf_res["error_type"] == "DAY_MISMATCH":
                 st.error(f"❌ 第2関門突破失敗：日程不一致。ファイル名基準では{pdf_res['exp']}日ですが、PDF内容は{pdf_res['act']}日です。")
             elif pdf_res["error_type"] == "SYSTEM":
-                st.error(f"❌ 解析失敗(システム): {pdf_res['msg']}")
-            # 理由を表示して終了
+                st.error(f"❌ 解析失敗: {pdf_res['msg']}")
             st.stop()
 
-        # 第3関門：紐付け成功時の表示
-        for wp_key, data in pdf_res.items():
-            my_shift, others, original_wp = data
-            
-            st.success(f"✅ 全関門突破: {original_wp}")
-            st.divider()
-            st.header(f"📍 勤務地: {original_wp}")
-            
-            st.subheader("🕒 time_schedule (時程表)")
-            st.dataframe(time_dic[wp_key], use_container_width=True)
-            
-            st.subheader("👤 my_daily_shift (自分のシフト)")
-            st.dataframe(my_shift, use_container_width=True)
-            
-            st.subheader("👥 other_daily_shift (他スタッフ)")
-            st.dataframe(others, use_container_width=True)
+        # 第3関門：紐付け成功時の表示 (pdf_resは解析結果の辞書)
+        if pdf_res:
+            for wp_key, data in pdf_res.items():
+                my_shift, others, original_wp = data
+                
+                st.success(f"✅ 全関門突破: {original_wp}")
+                st.divider()
+                st.header(f"📍 勤務地: {original_wp}")
+                
+                st.subheader("🕒 time_schedule (時程表)")
+                st.dataframe(time_dic[wp_key], use_container_width=True)
+                
+                st.subheader("👤 my_daily_shift (自分のシフト)")
+                st.dataframe(my_shift, use_container_width=True)
+                
+                st.subheader("👥 other_daily_shift (他スタッフ)")
+                st.dataframe(others, use_container_width=True)
