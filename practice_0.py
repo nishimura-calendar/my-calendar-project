@@ -12,7 +12,7 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', text).lower()
 
 def extract_year_month_from_text(text):
-    """ファイル名から年・月を抽出。見つからない場合はNoneを返し、後続で停止させる"""
+    """ファイル名から年・月を抽出。欠落時はNoneを返し、app.py側で停止判断を行う。"""
     if not text: return None, None
     text = unicodedata.normalize('NFKC', text)
     y_match = re.search(r'(\d{4})', text)
@@ -22,7 +22,10 @@ def extract_year_month_from_text(text):
     return y, m
 
 def time_schedule_from_drive(service, file_id):
-    """時程表を安全にエクスポートして取得"""
+    """
+    時程表をGoogle Driveから取得。
+    通信エラーや権限不足時は、中途半端なデータを返さず例外を投げる。
+    """
     try:
         # スプレッドシートをExcel形式でエクスポート
         request = service.files().export_media(
@@ -36,7 +39,7 @@ def time_schedule_from_drive(service, file_id):
             status, done = downloader.next_chunk()
         fh.seek(0)
         
-        # 構造を維持して読み込み
+        # データ読み込み（すべての値を文字列として扱う）
         full_df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
         
         location_rows = full_df[full_df.iloc[:, 0].notna()].index.tolist()
@@ -49,6 +52,7 @@ def time_schedule_from_drive(service, file_id):
             if not norm_key or norm_key == 'nan': continue
             
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
+            # 時刻整形（例：6.25 -> 6:15）
             for col in range(len(temp_range.columns)):
                 v = temp_range.iloc[0, col]
                 try:
@@ -58,18 +62,24 @@ def time_schedule_from_drive(service, file_id):
                         temp_range.iloc[0, col] = f"{h}:{m:02d}"
                 except: pass
             
-            location_data_dic[norm_key] = {"df": temp_range.fillna(''), "original_name": location_name_raw}
+            location_data_dic[norm_key] = {
+                "df": temp_range.fillna(''), 
+                "original_name": location_name_raw
+            }
         return location_data_dic
     except Exception as e:
-        # ここで発生したエラーはapp.py側でキャッチして停止させる
+        # 通信失敗や権限エラー時はそのまま上位に通知
         raise e
 
 def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
-    """PDFを解析し、不整合があれば空の辞書を返す"""
+    """
+    PDFを解析し、時程表(master)の勤務地と照合する。
+    """
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
-    temp_path = "temp_render.pdf"
+    temp_path = "temp_process.pdf"
     with open(temp_path, "wb") as f: f.write(pdf_stream.getbuffer())
+    
     try:
         tables = camelot.read_pdf(temp_path, pages='all', flavor='lattice')
         res = {}
@@ -77,14 +87,16 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
             df = table.df
             if df.empty: continue
             
-            # 第2関門：日数チェック
+            # 第2関門：日数の厳密な一致確認
             if (df.shape[1] - 1) != expected_days: continue
 
+            # 第1関門：勤務地の一致確認
             raw_header = "".join(df.iloc[0, 0].splitlines())
             norm_header = normalize_text(raw_header)
             matched_key = next((k for k in time_master_dic.keys() if k in norm_header), None)
             if not matched_key: continue
 
+            # スタッフの抽出
             search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
             matches = df.index[search_col == clean_target].tolist()
             if matches:
