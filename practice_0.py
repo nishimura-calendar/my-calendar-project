@@ -8,10 +8,8 @@ import math
 
 def normalize_text(text):
     if not isinstance(text, str): return ""
-    # 全角半角を統一 (NFKC)
-    text = unicodedata.normalize('NFKC', text)
-    # 小文字化、空白・改行・タブをすべて削除
-    text = text.lower()
+    # 全角半角を統一、小文字化、スペース・改行を完全に排除
+    text = unicodedata.normalize('NFKC', text).lower()
     text = re.sub(r'[\s　\r\n\t]', '', text)
     return text
 
@@ -43,15 +41,14 @@ def time_schedule_from_drive(sheets_service, file_id):
             df[first_col] = df[first_col].replace('', None).ffill()
             for loc in df[first_col].unique():
                 if not loc: continue
-                # マスター側も正規化して保存
+                # キーを正規化して保存
                 norm_loc = normalize_text(str(loc))
                 location_data_dic[norm_loc] = {
                     "df": df[df[first_col] == loc].fillna('').reset_index(drop=True),
                     "original_name": str(loc)
                 }
         return location_data_dic
-    except Exception:
-        return {}
+    except Exception: return {}
 
 def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
     pdf_stream.seek(0)
@@ -60,29 +57,31 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
         f.write(pdf_stream.getbuffer())
     
     try:
+        # 枠線がある表として読み込み
         tables = camelot.read_pdf(temp_name, pages='all', flavor='lattice')
         res = {}
         for table in tables:
             df = table.df.replace(r'[\r\n]', '', regex=True)
+            # 空の列を除去
             df = df.loc[:, (df != '').any(axis=0)]
             if df.empty or len(df) < 2: continue
 
-            # --- 【重要】ご指示通り iloc[0:2, 0:2] のエリアから勤務地を特定 ---
-            # 表の左上4セル分を結合して正規化
-            top_left_area = normalize_text("".join(df.iloc[0:2, 0:2].astype(str).values.flatten()))
+            # --- 【限定】テーブルの左上隅(3x3セル)だけをスキャン ---
+            # 勤務地がズレていても捕まえらえるよう、3行3列程度を対象にします
+            top_left_cells = df.iloc[0:3, 0:3].astype(str).values.flatten()
+            table_header_text = "".join([normalize_text(c) for c in top_left_cells])
             
             found_key = None
             work_place_name = "Unknown"
             for t_key, t_val in time_dic.items():
-                if t_key in top_left_area:
+                if t_key in table_header_text:
                     found_key = t_key
                     work_place_name = t_val["original_name"]
                     break
             
-            # 勤務地が見つからなければこのページはスキップ
             if not found_key: continue
 
-            # --- 日付行・曜日行の動的特定（1, 2, 3... がある行を探す） ---
+            # --- 日付行の特定 (1, 2, 3... が含まれる行) ---
             date_row_idx = -1
             for i in range(min(5, len(df))):
                 row_vals = df.iloc[i].astype(str).tolist()
@@ -92,11 +91,11 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
             if date_row_idx == -1: continue
             week_row_idx = date_row_idx + 1
 
-            # 整合性チェック（日数一致のみ）
+            # 日数チェック（31日など）
             pdf_days = re.sub(r'\D', '', str(df.iloc[date_row_idx, -1]))
             if pdf_days != str(expected_info["days"]): continue
 
-            # --- スタッフ抽出（全列検索） ---
+            # --- スタッフ抽出 ---
             target_norm = normalize_text(target_staff)
             mask = df.apply(lambda row: row.astype(str).apply(normalize_text).str.contains(target_norm)).any(axis=1)
             match_indices = [idx for idx in df[mask].index.tolist() if idx > date_row_idx]
@@ -106,6 +105,7 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
                 my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 others = df.drop([date_row_idx, week_row_idx, idx, idx+1] if idx+1 < len(df) else [date_row_idx, week_row_idx, idx]).copy().reset_index(drop=True)
                 
+                # 座標情報の計算
                 max_name_len = df.iloc[week_row_idx+1:, 0].astype(str).apply(len).max()
                 x_border = math.ceil(max(len(work_place_name), max_name_len))
                 
