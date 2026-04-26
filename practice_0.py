@@ -43,6 +43,7 @@ def time_schedule_from_drive(sheets_service, file_id):
         if not vals: continue
         
         df = pd.DataFrame(vals)
+        # 列名重複回避処理
         raw_cols = [str(c).strip() if c else f"Unnamed_{i}" for i, c in enumerate(df.iloc[0])]
         new_cols = []
         counts = {}
@@ -56,6 +57,7 @@ def time_schedule_from_drive(sheets_service, file_id):
         df.columns = new_cols
         df = df[1:].reset_index(drop=True)
         
+        # A列(勤務地)補完
         first_col = df.columns[0]
         df[first_col] = df[first_col].replace('', None).ffill()
         
@@ -69,10 +71,11 @@ def time_schedule_from_drive(sheets_service, file_id):
 
 def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
     """
-    【最終定義ロジック】
-    1. 勤務地: iloc[1,0]付近を時程表keyと照合
-    2. 日付: iloc[0,1]から右へ
-    3. 曜日: iloc[1,1]から右へ
+    【最終定義：絶対座標と列区分】
+    1. 勤務地: iloc[1, 0] を時程表キーと照合
+    2. 日付区分: iloc[0, 1] ～ iloc[0, days] (列区分)
+    3. 曜日区分: iloc[1, 1] ～ iloc[1, days] (列区分)
+    4. 描画座標: math.ceilを用いた中線・底罫線の算出
     """
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
@@ -85,54 +88,43 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
         
         for table in tables:
             df = table.df
-            if df.empty: continue
+            if df.empty or len(df) < 3: continue
             
-            # --- 第一関門: 勤務地特定 (iloc[1,0]に含まれる時程表keyを検索) ---
-            # ご提示のデータでは2行目(iloc[1])の先頭付近に「T2」がある
+            # --- 第一関門: 勤務地特定 (iloc[1,0]付近をマスターと照合) ---
             cell_1_0_raw = str(df.iloc[1, 0])
             work_place_name = "Unknown"
             found_key = None
-            
             for t_key, t_val in time_dic.items():
                 if t_val["original_name"] in cell_1_0_raw:
                     work_place_name = t_val["original_name"]
                     found_key = t_key
                     break
-            
             if not found_key: continue
 
-            # --- 第二関門: 整合性チェック (iloc座標指定) ---
-            # 最終日付: iloc[0, 最終列] / 第一曜日: iloc[1, 1]
-            pdf_days = str(df.iloc[0, -1]).strip()
+            # --- 第二関門: 整合性チェック (列の末尾と1日の曜日) ---
+            pdf_days_val = re.sub(r'\D', '', str(df.iloc[0, -1]))
             pdf_first_wd = str(df.iloc[1, 1]).strip()
             
-            # 数値以外のノイズを除去して比較
-            pdf_days_clean = re.sub(r'\D', '', pdf_days)
-            
-            if pdf_days_clean != str(expected_info["days"]) or pdf_first_wd != expected_info["first_wd"]:
-                error_msg = f"不一致：期待値({expected_info['days']}日/{expected_info['first_wd']})に対し、PDFは({pdf_days_clean}日/{pdf_first_wd})です。"
-                return {"error": error_msg, "df": df}
+            if pdf_days_val != str(expected_info["days"]) or pdf_first_wd != expected_info["first_wd"]:
+                return {"error": f"不一致：期待({expected_info['days']}/{expected_info['first_wd']}) PDF({pdf_days_val}/{pdf_first_wd})", "df": df}
 
-            # --- 座標計算 (中線・罫線仕様) ---
-            search_col = df.iloc[:, 0].astype(str)
-            max_name_len = search_col.apply(len).max()
-            wp_len = len(work_place_name)
+            # --- 座標計算 (中線・底罫線仕様) ---
+            search_col_all = df.iloc[:, 0].astype(str)
+            max_name_len = search_col_all.apply(len).max()
+            x_border = math.ceil(max(len(work_place_name), max_name_len))
             
-            # 中線開始x: max(勤務地長, 名前最長)の切り上げ
-            x_border = math.ceil(max(wp_len, max_name_len))
-            
-            # 文字高さ(仮定値10.0)に基づく座標算出
-            h_date = 10.0 
-            h_week = 10.0
-            y_mid_line = math.ceil(h_date) # 日付の最高高さ
-            bottom_border = math.ceil(h_date + h_week) # iloc[1,0]の底罫線
+            h_date, h_week = 10.0, 10.0 # 仮定高さ
+            y_mid_line = math.ceil(h_date)
+            bottom_border = math.ceil(h_date + h_week)
 
-            # --- 第三関門: スタッフ抽出 ---
+            # --- 第三関門: スタッフ抽出 (3行目以降から検索) ---
             clean_target = normalize_text(target_staff)
-            target_indices = df.index[search_col.apply(normalize_text) == clean_target].tolist()
+            staff_area = df.iloc[2:, 0].astype(str).apply(normalize_text)
+            matches = staff_area[staff_area == clean_target].index.tolist()
             
-            if target_indices:
-                idx = target_indices[0]
+            if matches:
+                idx = matches[0]
+                # 列の区分を維持して抽出 (0列目=名前, 1列目以降=日付データ)
                 my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, 1, idx, idx+1] if idx+1 < len(df) else [0, 1, idx]).copy().reset_index(drop=True)
                 
@@ -140,7 +132,9 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
                     "my_shift": my_shift,
                     "others": others,
                     "wp_name": work_place_name,
-                    "drawing": {"x": x_border, "y": y_mid_line, "bottom": bottom_border}
+                    "drawing": {"x": x_border, "y": y_mid_line, "bottom": bottom_border},
+                    "header_date": df.iloc[0, :].tolist(), # 日付列の区分
+                    "header_week": df.iloc[1, :].tolist()  # 曜日列の区分
                 }
         return res
     finally:
