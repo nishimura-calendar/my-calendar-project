@@ -6,7 +6,7 @@ import camelot
 import calendar
 
 def normalize_text(text):
-    """打ち合わせ内容：正規化・空白除去・小文字化"""
+    """比較のために正規化、空白除去、小文字化を行う"""
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFKC', text)
     return re.sub(r'[\s　]', '', text).lower()
@@ -28,10 +28,7 @@ def extract_year_month_from_text(text):
     return str(y_val), str(m_val), days_in_month, first_weekday
 
 def time_schedule_from_drive(sheets_service, file_id):
-    """
-    consideration_0.py準拠：
-    時程表(マスター)を読み込み、A列を補完して勤務地をキーに辞書化。
-    """
+    """時程表(マスター)を読み込み、A列をキーに辞書化。"""
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
     location_data_dic = {}
@@ -66,15 +63,17 @@ def time_schedule_from_drive(sheets_service, file_id):
         
         for loc in df[first_col].unique():
             if not loc: continue
-            location_data_dic[normalize_text(str(loc))] = df[df[first_col] == loc].fillna('').reset_index(drop=True)
+            norm_key = normalize_text(str(loc))
+            # 正規化した名称をキー、元の名称を値の一部として保持
+            location_data_dic[norm_key] = {
+                "df": df[df[first_col] == loc].fillna('').reset_index(drop=True),
+                "original_name": str(loc)
+            }
             
     return location_data_dic
 
-def pdf_reader(pdf_stream, target_staff, expected_days, time_master_keys):
-    """
-    打ち合わせ通り：Camelot解析。
-    第1関門(勤務地確認)と第2関門(日程整合性)を判定。
-    """
+def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
+    """PDF解析。第1関門(勤務地確認)と第2関門(日程整合性)を判定。"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
@@ -87,20 +86,27 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_keys):
             return {"error_type": "SYSTEM", "msg": "PDFから表を抽出できませんでした。"}
 
         res = {}
+        master_keys = time_master_dic.keys()
+
         for table in tables:
             df = table.df
             if df.empty: continue
             
-            # PDFから勤務地を特定
-            header = str(df.iloc[0, 0]).splitlines()
-            work_place_raw = header[len(header)//2] if header else "Unknown"
-            norm_wp = normalize_text(work_place_raw)
+            # PDFから勤務地を抽出（左上セル）
+            raw_header_text = "".join(df.iloc[0, 0].splitlines())
+            norm_header = normalize_text(raw_header_text)
             
-            # 【第1関門】勤務地が時程表(正)に存在するか
-            if norm_wp not in time_master_keys:
-                return {"error_type": "WP_MISSING", "wp": work_place_raw}
+            # 【第1関門：修正】完全一致ではなく、マスターのキーが含まれているか判定
+            matched_key = None
+            for m_key in master_keys:
+                if m_key in norm_header:
+                    matched_key = m_key
+                    break
+            
+            if not matched_key:
+                return {"error_type": "WP_MISSING", "wp": raw_header_text}
 
-            # 【第2関門】日程不一致の確認 (スタッフ名列を除いた列数)
+            # 【第2関門】日程不一致の確認
             pdf_days = df.shape[1] - 1 
             if pdf_days != expected_days:
                 return {"error_type": "DAY_MISMATCH", "exp": expected_days, "act": pdf_days}
@@ -113,9 +119,12 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_keys):
                 idx = matches[0]
                 my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
                 others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
-                res[norm_wp] = [my_shift, others, work_place_raw]
+                res[matched_key] = [my_shift, others, time_master_dic[matched_key]["original_name"]]
         
-        return res if res else {"error_type": "SYSTEM", "msg": f"『{target_staff}』さんが見つかりません。"}
+        if not res:
+            return {"error_type": "SYSTEM", "msg": f"『{target_staff}』さんのデータが見つかりませんでした。"}
+            
+        return res
     except Exception as e:
         return {"error_type": "SYSTEM", "msg": str(e)}
     finally:
