@@ -7,35 +7,33 @@ import io
 from googleapiclient.http import MediaIoBaseDownload
 
 def normalize_text(text):
-    """比較用に文字を正規化（全角半角統一・空白除去・小文字化）"""
+    """全角半角統一・空白除去・小文字化"""
     if not isinstance(text, str): return ""
     text = unicodedata.normalize('NFKC', text)
     return re.sub(r'[\s　]', '', text).lower()
 
 def extract_year_month_from_text(text):
     """
-    ファイル名から年・月を『探す』だけの関数。
-    戻り値: (year, month)  ※見つからない場合は None
+    ファイル名から年(4桁)と月を抽出する。
+    見つからない項目は None を返す。
     """
     if not text: return None, None
     text = unicodedata.normalize('NFKC', text)
     
+    # 4桁の数字を「年」とみなす
     y_match = re.search(r'(\d{4})', text)
+    # 「○月」という数字を「月」とみなす
     m_match = re.search(r'(\d{1,2})月', text)
     
-    y = y_match.group(1) if y_match else None
-    m = m_match.group(1) if m_match else None
+    y = int(y_match.group(1)) if y_match else None
+    m = int(m_match.group(1)) if m_match else None
     
     return y, m
 
 def time_schedule_from_drive(service, file_id):
-    """時程表スプレッドシートを構造を維持して読み込む"""
+    """時程表を読み込み、拠点をキーにした辞書を作成"""
     try:
-        file_metadata = service.files().get(fileId=file_id, fields='mimeType').execute()
         request = service.files().get_media(fileId=file_id)
-        if file_metadata.get('mimeType') == 'application/vnd.google-apps.spreadsheet':
-            request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -54,7 +52,7 @@ def time_schedule_from_drive(service, file_id):
             
             temp_range = full_df.iloc[start_row:end_row, :].copy().reset_index(drop=True)
             
-            # 数値列(6.25等)を時刻形式(6:15)に整形
+            # 数値(6.25)を時刻(6:15)に変換
             for col in range(len(temp_range.columns)):
                 v = temp_range.iloc[0, col]
                 try:
@@ -74,7 +72,7 @@ def time_schedule_from_drive(service, file_id):
         raise e
 
 def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
-    """PDFからスタッフのシフトを抽出"""
+    """PDF解析。勤務地照合と日数チェックを行う。"""
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
@@ -104,7 +102,7 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
             
             if not matched_key: continue
 
-            # 日数チェック（ユーザーが入力した日数と照合）
+            # 日数チェック（第2関門）
             pdf_days = df.shape[1] - 1 
             if pdf_days != expected_days:
                 return {"error_type": "DAY_MISMATCH", "act": pdf_days}
@@ -118,6 +116,6 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
                 others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
                 res[matched_key] = [my_shift, others, time_master_dic[matched_key]["original_name"]]
         
-        return res if res else {"error_type": "NOT_FOUND", "msg": f"『{target_staff}』さんが見つかりません。"}
+        return res if res else {"error_type": "NOT_FOUND", "msg": "スタッフが見つかりません。"}
     finally:
         if os.path.exists(temp_name): os.remove(temp_name)
