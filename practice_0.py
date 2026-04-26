@@ -78,4 +78,20 @@ def pdf_reader(pdf_stream, target_staff, expected_days, time_master_dic):
             if df.empty: continue
             
             # 第2関門：日数チェック
-            if (df.shape[1] - 1) != expected_
+            if (df.shape[1] - 1) != expected_days: continue
+
+            raw_header = "".join(df.iloc[0, 0].splitlines())
+            norm_header = normalize_text(raw_header)
+            matched_key = next((k for k in time_master_dic.keys() if k in norm_header), None)
+            if not matched_key: continue
+
+            search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
+            matches = df.index[search_col == clean_target].tolist()
+            if matches:
+                idx = matches[0]
+                my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
+                others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
+                res[matched_key] = [my_shift, others, time_master_dic[matched_key]["original_name"]]
+        return res
+    finally:
+        if os.path.exists(temp_path): os.remove(temp_path)
