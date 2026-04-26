@@ -4,100 +4,83 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 import practice_0 as p0
 
-# --- 1. 定数・設定 ---
+# 通信成功が確認されたスプレッドシートID
 SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
+st.set_page_config(page_title="シフト・時程統合システム", layout="wide")
+st.title("📅 シフト・時程 統合管理システム")
+
+@st.cache_resource
 def get_g_service():
-    """
-    Secretsから認証情報を読み込み、Google APIサービスを返す
-    """
+    """隠しフォルダ（.streamlit/secrets.toml）から鍵を読み込んで接続"""
+    if "gcp_service_account" in st.secrets:
+        info = st.secrets["gcp_service_account"]
+        # 読み込みテストで成功した権限(drive.readonly)を使用
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        return build('drive', 'v3', credentials=creds)
+    return None
+
+# --- 1. スプレッドシート（時程表マスター）の読み込み ---
+service = get_g_service()
+if service:
     try:
-        # GitHub/Streamlit CloudのSecretsから取得
-        if "gcp_service_account" in st.secrets:
-            info = st.secrets["gcp_service_account"]
-            creds = service_account.Credentials.from_service_account_info(
-                info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
-            )
-            return build('drive', 'v3', credentials=creds)
-        else:
-            return None
+        # practice_0内の関数を使い、勤務地ごとの時程表を辞書形式で取得
+        time_dic = p0.time_schedule_from_drive(service, SHEET_ID)
+        st.sidebar.success("✅ スプレッドシート読み込み成功")
     except Exception as e:
-        st.error(f"認証初期化エラー: {e}")
-        return None
+        st.error(f"❌ スプレッドシート取得失敗: {e}")
+        st.stop()
+else:
+    st.error("❌ 認証情報(secrets.toml)が見つかりません。")
+    st.stop()
 
-# --- 2. ページ初期化 ---
-st.set_page_config(page_title="シフト解析・紐付け", layout="wide")
-st.title("📅 シフト解析・紐付け確認画面")
-
-# セッションにサービスを保持（再読み込み対策）
-if 'g_service' not in st.session_state or st.session_state.g_service is None:
-    st.session_state.g_service = get_g_service()
-
-service = st.session_state.g_service
-
-# --- 3. UI ---
+# --- 2. 画面UI（サイドバー設定） ---
 with st.sidebar:
     st.header("解析設定")
     target_staff = st.text_input("解析する名前", value="西村 文宏")
     uploaded_pdf = st.file_uploader("PDFアップロード", type="pdf")
-    
-    if st.button("設定を再読み込み"):
-        st.session_state.g_service = get_g_service()
-        st.rerun()
 
-# --- 4. メイン処理 ---
+# --- 3. 解析と紐付けの実行 ---
 if target_staff and uploaded_pdf:
     if st.button("解析実行", type="primary"):
-        # A. PDF解析
-        pdf_results, year, month, consistency_report = p0.pdf_reader(
-            uploaded_pdf, target_staff, uploaded_pdf.name
-        )
+        # ファイル名から「〇年〇月」を抽出
+        year, month = p0.extract_year_month_from_text(uploaded_pdf.name)
         
-        # B. 時程表取得
-        time_dic = {}
-        if service:
-            try:
-                time_dic = p0.time_schedule_from_drive(service, SHEET_ID)
-            except Exception as e:
-                st.error(f"スプレッドシート取得失敗: {e}")
-                st.info("※サービスアカウントにスプレッドシートの閲覧権限があるか再確認してください。")
-        else:
-            st.error("Google Drive認証情報が見つかりません。Secretsの設定を確認してください。")
-
-        # C. 報告と紐付け
-        if consistency_report:
-            for place, report in consistency_report.items():
-                st.warning(f"⚠️ {place}: {report['reason']}")
+        # PDF解析を実行（引数はPDFと名前の2つ）
+        pdf_results = p0.pdf_reader(uploaded_pdf, target_staff)
 
         if pdf_results:
             st.success(f"🔍 {year}年{month}月 解析完了")
             
+            # 勤務地（T1, J, A...）ごとに結果を表示
             for work_place, data in pdf_results.items():
                 st.divider()
                 st.header(f"📍 勤務地: {work_place}")
                 
-                # スプレッドシート側のキーと照合
-                matched_time_sched = None
-                norm_wp = p0.normalize_text(work_place)
-                for t_key, t_df in time_dic.items():
-                    if norm_wp == p0.normalize_text(t_key):
-                        matched_time_sched = t_df
-                        break
-                
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.subheader("🟢 my_daily_shift")
-                    st.dataframe(data[0], use_container_width=True)
+                    st.subheader("① 自分のシフト")
+                    st.dataframe(data[0]) # my_daily_shift
                 with col2:
-                    st.subheader("👥 other_daily_shift")
-                    st.dataframe(data[1], use_container_width=True)
+                    st.subheader("② 他スタッフの状況")
+                    st.dataframe(data[1]) # other_staff_shift
                 
-                st.subheader(f"🕒 time_schedule ({work_place})")
-                if matched_time_sched is not None:
-                    st.dataframe(matched_time_sched, use_container_width=True)
+                # スプレッドシートから読み込んだ時程表を紐付け
+                st.subheader(f"🕒 時程表の定義 ({work_place})")
+                norm_wp = p0.normalize_text(work_place)
+                matched_time = None
+                
+                # 表記の揺れ（全角/半角など）を考慮して照合
+                for t_key, t_df in time_dic.items():
+                    if norm_wp == p0.normalize_text(t_key):
+                        matched_time = t_df
+                        break
+                
+                if matched_time is not None:
+                    st.dataframe(matched_time, use_container_width=True)
                 else:
-                    st.error("紐付け失敗: スプレッドシートのA列に該当する勤務地名がありません。")
-                    if time_dic:
-                        st.info(f"取得済み勤務地: {list(time_dic.keys())}")
+                    st.warning(f"スプレッドシート内に『{work_place}』という名前のシートが見つかりません。")
         else:
-            st.error("指定された名前のデータがPDF内に見つかりません。")
+            st.error(f"PDF内に『{target_staff}』さんのデータが見つかりませんでした。")
