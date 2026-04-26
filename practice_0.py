@@ -6,14 +6,12 @@ import camelot
 import calendar
 import math
 
-# 1. すべての表記ゆれをリセットする正規化関数
 def normalize_text(text):
     if not isinstance(text, str): return ""
-    # NFKC正規化：全角英数字を半角に、全角記号の一部を標準的なものに変換
+    # 全角半角を統一 (NFKC)
     text = unicodedata.normalize('NFKC', text)
-    # 小文字に統一
+    # 小文字化、空白・改行・タブをすべて削除
     text = text.lower()
-    # 空白（半角・全角）、改行、タブをすべて削除
     text = re.sub(r'[\s　\r\n\t]', '', text)
     return text
 
@@ -29,7 +27,6 @@ def extract_year_month_from_text(text):
     return {"year": y_val, "month": m_val, "days": days_in_month, "first_wd": weekdays_jp[first_wd_num]}
 
 def time_schedule_from_drive(sheets_service, file_id):
-    """時程表のKey（勤務地名）を正規化して読み込み"""
     try:
         spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
         sheets = spreadsheet.get('sheets', [])
@@ -40,15 +37,13 @@ def time_schedule_from_drive(sheets_service, file_id):
                 spreadsheetId=file_id, range=f"'{title}'!A1:Z200").execute()
             vals = result.get('values', [])
             if not vals: continue
-            
             df = pd.DataFrame(vals)
             df.columns = [f"col_{i}" for i in range(df.shape[1])]
             first_col = df.columns[0]
             df[first_col] = df[first_col].replace('', None).ffill()
-            
             for loc in df[first_col].unique():
                 if not loc: continue
-                # スプレッドシート側の「Ｔ２ 」「t 2」などをすべて「t2」に変換して保持
+                # マスター側も正規化して保存
                 norm_loc = normalize_text(str(loc))
                 location_data_dic[norm_loc] = {
                     "df": df[df[first_col] == loc].fillna('').reset_index(drop=True),
@@ -59,7 +54,6 @@ def time_schedule_from_drive(sheets_service, file_id):
         return {}
 
 def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
-    """PDF側の文字も正規化して勤務地を検索"""
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
     with open(temp_name, "wb") as f:
@@ -71,9 +65,24 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
         for table in tables:
             df = table.df.replace(r'[\r\n]', '', regex=True)
             df = df.loc[:, (df != '').any(axis=0)]
-            if df.empty: continue
+            if df.empty or len(df) < 2: continue
 
-            # 基準行（日付行）の特定
+            # --- 【重要】ご指示通り iloc[0:2, 0:2] のエリアから勤務地を特定 ---
+            # 表の左上4セル分を結合して正規化
+            top_left_area = normalize_text("".join(df.iloc[0:2, 0:2].astype(str).values.flatten()))
+            
+            found_key = None
+            work_place_name = "Unknown"
+            for t_key, t_val in time_dic.items():
+                if t_key in top_left_area:
+                    found_key = t_key
+                    work_place_name = t_val["original_name"]
+                    break
+            
+            # 勤務地が見つからなければこのページはスキップ
+            if not found_key: continue
+
+            # --- 日付行・曜日行の動的特定（1, 2, 3... がある行を探す） ---
             date_row_idx = -1
             for i in range(min(5, len(df))):
                 row_vals = df.iloc[i].astype(str).tolist()
@@ -81,30 +90,13 @@ def pdf_reader(pdf_stream, target_staff, expected_info, time_dic):
                     date_row_idx = i
                     break
             if date_row_idx == -1: continue
-
             week_row_idx = date_row_idx + 1
-            if week_row_idx >= len(df): continue
 
-            # --- 勤務地照合：PDFから読み取った文字を正規化して比較 ---
-            # 1列目周辺の文字を拾い集めて正規化
-            header_search_text = normalize_text("".join(df.iloc[date_row_idx:week_row_idx+1, 0:2].astype(str).values.flatten()))
-            
-            found_key = None
-            work_place_name = "Unknown"
-            for t_key, t_val in time_dic.items():
-                if t_key in header_search_text:
-                    found_key = t_key
-                    work_place_name = t_val["original_name"]
-                    break
-            
-            if not found_key: continue
-
-            # 日数チェックのみ（曜日ズレを許容）
+            # 整合性チェック（日数一致のみ）
             pdf_days = re.sub(r'\D', '', str(df.iloc[date_row_idx, -1]))
-            if pdf_days != str(expected_info["days"]):
-                continue
+            if pdf_days != str(expected_info["days"]): continue
 
-            # スタッフ抽出（名前も正規化して検索）
+            # --- スタッフ抽出（全列検索） ---
             target_norm = normalize_text(target_staff)
             mask = df.apply(lambda row: row.astype(str).apply(normalize_text).str.contains(target_norm)).any(axis=1)
             match_indices = [idx for idx in df[mask].index.tolist() if idx > date_row_idx]
