@@ -22,7 +22,6 @@ def extract_year_month_from_text(text):
     y_match = re.search(r'(\d{4})', text)
     if y_match: y_val = int(y_match.group(1))
     
-    # 指定された年月の末日と第1曜日(0:月〜6:日)を取得
     days_in_month = calendar.monthrange(y_val, m_val)[1]
     first_weekday = calendar.monthrange(y_val, m_val)[0]
     
@@ -47,7 +46,7 @@ def time_schedule_from_drive(sheets_service, file_id):
         max_cols = max(len(row) for row in vals)
         df = pd.DataFrame([row + [''] * (max_cols - len(row)) for row in vals])
         
-        # 重複列名回避（Streamlit表示用）
+        # 重複列名回避
         raw_cols = [str(c).strip() if c else f"Unnamed_{i}" for i, c in enumerate(df.iloc[0])]
         new_cols = []
         counts = {}
@@ -74,10 +73,50 @@ def time_schedule_from_drive(sheets_service, file_id):
 def pdf_reader(pdf_stream, target_staff, expected_days, time_master_keys):
     """
     打ち合わせ通り：Camelot解析。
-    第1関門(勤務地登録確認)と第2関門(日程整合性)を判定。
+    第1関門(勤務地確認)と第2関門(日程整合性)を判定。
     """
     clean_target = normalize_text(target_staff)
     pdf_stream.seek(0)
     temp_name = "temp_process.pdf"
     with open(temp_name, "wb") as f:
         f.write(pdf_stream.getbuffer())
+    
+    try:
+        tables = camelot.read_pdf(temp_name, pages='all', flavor='lattice')
+        if not tables:
+            return {"error_type": "SYSTEM", "msg": "PDFから表を抽出できませんでした。"}
+
+        res = {}
+        for table in tables:
+            df = table.df
+            if df.empty: continue
+            
+            # PDFから勤務地を特定
+            header = str(df.iloc[0, 0]).splitlines()
+            work_place_raw = header[len(header)//2] if header else "Unknown"
+            norm_wp = normalize_text(work_place_raw)
+            
+            # 【第1関門】勤務地が時程表(正)に存在するか
+            if norm_wp not in time_master_keys:
+                return {"error_type": "WP_MISSING", "wp": work_place_raw}
+
+            # 【第2関門】日程不一致の確認 (スタッフ名列を除いた列数)
+            pdf_days = df.shape[1] - 1 
+            if pdf_days != expected_days:
+                return {"error_type": "DAY_MISMATCH", "exp": expected_days, "act": pdf_days}
+
+            # スタッフ抽出
+            search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
+            matches = df.index[search_col == clean_target].tolist()
+            
+            if matches:
+                idx = matches[0]
+                my_shift = df.iloc[idx : idx + 2, :].copy().reset_index(drop=True)
+                others = df.drop([0, idx, idx+1] if idx+1 < len(df) else [0, idx]).copy().reset_index(drop=True)
+                res[norm_wp] = [my_shift, others, work_place_raw]
+        
+        return res if res else {"error_type": "SYSTEM", "msg": f"『{target_staff}』さんが見つかりません。"}
+    except Exception as e:
+        return {"error_type": "SYSTEM", "msg": str(e)}
+    finally:
+        if os.path.exists(temp_name): os.remove(temp_name)
