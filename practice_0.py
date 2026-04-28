@@ -2,64 +2,107 @@ import streamlit as st
 import pandas as pd
 import re
 import unicodedata
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
 
-# [中略: 認証サービスなどの既存コード]
+# ==========================================
+# 1. 認証サービス
+# ==========================================
+def get_unified_services():
+    """Google APIサービスを構築"""
+    if "gcp_service_account" in st.secrets:
+        info = st.secrets["gcp_service_account"]
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=[
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly"
+            ]
+        )
+        return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
+    return None, None
 
+# ==========================================
+# 2. 時間変換ロジック (6.25 -> 6:15)
+# ==========================================
 def convert_float_to_time(val):
-    """数値(6.25)を時間表記(6:15)に変換"""
+    """数値やその文字列を時間表記に変換"""
     try:
-        if val == "" or val == "なし": return ""
-        f_val = float(val)
+        # 空文字や「なし」等はそのまま返す
+        str_val = str(val).strip()
+        if str_val == "" or str_val == "なし": return ""
+        
+        f_val = float(str_val)
         hours = int(f_val)
         minutes = int(round((f_val - hours) * 60))
         return f"{hours}:{minutes:02d}"
     except (ValueError, TypeError):
         return val
 
+# ==========================================
+# 3. 拠点ごとの動的列抽出
+# ==========================================
 def extract_col_range(loc_df):
     """
-    各勤務地の1行目を走査し、D列(3)以降で
-    『数値が最初に出現する列』から『数値が最後に出現する列』までを
-    動的に特定して時間列として抽出する。
+    D列(index 3)以降で、数値が最初に出現する列から
+    最後に出現する列までを動的に特定して抽出。
     """
-    if loc_df.empty:
-        return loc_df
+    if loc_df.empty: return loc_df
 
-    # 1行目（時間軸の定義行）をリスト化
     header_row = loc_df.iloc[0].tolist()
+    num_pattern = re.compile(r'^-?\d+(\.\d+)?$') # 数値判定
     
-    # 数値判定用の正規表現（整数・小数を許容）
-    num_pattern = re.compile(r'^-?\d+(\.\d+)?$')
-    
-    # D列(3)以降で数値が入っているインデックスをすべて抽出
+    # D列(3)以降で数値が入っているインデックスを収集
     num_indices = [
         i for i, val in enumerate(header_row) 
         if i >= 3 and num_pattern.match(str(val).strip())
     ]
     
     if not num_indices:
-        # 数値が見つからない場合は、基本のA-C列(0-2)のみを返す
+        # 数値がない場合は基本の3列のみ
         return loc_df.iloc[:, 0:3]
     
-    # 最初の数値列と、最後の数値列を特定
     col_start = min(num_indices)
-    col_end = max(num_indices) + 1  # スライス用に+1
+    col_end = max(num_indices) + 1 # 最後の数字の列まで含む
     
-    # A-C列(0:3) と、動的に特定した時間軸の全範囲を結合
+    # A-C列(0:3) と 特定した時間範囲を結合
     res_df = pd.concat([loc_df.iloc[:, 0:3], loc_df.iloc[:, col_start:col_end]], axis=1)
     
-    # 表示用に1行目の数値を時間表記「H:MM」へ一括変換
+    # 表示用に1行目を時間表記に変換
     if not res_df.empty:
-        # loc[0]だと元のdfに影響する場合があるため明示的にリスト取得
-        current_header = res_df.iloc[0].tolist()
-        new_header = []
-        for i, val in enumerate(current_header):
-            if i >= 3: # 時間軸列（D列以降）のみ変換
-                new_header.append(convert_float_to_time(val))
-            else:
-                new_header.append(val)
-        
-        # 変換したリストで1行目を更新
+        new_header = res_df.iloc[0].tolist()
+        for i in range(3, len(new_header)):
+            new_header[i] = convert_float_to_time(new_header[i])
         res_df.iloc[0] = new_header
-        
+    
     return res_df
+
+# ==========================================
+# 4. スプレッドシート読み込み
+# ==========================================
+def time_schedule_from_drive(sheets_service, file_id):
+    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
+    sheets = spreadsheet.get('sheets', [])
+    location_data_dic = {}
+
+    for s in sheets:
+        title = s.get("properties", {}).get("title")
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=file_id, range=f"'{title}'!A1:Z300").execute()
+        vals = result.get('values', [])
+        if not vals: continue
+
+        df = pd.DataFrame(vals).fillna('')
+        current_key, start_row = None, 0
+        
+        for i in range(len(df)):
+            val_a = str(df.iloc[i, 0]).strip()
+            if val_a != "":
+                if current_key is not None:
+                    # 拠点ごとの範囲で切り出し
+                    location_data_dic[current_key] = extract_col_range(df.iloc[start_row:i, :])
+                current_key, start_row = val_a, i
+        
+        if current_key is not None:
+            location_data_dic[current_key] = extract_col_range(df.iloc[start_row:, :])
+                
+    return location_data_dic
