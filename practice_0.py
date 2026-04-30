@@ -6,7 +6,7 @@ import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# 1. Google API認証
+# 1. 認証サービス
 def get_unified_services():
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
@@ -19,7 +19,7 @@ def get_unified_services():
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
 
-# 2. 時間表記変換 (6.25 -> 6:15)
+# 2. 時間変換 (6.25 -> 6:15)
 def convert_float_to_time(val):
     try:
         str_val = str(val).strip()
@@ -31,11 +31,11 @@ def convert_float_to_time(val):
     except (ValueError, TypeError):
         return val
 
-# 3. 【重要】クレンジングロジック (スペース置換型)
+# 3. [0,0]専用クレンジングロジック
 def clean_pdf_location_key(val):
-    if pd.isna(val) or val == "": return ""
+    if pd.isna(val) or str(val).strip() == "": return ""
     
-    # 改行を消さずに「スペース」に置き換えて境界を保つ
+    # 改行を消さずにスペースに置換（T2の前後を分離するため）
     text = str(val).replace('\n', ' ').strip()
     
     # 日付(yyyy/mm/dd, mm/dd)を削除
@@ -48,7 +48,7 @@ def clean_pdf_location_key(val):
     # 時刻を削除
     text = re.sub(r'\d{1,2}:\d{2}', '', text)
     
-    # 文頭・文末の独立した数字（日付の1など）を削除
+    # 文頭・文末の「独立した数字（日付の1など）」を削除
     # スペースがあるため、T2の2を巻き込まずに済みます
     text = re.sub(r'^\s*\d+\s+', '', text)
     text = re.sub(r'\s+\d+\s*$', '', text)
@@ -58,7 +58,7 @@ def clean_pdf_location_key(val):
     
     return text.strip()
 
-# 4. スプレッドシート（マスター）の読み込み
+# 4. スプレッドシート読み込み（既存通り）
 def time_schedule_from_drive(sheets_service, file_id):
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
@@ -105,33 +105,37 @@ def process_pdf_with_cleaning(pdf_file, target_name, time_dic):
         if not tables: return None, None, "PDFから表を検出できませんでした。"
 
         df = tables[0].df
-        raw_val = df.iloc[0, 0]
+        raw_val = df.iloc[0, 0] # [0,0]のみをターゲット
         
         # クレンジング実行
         new_location = clean_pdf_location_key(raw_val)
         
-        # Key照合
+        # マスターKeyとの照合（部分一致）
         matched_key = next((k for k in time_dic.keys() if k in new_location), None)
         
         if not matched_key:
             error_msg = f"これは『{new_location}』の time_schedule です。まだ時程表マスターに組み込まれていません。確認してください。"
             return raw_val, new_location, error_msg
 
-        # スタッフ行の検索
-        df_rows = df.iloc[:, 0].astype(str).tolist()
-        if target_name not in df_rows:
+        # スタッフ名の検索（改行を考慮）
+        df_rows = [str(r).replace('\n', '').strip() for r in df.iloc[:, 0]]
+        target_name_clean = str(target_name).replace(' ', '').replace('　', '')
+        
+        target_idx = None
+        for i, row_text in enumerate(df_rows):
+            if target_name_clean in row_text.replace(' ', '').replace('　', ''):
+                target_idx = i
+                break
+        
+        if target_idx is None:
             return raw_val, new_location, f"スタッフ名『{target_name}』が見つかりません。"
         
-        idx = df_rows.index(target_name)
-        
-        # 抽出データの辞書登録
-        extracted = {
+        return raw_val, new_location, {
             "key": matched_key,
-            "my_daily_shift": df.iloc[idx, :].values,
-            "other_daily_shift": df.iloc[idx + 1, :].values,
+            "my_daily_shift": df.iloc[target_idx, :].values,
+            "other_daily_shift": df.iloc[target_idx + 1, :].values,
             "time_schedule": time_dic[matched_key].iloc[0].values
         }
-        return raw_val, new_location, extracted
 
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
