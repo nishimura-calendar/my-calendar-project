@@ -1,42 +1,48 @@
 import streamlit as st
+import pandas as pd
 import practice_0 as p0
 
 SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
-st.set_page_config(page_title="時程表マスター構成確認", layout="wide")
-st.title("🕒 時程表マスター構成の確認")
+st.set_page_config(page_title="シフト解析システム", layout="wide")
+st.title("📄 PDFシフト解析と時程照合")
 
-# API接続
+# マスター読み込み
 drive_service, sheets_service = p0.get_unified_services()
-
 if sheets_service:
-    try:
-        # 全拠点の時間列を動的にスキャンして読み込み
-        with st.spinner("スプレッドシートから各拠点の時間列を特定中..."):
-            time_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
+    if 'time_dic' not in st.session_state:
+        st.session_state.time_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
+    
+    time_dic = st.session_state.time_dic
 
-        st.header("1. 拠点別・抽出範囲の確認")
-        st.info("D列以降で『数値』が始まってから終わるまでを時間軸として切り出しています。")
+    # 入力フォーム
+    col1, col2 = st.columns(2)
+    with col1:
+        target_name = st.text_input("抽出するスタッフ名を入力してください", value="自分")
+    with col2:
+        uploaded_file = st.file_uploader("PDFファイルをアップロードしてください", type="pdf")
 
-        # 各拠点のデータを一覧表示
-        for key, df in time_dic.items():
-            with st.expander(f"📍 拠点: {key}", expanded=True):
-                # 抽出された列数の詳細を表示
-                st.write(f"抽出列: {len(df.columns)}列（時間軸は {len(df.columns)-3}列分）")
-                # 最後まで表示されるよう、コンテナ幅いっぱいに表示
-                st.dataframe(df, use_container_width=True)
-
-        st.divider()
-
-        # ユーザーが全件確認するまで停止させる
-        confirmed = st.checkbox("上記全ての時程表で、時間列が最後まで正しく抽出されていることを確認しました。")
-
-        if not confirmed:
-            st.warning("⚠️ 全ての拠点データを確認し、チェックボックスをオンにしてください。")
-            st.stop()
-
-        st.success("確認完了。PDF解析メニューへ進みます。")
-        # (この後にPDFアップロード等の解析処理を記述)
-
-    except Exception as e:
-        st.error(f"読み込みエラー: {e}")
+    if uploaded_file and target_name:
+        # 解析実行
+        result, error_msg = p0.process_pdf_data(uploaded_file, target_name, time_dic)
+        
+        if error_msg:
+            st.error(error_msg)
+            st.stop() # 指示に基づきプログラム停止
+        
+        if result:
+            st.success(f"照合成功：拠点「{result['key']}」のデータを抽出しました。")
+            
+            # 4. 表形式で表示
+            st.header("📊 抽出データ確認")
+            
+            # 表示用にDataFrameを作成
+            display_df = pd.DataFrame([
+                result['time_schedule'],
+                result['my_daily_shift'],
+                result['other_daily_shift']
+            ], index=["時程 (time_schedule)", "自分のシフト (my_daily_shift)", "他者のシフト (other_daily_shift)"])
+            
+            st.dataframe(display_df, use_container_width=True)
+            
+            st.info(f"拠点「{result['key']}」の辞書登録が完了しました。続けて解析ステップに進めます。")
