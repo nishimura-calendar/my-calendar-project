@@ -6,7 +6,6 @@ import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# 1. 認証サービス
 def get_unified_services():
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
@@ -19,7 +18,6 @@ def get_unified_services():
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
 
-# 2. 時間表記の変換 (6.25 -> 6:15)
 def convert_float_to_time(val):
     try:
         str_val = str(val).strip()
@@ -31,22 +29,17 @@ def convert_float_to_time(val):
     except (ValueError, TypeError):
         return val
 
-# 3. PDF [0,0] クレンジングロジック
+# クレンジング関数
 def clean_pdf_location_key(val):
     text = str(val).strip()
-    # 日付形式を削除
     text = re.sub(r'\d{4}/\d{1,2}/\d{1,2}', '', text)
     text = re.sub(r'\d{1,2}/\d{1,2}', '', text)
-    # 曜日を削除
     text = re.sub(r'[\(\[\{][月火水木金土日][\)\}\]]', '', text)
-    # 時刻形式を削除
     text = re.sub(r'\d{1,2}:\d{2}', '', text)
-    # 文末・文頭の独立した数字（日付の列）を削除
     text = re.sub(r'(\s+\d+)+\s*$', '', text)
     text = re.sub(r'^\s*(\d+\s+)+', '', text)
     return text.strip()
 
-# 4. 時程表（マスター）の読み込み
 def time_schedule_from_drive(sheets_service, file_id):
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
@@ -83,50 +76,39 @@ def extract_col_range(loc_df):
         res_df.iloc[0] = new_header
     return res_df
 
-# 5. PDF解析とデータ抽出
-def process_pdf_data(pdf_file, target_name, time_dic):
-    temp_path = "temp_process.pdf"
+# メインの解析ロジック（[0,0]の生データを返すように修正）
+def process_pdf_with_preview(pdf_file, target_name, time_dic):
+    temp_path = "temp.pdf"
     with open(temp_path, "wb") as f:
         f.write(pdf_file.read())
-    
     try:
         tables = camelot.read_pdf(temp_path, pages='all', flavor='stream')
-        if not tables: return None, "PDFからテーブルを検出できませんでした。"
-
+        if not tables: return None, None, "テーブルを検出できませんでした。"
+        
         df = tables[0].df
-        val_00 = df.iloc[0, 0]
+        raw_val_00 = df.iloc[0, 0] # クレンジング前の生データ
         
-        # ① クレンジング
-        new_location = clean_pdf_location_key(val_00)
+        # 1. クレンジング
+        new_location = clean_pdf_location_key(raw_val_00)
         
-        # ② 既存Keyとの照合
+        # 2. Key照合
         matched_key = next((k for k in time_dic.keys() if k in new_location), None)
         
         if not matched_key:
-            return None, f"これは {new_location} の time_schedule です。まだ時程表マスターに組み込まれていません。確認してください。"
+            return raw_val_00, new_location, f"これは『{new_location}』の time_schedule です。まだ時程表マスターに組み込まれていません。"
 
-        # ③ シフト抽出と辞書登録
-        # スタッフ名（自分）の行を検索（座標指示に相当）
+        # 3. シフト抽出
         df_rows = df.iloc[:, 0].astype(str).tolist()
         if target_name not in df_rows:
-            return None, f"PDF内にスタッフ名『{target_name}』が見つかりません。"
+            return raw_val_00, new_location, f"スタッフ名『{target_name}』が見つかりません。"
         
-        target_idx = df_rows.index(target_name)
-        
-        # my_daily_shift (自分の行) と other_daily_shift (次の行)
-        my_shift = df.iloc[target_idx, :].values
-        other_shift = df.iloc[target_idx + 1, :].values
-        
-        # 結果を辞書にまとめる
-        extracted_data = {
+        idx = df_rows.index(target_name)
+        res = {
             "key": matched_key,
-            "my_daily_shift": my_shift,
-            "other_daily_shift": other_shift,
-            "time_schedule": time_dic[matched_key].iloc[0].values # 時程（ヘッダー行）
+            "my_daily_shift": df.iloc[idx, :].values,
+            "other_daily_shift": df.iloc[idx+1, :].values,
+            "time_schedule": time_dic[matched_key].iloc[0].values
         }
-        
-        return extracted_data, None
-
+        return raw_val_00, new_location, res
     finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        if os.path.exists(temp_path): os.remove(temp_path)
