@@ -23,22 +23,22 @@ def get_unified_services():
 # --- 2. 変換・正規化ユーティリティ ---
 def normalize_text(text):
     if not isinstance(text, str): return ""
+    # 空白削除、NFKC正規化、小文字化
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def convert_num_to_time_str(val):
-    """0.25単位を15分刻みの時刻に変換 (核となる計算)"""
+    """0.25単位を15分刻みの時刻に変換 (6.25 -> 06:15)"""
     try:
         if isinstance(val, (int, float)) or (isinstance(val, str) and re.match(r'^\d+(\.\d+)?$', val)):
             num = float(val)
             hours = int(num)
-            # 0.25 * 60 = 15分
             minutes = int(round((num - hours) * 60))
             return f"{hours:02d}:{minutes:02d}"
         return str(val)
     except (ValueError, TypeError):
         return str(val)
 
-# --- 3. 時程表（Excel/Sheets）抽出 ---
+# --- 3. 時程表抽出ロジック ---
 def time_schedule_from_drive(sheets_service, file_id):
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
@@ -58,7 +58,6 @@ def time_schedule_from_drive(sheets_service, file_id):
             val_a = str(df.iloc[i, 0]).strip()
             if val_a != "":
                 if current_key is not None:
-                    # A列(勤務地)をKeyとして辞書登録
                     location_data_dic[normalize_text(current_key)] = extract_structured_data(df.iloc[start_row:i, :])
                 current_key, start_row = val_a, i
         
@@ -68,9 +67,7 @@ def time_schedule_from_drive(sheets_service, file_id):
     return location_data_dic
 
 def extract_structured_data(loc_df):
-    """
-    B列は文字列維持。見出し行(0行目)のみ15分刻みに変換。[cite: 1]
-    """
+    """見出し行のみ15分刻みに変換し、B列は維持"""
     if loc_df.empty: return loc_df
     key_row = loc_df.iloc[0, :].tolist()
     col_start, col_end = None, len(key_row)
@@ -90,49 +87,60 @@ def extract_structured_data(loc_df):
     base_info = loc_df.iloc[:, 0:3].copy()
     time_data = loc_df.iloc[:, col_start:col_end].copy()
 
-    # 見出し行(0行目)のみ変換適用[cite: 1]
     for col in time_data.columns:
         val_top = time_data.iloc[0].loc[col]
         time_data.iloc[0, time_data.columns.get_loc(col)] = convert_num_to_time_str(val_top)
-        # スタッフ行(1行目以降)は変換しない[cite: 1]
         if len(time_data) > 1:
             time_data.iloc[1:, time_data.columns.get_loc(col)] = time_data.iloc[1:, time_data.columns.get_loc(col)].astype(str)
 
     return pd.concat([base_info, time_data], axis=1)
 
-# --- 4. PDF 0列目スキャン (完全一致照合) ---
-def scan_pdf_for_all_keys(pdf_stream, time_dic):
+# --- 4. PDF 0列目スキャン (○×判定リスト生成) ---
+def scan_pdf_with_debug(pdf_stream, time_dic):
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     
+    debug_list = []
     found_results = []
+    matched_keys_set = set()
+
     try:
         tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
-        if not tables: return []
+        if not tables: return [], pd.DataFrame([{"エラー": "テーブル未検出"}])
         
         pdf_df = tables[0].df
-        matched_keys = set()
+        
+        # 文字数が多いKeyから順に判定（T1とTの誤判定防止）
+        sorted_keys = sorted(time_dic.keys(), key=len, reverse=True)
 
-        for row_idx in range(len(pdf_df)):
-            cell_val = str(pdf_df.iloc[row_idx, 0])
-            # 数字、記号、曜日を除去してKeyを抽出 (例: "1 2 T2 木" -> "T2")[cite: 1]
-            clean_val = re.sub(r'[\d/:()月火水木金土日]', '', cell_val)
+        for i in range(len(pdf_df)):
+            raw_val = str(pdf_df.iloc[i, 0]).replace('\n', ' ')
+            # 数字、曜日、記号を削除（Keyそのものに数字がある場合はここを調整）
+            clean_val = re.sub(r'[\d/:()月火水木金土日\s　]', '', raw_val)
             clean_val = normalize_text(clean_val)
             
-            if not clean_val: continue
+            hit_key = None
+            for k in sorted_keys:
+                if k != "" and (k == clean_val or k in clean_val):
+                    hit_key = k
+                    break
+            
+            if hit_key:
+                status = f"○ ({hit_key})"
+                if hit_key not in matched_keys_set:
+                    found_results.append({'key': hit_key, 'time_schedule': time_dic[hit_key]})
+                    matched_keys_set.add(hit_key)
+            else:
+                status = "×"
 
-            # 時程表から登録した全てのKeyを対象に【完全一致】で検索[cite: 1]
-            if clean_val in time_dic:
-                if clean_val not in matched_keys:
-                    found_results.append({
-                        'key': clean_val,
-                        'pdf_row': row_idx + 1,
-                        'pdf_text': cell_val,
-                        'time_schedule': time_dic[clean_val]
-                    })
-                    matched_keys.add(clean_val)
+            debug_list.append({
+                "行": i + 1,
+                "PDF 0列目データ": raw_val,
+                "クリーニング後": clean_val,
+                "判定": status
+            })
                     
     finally:
         if os.path.exists("temp.pdf"): os.remove("temp.pdf")
         
-    return found_results
+    return found_results, pd.DataFrame(debug_list)
