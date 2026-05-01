@@ -1,12 +1,14 @@
 import streamlit as st
 import pandas as pd
 import re
+import unicodedata
 import camelot
 import os
+import calendar
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# 1. 認証サービス
+# --- 1. 認証とテキスト正規化 ---
 def get_unified_services():
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
@@ -19,46 +21,28 @@ def get_unified_services():
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
 
-# 2. 時間変換 (6.25 -> 6:15)
-def convert_float_to_time(val):
-    try:
-        str_val = str(val).strip()
-        if str_val in ["", "なし"]: return ""
-        f_val = float(str_val)
-        hours = int(f_val)
-        minutes = int(round((f_val - hours) * 60))
-        return f"{hours}:{minutes:02d}"
-    except (ValueError, TypeError):
-        return val
+def normalize_text(text):
+    if not isinstance(text, str): return ""
+    return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-# 3. [0,0]専用クレンジングロジック
-def clean_pdf_location_key(val):
-    if pd.isna(val) or str(val).strip() == "": return ""
-    
-    # 改行を消さずにスペースに置換（T2の前後を分離するため）
-    text = str(val).replace('\n', ' ').strip()
-    
-    # 日付(yyyy/mm/dd, mm/dd)を削除
-    text = re.sub(r'\d{4}/\d{1,2}/\d{1,2}', '', text)
-    text = re.sub(r'\d{1,2}/\d{1,2}', '', text)
-    
-    # 曜日を削除 (括弧あり/なし両方)
-    text = re.sub(r'[\(\[\{]?[月火水木金土日][\)\}\]]?', '', text)
-    
-    # 時刻を削除
-    text = re.sub(r'\d{1,2}:\d{2}', '', text)
-    
-    # 文頭・文末の「独立した数字（日付の1など）」を削除
-    # スペースがあるため、T2の2を巻き込まずに済みます
-    text = re.sub(r'^\s*\d+\s+', '', text)
-    text = re.sub(r'\s+\d+\s*$', '', text)
-    
-    # 連続するスペースを1つにまとめる
-    text = re.sub(r'\s+', ' ', text)
-    
-    return text.strip()
+# --- 2. ファイル名からの年月抽出 ---
+def extract_year_month_from_text(text):
+    if not text: return None, None
+    text = unicodedata.normalize('NFKC', text)
+    nums = re.findall(r'\d+', text)
+    y, m = None, None
+    month_match = re.search(r'(\d{1,2})月', text)
+    if month_match: m = int(month_match.group(1))
+    for n in nums:
+        if len(n) == 4: y = int(n)
+        elif len(n) == 2 and not y: y = 2000 + int(n)
+    if not m:
+        for n in nums:
+            val = int(n)
+            if 1 <= val <= 12: m = val; break
+    return y, m
 
-# 4. スプレッドシート読み込み（既存通り）
+# --- 3. 時程表（スプレッドシート）の動的読み込み[cite: 2, 5] ---
 def time_schedule_from_drive(sheets_service, file_id):
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
@@ -74,68 +58,73 @@ def time_schedule_from_drive(sheets_service, file_id):
             val_a = str(df.iloc[i, 0]).strip()
             if val_a != "":
                 if current_key is not None:
-                    location_data_dic[current_key] = extract_col_range(df.iloc[start_row:i, :])
+                    location_data_dic[normalize_text(current_key)] = df.iloc[start_row:i, :]
                 current_key, start_row = val_a, i
         if current_key is not None:
-            location_data_dic[current_key] = extract_col_range(df.iloc[start_row:, :])
+            location_data_dic[normalize_text(current_key)] = df.iloc[start_row:, :]
     return location_data_dic
 
-def extract_col_range(loc_df):
-    if loc_df.empty: return loc_df
-    header_row = loc_df.iloc[0].tolist()
-    num_pattern = re.compile(r'^-?\d+(\.\d+)?$')
-    start_indices = [i for i, val in enumerate(header_row) if i >= 3 and num_pattern.match(str(val).strip())]
-    if not start_indices: return loc_df.iloc[:, 0:3]
-    col_start, col_end = min(start_indices), len(header_row)
-    res_df = pd.concat([loc_df.iloc[:, 0:3], loc_df.iloc[:, col_start:col_end]], axis=1)
-    if not res_df.empty:
-        new_header = res_df.iloc[0].tolist()
-        for i in range(3, len(new_header)):
-            new_header[i] = convert_float_to_time(new_header[i])
-        res_df.iloc[0] = new_header
-    return res_df
+# --- 4. PDF解析メインロジック ---
+def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
+    # ① 月の日数と1日の曜日を算出
+    truth_days = calendar.monthrange(year, month)[1]
+    truth_wday_idx = calendar.monthrange(year, month)[0]
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    truth_first_wday = weekdays[truth_wday_idx]
 
-# 5. PDF解析メイン
-def process_pdf_with_cleaning(pdf_file, target_name, time_dic):
-    temp_path = "temp_process.pdf"
-    with open(temp_path, "wb") as f:
-        f.write(pdf_file.read())
+    with open("temp.pdf", "wb") as f:
+        f.write(pdf_stream.getbuffer())
+
     try:
-        tables = camelot.read_pdf(temp_path, pages='all', flavor='stream')
-        if not tables: return None, None, "PDFから表を検出できませんでした。"
-
+        # 罫線を生かす lattice 方式
+        tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
+        if not tables: return None, "PDFから表を検出できませんでした。"
         df = tables[0].df
-        raw_val = df.iloc[0, 0] # [0,0]のみをターゲット
-        
-        # クレンジング実行
-        new_location = clean_pdf_location_key(raw_val)
-        
-        # マスターKeyとの照合（部分一致）
-        matched_key = next((k for k in time_dic.keys() if k in new_location), None)
-        
-        if not matched_key:
-            error_msg = f"これは『{new_location}』の time_schedule です。まだ時程表マスターに組み込まれていません。確認してください。"
-            return raw_val, new_location, error_msg
 
-        # スタッフ名の検索（改行を考慮）
-        df_rows = [str(r).replace('\n', '').strip() for r in df.iloc[:, 0]]
-        target_name_clean = str(target_name).replace(' ', '').replace('　', '')
+        # ② 0列目検索（new_location特定）
+        raw_00 = str(df.iloc[0, 0]).replace('\n', ' ')
+        new_location = re.sub(r'\d{1,2}/\d{1,2}|[（\(][月火水木金土日][）\)]|[月火水木金土日]', '', raw_00).strip()
         
-        target_idx = None
-        for i, row_text in enumerate(df_rows):
-            if target_name_clean in row_text.replace(' ', '').replace('　', ''):
-                target_idx = i
-                break
+        # 拠点Key照合 (第3関門)[cite: 5]
+        matched_key = next((k for k in time_dic.keys() if k in normalize_text(new_location) or normalize_text(new_location) in k), None)
+        if not matched_key:
+            return None, f"このファイルは勤務地『{new_location}』のシフト表です。時程表には未定義です。"
+
+        # ③ 整合性チェック（日数・第一曜日）
+        pdf_days = len(df.columns) - 1
+        pdf_first_wday = ""
+        for r in range(min(3, len(df))):
+            match = re.search(r'[月火水木金土日]', str(df.iloc[r, 1]))
+            if match: pdf_first_wday = match.group(0); break
+
+        if pdf_days != truth_days or pdf_first_wday != truth_first_wday:
+            reason = f"【整合性エラー】PDFは {pdf_days}日/{pdf_first_wday}曜始 ですが、カレンダー上は {truth_days}日/{truth_first_wday}曜始 です。"
+            return df, reason
+
+        # ④ 座標設定 (l, h1, h2) の概念適用（latticeによる自動区切りを利用）
+        # ⑤ target_staff の検索[cite: 3, 5]
+        clean_target = normalize_text(target_staff)
+        search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
+        if clean_target not in search_col.values:
+            return df, f"『{target_staff}』が見当たりません。プログラムを停止します。"
+
+        idx = search_col[search_col == clean_target].index[0]
         
-        if target_idx is None:
-            return raw_val, new_location, f"スタッフ名『{target_name}』が見つかりません。"
+        # ⑥ データ抽出
+        my_daily = df.iloc[idx : idx + 2, :].values.tolist() # 本人2行[cite: 5]
         
-        return raw_val, new_location, {
+        others_list = []
+        for oi in range(len(df)):
+            if oi not in [0, idx, idx + 1]: # ヘッダーと本人分を除外
+                row = df.iloc[oi, :].values.tolist()
+                if any(str(v).strip() for v in row): others_list.append(row) # 他者各1行[cite: 3]
+
+        return {
             "key": matched_key,
-            "my_daily_shift": df.iloc[target_idx, :].values,
-            "other_daily_shift": df.iloc[target_idx + 1, :].values,
-            "time_schedule": time_dic[matched_key].iloc[0].values
-        }
+            "my_daily_shift": my_daily,
+            "other_daily_shift": others_list,
+            "time_schedule_full": time_dic[matched_key] # 行列範囲すべてを表示
+        }, None
 
     finally:
-        if os.path.exists(temp_path): os.remove(temp_path)
+        if os.path.exists("temp.pdf"): os.remove("temp.pdf")
