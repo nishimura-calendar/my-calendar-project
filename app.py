@@ -1,44 +1,82 @@
 import streamlit as st
 import pandas as pd
-import practice_0 as p0
+import re
+import camelot
+import os
+import practice_0 as p0  # 既存の認証等の関数を利用
 
-SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+def debug_key_search(pdf_file, time_dic):
+    temp_path = "debug_temp.pdf"
+    with open(temp_path, "wb") as f:
+        f.write(pdf_file.read())
+    
+    try:
+        # flavor='stream' で0列目を重視して読み込み
+        tables = camelot.read_pdf(temp_path, pages='1', flavor='stream')
+        if not tables:
+            st.error("表を検出できませんでした。")
+            return
+        
+        df = tables[0].df
+        debug_data = []
+        matched_key = None
 
-st.set_page_config(page_title="PDFシフト解析", layout="wide")
-st.title("📄 PDFシフト解析と時程照合")
+        # 0列目を1行ずつスキャン
+        for i in range(len(df)):
+            raw_cell = str(df.iloc[i, 0])
+            
+            # --- クレンジング処理（決めごとベース） ---
+            # 1. 改行をスペースに置換
+            text = raw_cell.replace('\n', ' ')
+            # 2. 中線（ハイフン等）を空文字に置換（決めごと）
+            text = re.sub(r'[-ー―－]', '', text)
+            # 3. 日付・曜日・時刻を掃除
+            text = re.sub(r'\d{1,2}/\d{1,2}', '', text)
+            text = re.sub(r'[月火水木金土日]', '', text)
+            text = re.sub(r'\d{1,2}:\d{2}', '', text)
+            # 4. 前後の空白を掃除
+            clean_text = text.strip()
+
+            # Key判定
+            current_found = None
+            for k in time_dic.keys():
+                if k in clean_text:
+                    current_found = k
+                    if not matched_key:
+                        matched_key = k
+                    break
+            
+            debug_data.append({
+                "行番号": i,
+                "生データ ([i, 0])": raw_cell,
+                "クレンジング後": clean_text,
+                "ヒットしたKey": current_found if current_found else "---"
+            })
+
+        return pd.DataFrame(debug_data), matched_key
+
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+# --- Streamlit 表示部分 ---
+st.title("🔍 0列目 Key検索テスト")
 
 drive_service, sheets_service = p0.get_unified_services()
 if sheets_service:
+    SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     if 'time_dic' not in st.session_state:
         st.session_state.time_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
-    time_dic = st.session_state.time_dic
+    
+    uploaded_file = st.file_uploader("確認したいPDFをアップロード", type="pdf")
 
-    col_in1, col_in2 = st.columns(2)
-    with col_in1:
-        target_name = st.text_input("スタッフ名（例：四村和義）", value="四村 和義")
-    with col_in2:
-        uploaded_file = st.file_uploader("PDFアップロード", type="pdf")
-
-    if uploaded_file and target_name:
-        raw_val, clean_val, result = p0.process_pdf_with_cleaning(uploaded_file, target_name, time_dic)
+    if uploaded_file:
+        df_result, final_key = debug_key_search(uploaded_file, st.session_state.time_dic)
         
-        st.subheader("🔍 ステップ1: [0,0]セルの解析確認")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.info(f"**クレンジング前 (生データ):**\n\n`{raw_val}`")
-        with c2:
-            st.success(f"**クレンジング後 (new_location):**\n\n`{clean_val}`")
+        if final_key:
+            st.success(f"✅ 最終的に特定された拠点Key: **{final_key}**")
+        else:
+            st.warning("⚠️ Keyが特定できませんでした。")
 
-        if isinstance(result, str):
-            st.error(result)
-            st.stop()
-        
-        if result:
-            st.success(f"照合成功：拠点「{result['key']}」")
-            st.header("📊 抽出結果")
-            final_df = pd.DataFrame([
-                result['time_schedule'],
-                result['my_daily_shift'],
-                result['other_daily_shift']
-            ], index=["時程表", "自分", "他者"])
-            st.dataframe(final_df, use_container_width=True)
+        st.subheader("📋 0列目のスキャン結果")
+        st.table(df_result)
