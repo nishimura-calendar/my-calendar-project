@@ -1,82 +1,57 @@
 import streamlit as st
 import pandas as pd
-import re
-import camelot
-import os
-import practice_0 as p0  # 既存の認証等の関数を利用
+import practice_0 as p0
 
-def debug_key_search(pdf_file, time_dic):
-    temp_path = "debug_temp.pdf"
-    with open(temp_path, "wb") as f:
-        f.write(pdf_file.read())
-    
-    try:
-        # flavor='stream' で0列目を重視して読み込み
-        tables = camelot.read_pdf(temp_path, pages='1', flavor='stream')
-        if not tables:
-            st.error("表を検出できませんでした。")
-            return
-        
-        df = tables[0].df
-        debug_data = []
-        matched_key = None
+SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
-        # 0列目を1行ずつスキャン
-        for i in range(len(df)):
-            raw_cell = str(df.iloc[i, 0])
-            
-            # --- クレンジング処理（決めごとベース） ---
-            # 1. 改行をスペースに置換
-            text = raw_cell.replace('\n', ' ')
-            # 2. 中線（ハイフン等）を空文字に置換（決めごと）
-            text = re.sub(r'[-ー―－]', '', text)
-            # 3. 日付・曜日・時刻を掃除
-            text = re.sub(r'\d{1,2}/\d{1,2}', '', text)
-            text = re.sub(r'[月火水木金土日]', '', text)
-            text = re.sub(r'\d{1,2}:\d{2}', '', text)
-            # 4. 前後の空白を掃除
-            clean_text = text.strip()
-
-            # Key判定
-            current_found = None
-            for k in time_dic.keys():
-                if k in clean_text:
-                    current_found = k
-                    if not matched_key:
-                        matched_key = k
-                    break
-            
-            debug_data.append({
-                "行番号": i,
-                "生データ ([i, 0])": raw_cell,
-                "クレンジング後": clean_text,
-                "ヒットしたKey": current_found if current_found else "---"
-            })
-
-        return pd.DataFrame(debug_data), matched_key
-
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-# --- Streamlit 表示部分 ---
-st.title("🔍 0列目 Key検索テスト")
+st.set_page_config(page_title="シフト・時程管理システム", layout="wide")
+st.title("📅 シフト・時程管理システム")
 
 drive_service, sheets_service = p0.get_unified_services()
+
 if sheets_service:
-    SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     if 'time_dic' not in st.session_state:
-        st.session_state.time_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
+        with st.spinner("マスター読込中..."):
+            st.session_state.time_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
     
-    uploaded_file = st.file_uploader("確認したいPDFをアップロード", type="pdf")
+    time_dic = st.session_state.time_dic
+    target_staff = st.sidebar.text_input("解析対象者名", value="西村 文宏")
+    uploaded_pdf = st.sidebar.file_uploader("PDFアップロード", type="pdf")
 
-    if uploaded_file:
-        df_result, final_key = debug_key_search(uploaded_file, st.session_state.time_dic)
+    if uploaded_pdf:
+        y, m = p0.extract_year_month_from_text(uploaded_pdf.name) #[cite: 3]
         
-        if final_key:
-            st.success(f"✅ 最終的に特定された拠点Key: **{final_key}**")
+        execute = False
+        if not y or not m:
+            st.warning("ファイル名から年月が判別できません。")
+            c1, c2 = st.columns(2)
+            y = c1.number_input("年", value=2026)
+            m = c2.number_input("月", value=1, min_value=1, max_value=12)
+            if st.button("指定年月で実行"): execute = True
         else:
-            st.warning("⚠️ Keyが特定できませんでした。")
+            st.success(f"📅 {y}年{m}月 のファイルとして処理します。")
+            if st.button("プログラム実行", type="primary"): execute = True
 
-        st.subheader("📋 0列目のスキャン結果")
-        st.table(df_result)
+        if execute:
+            result, err = p0.process_full_logic(uploaded_pdf, target_staff, time_dic, y, m)
+            
+            if err:
+                st.error(err)
+                if isinstance(result, pd.DataFrame): st.dataframe(result)
+                st.stop()
+            
+            # --- 7. 最終表示 (3要素)[cite: 1, 4] ---
+            st.divider()
+            
+            st.subheader(f"📄 自分のシフト ({target_staff}: 2行)")
+            st.dataframe(pd.DataFrame(result['my_daily_shift']), use_container_width=True)
+
+            st.subheader("👥 他者のシフト (各1行)")
+            st.dataframe(pd.DataFrame(result['other_daily_shift']), use_container_width=True)
+
+            st.subheader(f"🕒 時程表マスター (拠点: {result['key']})")
+            # 拠点に紐づく行列範囲すべてを表示（スクロール可能）
+            st.dataframe(result['time_schedule_full'], use_container_width=True)
+
+else:
+    st.error("Google API認証に失敗しました。")
