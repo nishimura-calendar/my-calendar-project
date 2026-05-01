@@ -13,7 +13,10 @@ def get_unified_services():
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
         creds = service_account.Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+            info, scopes=[
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly"
+            ]
         )
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
@@ -23,13 +26,51 @@ def normalize_text(text):
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 # --- 2. 暦情報の取得 ---
+def extract_year_month_from_text(text):
+    if not text: return None, None
+    text = unicodedata.normalize('NFKC', text)
+    nums = re.findall(r'\d+', text)
+    y, m = None, None
+    month_match = re.search(r'(\d{1,2})月', text)
+    if month_match: m = int(month_match.group(1))
+    for n in nums:
+        if len(n) == 4: y = int(n)
+        elif len(n) == 2 and not y: y = 2000 + int(n)
+    if not m:
+        for n in nums:
+            val = int(n)
+            if 1 <= val <= 12: m = val; break
+    return y, m
+
 def get_month_truth(year, month):
     last_day = calendar.monthrange(year, month)[1]
     first_wday_idx = calendar.monthrange(year, month)[0]
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
     return last_day, weekdays[first_wday_idx]
 
-# --- 3. 解析メインロジック ---
+# --- 3. 時程表の読み込み ---
+def time_schedule_from_drive(sheets_service, file_id):
+    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
+    sheets = spreadsheet.get('sheets', [])
+    location_data_dic = {}
+    for s in sheets:
+        title = s.get("properties", {}).get("title")
+        result = sheets_service.spreadsheets().values().get(spreadsheetId=file_id, range=f"'{title}'!A1:Z300").execute()
+        vals = result.get('values', [])
+        if not vals: continue
+        df = pd.DataFrame(vals).fillna('')
+        current_key, start_row = None, 0
+        for i in range(len(df)):
+            val_a = str(df.iloc[i, 0]).strip()
+            if val_a != "":
+                if current_key is not None:
+                    location_data_dic[normalize_text(current_key)] = df.iloc[start_row:i, :]
+                current_key, start_row = val_a, i
+        if current_key is not None:
+            location_data_dic[normalize_text(current_key)] = df.iloc[start_row:, :]
+    return location_data_dic
+
+# --- 4. 解析メインロジック ([1,0]=Key 対応版) ---
 def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
     truth_days, truth_first_wday = get_month_truth(year, month)
     with open("temp.pdf", "wb") as f:
@@ -40,40 +81,34 @@ def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
         if not tables: return None, "PDFから表を検出できませんでした。"
         df = tables[0].df
 
-        # A. 拠点Keyの特定（1列目以降に混入している可能性も考慮）
-        full_text_head = " ".join(df.iloc[0:5, 0].astype(str)) + " " + " ".join(df.iloc[0:5, 1].astype(str))
-        key_match = re.search(r'T\d+', full_text_head)
-        found_key = key_match.group(0) if key_match else "不明"
+        # 【改善】A. 拠点Keyの特定: [1,0] を起点として抽出
+        # [1,0] もしくは [0,0] に含まれる T+数字 (例: T2, ワシントン_T5) を取得
+        raw_key_area = str(df.iloc[1, 0]) if len(df) > 1 else str(df.iloc[0, 0])
+        key_match = re.search(r'T\d+', raw_key_area)
+        found_key_id = key_match.group(0) if key_match else normalize_text(raw_key_area)
         
-        matched_key = next((k for k in time_dic.keys() if normalize_text(found_key) in k or k in normalize_text(found_key)), None)
+        # マスターデータのKey（シート名やA列の項目）と照合
+        matched_key = next((k for k in time_dic.keys() if found_key_id in k or k in found_key_id), None)
+        
         if not matched_key:
-            return df, f"Key『{found_key}』が時程表に見当たりません。"
+            return df, f"Key『{found_key_id}』に対応する時程表が見つかりません。(PDF[1,0]: {raw_key_area})"
 
-        # B. 【改善】1日の列（Index 1）から動的に曜日を特定
+        # 【改善】B. 第一曜日の特定: 1列目(1日の列)から動的に取得
         pdf_first_wday = ""
-        # 1列目の上部（行0〜9）をスキャン
-        for r in range(min(10, len(df))):
+        for r in range(min(5, len(df))):
             cell_val = str(df.iloc[r, 1])
-            # 1. まず「1」という数字が入っている行を探す、あるいは単に曜日を探す
             w_match = re.search(r'[月火水木金土日]', cell_val)
             if w_match:
-                # 最初に見つかった曜日文字を採用
                 pdf_first_wday = w_match.group(0)
                 break
         
-        # C. 整合性チェック
         if pdf_first_wday != truth_first_wday:
-            return df, f"【整合性エラー】PDF解析では「{pdf_first_wday}曜始」ですが、暦では「{truth_first_wday}曜始」です。"
+            return df, f"【整合性エラー】PDFは{pdf_first_wday}曜始、暦は{truth_first_wday}曜始です。"
 
-        # D. スタッフ抽出 (西村 文宏など、改行を含む名前に対応)
+        # C. スタッフ抽出
         search_col = df.iloc[:, 0].astype(str).apply(lambda x: normalize_text(x))
         clean_target = normalize_text(target_staff)
-        
-        target_idx = None
-        for i, val in enumerate(search_col):
-            if clean_target in val:
-                target_idx = i
-                break
+        target_idx = next((i for i, val in enumerate(search_col) if clean_target in val and i >= 1), None)
 
         if target_idx is None:
             return df, f"『{target_staff}』が0列目に見つかりません。"
