@@ -7,9 +7,8 @@ import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# --- 1. Google API 認証サービス ---
+# --- 1. Google API 認証 ---
 def get_unified_services():
-    """GCPサービスアカウントを使用してDriveとSheetsのサービスを構築"""
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
         creds = service_account.Credentials.from_service_account_info(
@@ -21,17 +20,13 @@ def get_unified_services():
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
 
-# --- 2. ユーティリティ・変換関数 ---
+# --- 2. 変換・正規化ユーティリティ ---
 def normalize_text(text):
-    """テキスト正規化（空白削除、NFKC正規化、小文字化）"""
     if not isinstance(text, str): return ""
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def convert_num_to_time_str(val):
-    """
-    0.25単位の数値を時刻形式に変換
-    例: 6 -> 06:00, 6.25 -> 06:15, 6.5 -> 06:30, 6.75 -> 06:45
-    """
+    """0.25単位の数値を時刻形式(HH:MM)に変換"""
     try:
         if isinstance(val, (int, float)) or (isinstance(val, str) and re.match(r'^\d+(\.\d+)?$', val)):
             num = float(val)
@@ -42,9 +37,8 @@ def convert_num_to_time_str(val):
     except (ValueError, TypeError):
         return str(val)
 
-# --- 3. スプレッドシート抽出ロジック ---
+# --- 3. スプレッドシート解析ロジック ---
 def time_schedule_from_drive(sheets_service, file_id):
-    """スプレッドシートから拠点ごとのデータを読み込み"""
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
     location_data_dic = {}
@@ -83,7 +77,7 @@ def extract_structured_data(loc_df):
     key_row = loc_df.iloc[0, :].tolist()
     col_start, col_end = None, len(key_row)
 
-    # 勤務地行のD列(3)以降で、最初に数値がヒットする列を特定
+    # 勤務地行のD列(3)以降で数値（時間軸）を探す
     for c in range(3, len(key_row)):
         if re.match(r'^\d+(\.\d+)?$', str(key_row[c]).strip()):
             col_start = c
@@ -91,32 +85,30 @@ def extract_structured_data(loc_df):
 
     if col_start is None: return loc_df.iloc[:, 0:3]
 
-    # 数値が途切れ、文字列が現れるまでを時間範囲とする
+    # 数値範囲の終端を特定
     for c in range(col_start, len(key_row)):
         val_str = str(key_row[c]).strip()
         if val_str != "" and not re.match(r'^\d+(\.\d+)?$', val_str):
             col_end = c
             break
 
-    base_info = loc_df.iloc[:, 0:3].copy() # A, B, C列
-    time_data = loc_df.iloc[:, col_start:col_end].copy() # 時間データ列
+    base_info = loc_df.iloc[:, 0:3].copy()
+    time_data = loc_df.iloc[:, col_start:col_end].copy()
 
-    # 時間列の処理：勤務地行のみ変換を適用
+    # 時間軸の変換（0行目のみ）
     for col in time_data.columns:
-        # 0行目（勤務地行）の見出しを時刻変換
         val_top = time_data.iloc[0].loc[col]
         time_data.iloc[0, time_data.columns.get_loc(col)] = convert_num_to_time_str(val_top)
         
-        # 1行目（スタッフ行など）以降は変換せず、そのままの値を維持
+        # 1行目以降はそのまま文字列化
         if len(time_data) > 1:
             time_data.iloc[1:, time_data.columns.get_loc(col)] = \
                 time_data.iloc[1:, time_data.columns.get_loc(col)].astype(str)
 
     return pd.concat([base_info, time_data], axis=1)
 
-# --- 4. PDF解析ロジック ---
+# --- 4. PDF解析 (0列目全体検索) ---
 def get_key_and_schedule(pdf_stream, time_dic):
-    """PDFの0列目を検索してKeyを特定"""
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     try:
@@ -126,13 +118,12 @@ def get_key_and_schedule(pdf_stream, time_dic):
         df = tables[0].df
         matched_key, raw_val = None, None
 
-        # PDFの0列目を上から順に走査
+        # 0列目を走査してKeyと一致する行を探す
         for val in df.iloc[:, 0]:
-            # 不要な文字（日付や記号）を除去してKey候補を抽出
             clean_val = normalize_text(re.sub(r'[\d/:()月火水木金土日]', '', str(val)))
             if not clean_val: continue
             
-            # マスターのKeyと照合
+            # 部分一致で照合
             found_key = next((k for k in time_dic.keys() if clean_val in k or k in clean_val), None)
             if found_key:
                 matched_key = found_key
