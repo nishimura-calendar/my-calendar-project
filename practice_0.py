@@ -4,30 +4,28 @@ import re
 import unicodedata
 import camelot
 import os
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
 
-# --- 1. Google API 認証 ---
-def get_unified_services():
-    if "gcp_service_account" in st.secrets:
-        info = st.secrets["gcp_service_account"]
-        creds = service_account.Credentials.from_service_account_info(
-            info, scopes=[
-                "https://www.googleapis.com/auth/drive.readonly",
-                "https://www.googleapis.com/auth/spreadsheets.readonly"
-            ]
-        )
-        return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
-    return None, None
-
-# --- 2. 変換・正規化ユーティリティ ---
 def normalize_text(text):
+    """大文字小文字・スペースを無視するための共通正規化"""
     if not isinstance(text, str): return ""
-    # 空白削除、NFKC正規化、小文字化
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
+def clean_strictly(text):
+    """
+    [0,0]専用クリーニング：
+    日付(1-31)と曜日を狙い撃ちで排除し、Keyだけを残す
+    """
+    if not isinstance(text, str): return ""
+    # 1. 独立した数字（日付 1-31）のみを削除
+    # \b を使うことで 'T2' の '2' は残し、' 2 ' などの独立した数字だけを消します
+    text = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', text)
+    # 2. 曜日・記号・改行・空白をすべて排除
+    text = re.sub(r'[月火水木金土日()/:：\s　\n]', '', text)
+    # 3. 小文字化・スペース除去
+    return normalize_text(text)
+
 def convert_num_to_time_str(val):
-    """0.25単位を15分刻みの時刻に変換 (6.25 -> 06:15)"""
+    """0.25単位を15分間隔の時刻に変換 (核となる計算)"""
     try:
         if isinstance(val, (int, float)) or (isinstance(val, str) and re.match(r'^\d+(\.\d+)?$', val)):
             num = float(val)
@@ -38,109 +36,41 @@ def convert_num_to_time_str(val):
     except (ValueError, TypeError):
         return str(val)
 
-# --- 3. 時程表抽出ロジック ---
-def time_schedule_from_drive(sheets_service, file_id):
-    spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
-    sheets = spreadsheet.get('sheets', [])
-    location_data_dic = {}
-
-    for s in sheets:
-        title = s.get("properties", {}).get("title")
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=file_id, range=f"'{title}'!A1:Z300").execute()
-        vals = result.get('values', [])
-        if not vals: continue
-
-        df = pd.DataFrame(vals).fillna('')
-        current_key, start_row = None, 0
-        
-        for i in range(len(df)):
-            val_a = str(df.iloc[i, 0]).strip()
-            if val_a != "":
-                if current_key is not None:
-                    location_data_dic[normalize_text(current_key)] = extract_structured_data(df.iloc[start_row:i, :])
-                current_key, start_row = val_a, i
-        
-        if current_key is not None:
-            location_data_dic[normalize_text(current_key)] = extract_structured_data(df.iloc[start_row:, :])
-                
-    return location_data_dic
-
-def extract_structured_data(loc_df):
-    """見出し行のみ15分刻みに変換し、B列は維持"""
-    if loc_df.empty: return loc_df
-    key_row = loc_df.iloc[0, :].tolist()
-    col_start, col_end = None, len(key_row)
-
-    for c in range(3, len(key_row)):
-        if re.match(r'^\d+(\.\d+)?$', str(key_row[c]).strip()):
-            col_start = c
-            break
-    if col_start is None: return loc_df.iloc[:, 0:3]
-
-    for c in range(col_start, len(key_row)):
-        val_str = str(key_row[c]).strip()
-        if val_str != "" and not re.match(r'^\d+(\.\d+)?$', val_str):
-            col_end = c
-            break
-
-    base_info = loc_df.iloc[:, 0:3].copy()
-    time_data = loc_df.iloc[:, col_start:col_end].copy()
-
-    for col in time_data.columns:
-        val_top = time_data.iloc[0].loc[col]
-        time_data.iloc[0, time_data.columns.get_loc(col)] = convert_num_to_time_str(val_top)
-        if len(time_data) > 1:
-            time_data.iloc[1:, time_data.columns.get_loc(col)] = time_data.iloc[1:, time_data.columns.get_loc(col)].astype(str)
-
-    return pd.concat([base_info, time_data], axis=1)
-
-# --- 4. PDF 0列目スキャン (○×判定リスト生成) ---
-def scan_pdf_with_debug(pdf_stream, time_dic):
+def scan_pdf_0_0_only(pdf_stream, time_dic):
+    """PDFの[0,0]セルのみを検索・判定する"""
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     
-    debug_list = []
-    found_results = []
-    matched_keys_set = set()
-
     try:
         tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
-        if not tables: return [], pd.DataFrame([{"エラー": "テーブル未検出"}])
+        if not tables: return [], pd.DataFrame([{"エラー": "表が見つかりません"}])
         
-        pdf_df = tables[0].df
+        # [0,0]セルを取得
+        raw_val = str(tables[0].df.iloc[0, 0])
         
-        # 文字数が多いKeyから順に判定（T1とTの誤判定防止）
-        sorted_keys = sorted(time_dic.keys(), key=len, reverse=True)
-
-        for i in range(len(pdf_df)):
-            raw_val = str(pdf_df.iloc[i, 0]).replace('\n', ' ')
-            # 数字、曜日、記号を削除（Keyそのものに数字がある場合はここを調整）
-            clean_val = re.sub(r'[\d/:()月火水木金土日\s　]', '', raw_val)
-            clean_val = normalize_text(clean_val)
-            
-            hit_key = None
-            for k in sorted_keys:
-                if k != "" and (k == clean_val or k in clean_val):
-                    hit_key = k
-                    break
-            
-            if hit_key:
-                status = f"○ ({hit_key})"
-                if hit_key not in matched_keys_set:
-                    found_results.append({'key': hit_key, 'time_schedule': time_dic[hit_key]})
-                    matched_keys_set.add(hit_key)
-            else:
-                status = "×"
-
-            debug_list.append({
-                "行": i + 1,
-                "PDF 0列目データ": raw_val,
-                "クリーニング後": clean_val,
-                "判定": status
+        # 指定条件でクリーニング (日付・曜日排除)
+        cleaned_val = clean_strictly(raw_val)
+        
+        found_results = []
+        # マスター辞書(time_dic)も normalize_text済みであることを想定
+        if cleaned_val in time_dic:
+            found_results.append({
+                'key': cleaned_val,
+                'time_schedule': time_dic[cleaned_val]
             })
-                    
+            status = f"○ 一致しました ({cleaned_val})"
+        else:
+            status = f"× 不一致 (抽出結果: '{cleaned_val}')"
+
+        # レポート用データの作成
+        report_df = pd.DataFrame([{
+            "対象セル": "[0,0]",
+            "生データ(抜粋)": raw_val[:50].replace('\n', ' ') + "...",
+            "排除後の文字列": cleaned_val,
+            "判定": status
+        }])
+        
+        return found_results, report_df
+
     finally:
         if os.path.exists("temp.pdf"): os.remove("temp.pdf")
-        
-    return found_results, pd.DataFrame(debug_list)
