@@ -70,50 +70,61 @@ def time_schedule_from_drive(sheets_service, file_id):
             location_data_dic[normalize_text(current_key)] = df.iloc[start_row:, :]
     return location_data_dic
 
-# --- 4. 解析メインロジック (座標固定・Key対応版) ---
+# --- 4. 解析メインロジック (第一曜日を動的に特定) ---
 def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
+    # カレンダー上の正解（期待値）を取得
     truth_days, truth_first_wday = get_month_truth(year, month)
+    
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
 
     try:
-        # lattice方式で読み込み
         tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
         if not tables: return None, "PDFから表を検出できませんでした。"
         df = tables[0].df
 
-        # A. 拠点Keyの特定（[0,0] または [1,0] から T+数字 を含む長い名前を救出）
-        cell_00_10 = str(df.iloc[0, 0]) + " " + str(df.iloc[1, 0])
-        # T5 や 合衆国_ワシントン_T5 などのパターンに対応
-        key_match = re.search(r'[^\s\n]*T\d+[^\s\n]*', cell_00_10)
-        found_key = key_match.group(0) if key_match else cell_00_10.split('\n')[0].strip()
+        # A. 拠点Keyの特定 ([1,0]付近を優先)
+        header_area = " ".join(df.iloc[0:3, 0].astype(str))
+        key_match = re.search(r'[^\s\n]*T\d+[^\s\n]*', header_area)
+        found_key = key_match.group(0) if key_match else "不明"
         
         matched_key = next((k for k in time_dic.keys() if normalize_text(found_key) in k or k in normalize_text(found_key)), None)
         if not matched_key:
             return df, f"Key『{found_key}』が時程表に見当たりません。"
 
-        # B. 1日の曜日の特定（ご提案通り [1, 1] を確認）
-        cell_11 = str(df.iloc[1, 1])
-        wday_match = re.search(r'[月火水木金土日]', cell_11)
-        pdf_first_wday = wday_match.group(0) if wday_match else "不明"
-
-        # C. 整合性チェック
+        # B. 【改善】1列目から「第一曜日」を動的に見つける
+        pdf_first_wday = ""
+        # 1日の列（index=1）を上から走査
+        for r in range(len(df)):
+            cell_val = str(df.iloc[r, 1])
+            # セル内に「月〜日」のいずれかが含まれているか
+            wday_match = re.search(r'[月火水木金土日]', cell_val)
+            if wday_match:
+                # 最初に見つかった曜日を「第一曜日」とする
+                pdf_first_wday = wday_match.group(0)
+                break
+        
+        # C. 整合性チェック (抽出した第一曜日 vs カレンダーの正解)
         if pdf_first_wday != truth_first_wday:
-            return df, f"【整合性エラー】PDF:[1,1]は{pdf_first_wday}曜始、暦は{truth_first_wday}曜始です。"
+            return df, f"【整合性エラー】PDFの1日目は「{pdf_first_wday}曜日」と解析されましたが、暦では「{truth_first_wday}曜日」です。"
 
-        # D. スタッフ抽出（0列目の1行目のみで判定）
+        # D. スタッフ抽出 (0列目の1行目のみで判定)
         search_names = df.iloc[:, 0].apply(lambda x: normalize_text(str(x).split('\n')[0]))
         clean_target = normalize_text(target_staff)
         
-        if clean_target not in search_names.values:
-            return df, f"『{target_staff}』が0列目に見つかりません。"
+        target_idx = None
+        for i, name in enumerate(search_names):
+            if clean_target in name and i >= 1:
+                target_idx = i
+                break
 
-        idx = search_names[search_names == clean_target].index[0]
+        if target_idx is None:
+            return df, f"『{target_staff}』が0列目に見つかりません。"
 
         return {
             "key": matched_key,
-            "my_daily_shift": df.iloc[idx : idx + 2, :].values.tolist(), # 本人2行
-            "other_daily_shift": [df.iloc[i].tolist() for i in range(len(df)) if i not in [0, 1, idx, idx+1] and any(str(v).strip() for v in df.iloc[i])], # 他者1行
+            "my_daily_shift": df.iloc[target_idx : target_idx + 2, :].values.tolist(),
+            "other_daily_shift": [df.iloc[i].tolist() for i in range(len(df)) if i not in [0, 1, target_idx, target_idx+1] and any(str(v).strip() for v in df.iloc[i])],
             "time_schedule_full": time_dic[matched_key]
         }, None
 
