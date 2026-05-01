@@ -7,8 +7,9 @@ import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# --- 1. Google API 認証 ---
+# --- 1. Google API 認証サービス ---
 def get_unified_services():
+    """GCPサービスアカウントを使用してDriveとSheetsのサービスを構築"""
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
         creds = service_account.Credentials.from_service_account_info(
@@ -20,13 +21,17 @@ def get_unified_services():
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
 
-# --- 2. 変換・正規化ユーティリティ ---
+# --- 2. ユーティリティ・変換関数 ---
 def normalize_text(text):
+    """テキスト正規化（空白削除、NFKC正規化、小文字化）"""
     if not isinstance(text, str): return ""
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
 def convert_num_to_time_str(val):
-    """0.25単位の数値を時刻形式(HH:MM)に変換"""
+    """
+    0.25単位の数値を時刻形式に変換
+    例: 6 -> 06:00, 6.25 -> 06:15, 6.5 -> 06:30, 6.75 -> 06:45
+    """
     try:
         if isinstance(val, (int, float)) or (isinstance(val, str) and re.match(r'^\d+(\.\d+)?$', val)):
             num = float(val)
@@ -37,8 +42,9 @@ def convert_num_to_time_str(val):
     except (ValueError, TypeError):
         return str(val)
 
-# --- 3. スプレッドシート解析ロジック ---
+# --- 3. スプレッドシート抽出ロジック ---
 def time_schedule_from_drive(sheets_service, file_id):
+    """スプレッドシートのA列からKeyを特定し、拠点ごとのデータを取得"""
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
     location_data_dic = {}
@@ -53,6 +59,7 @@ def time_schedule_from_drive(sheets_service, file_id):
         df = pd.DataFrame(vals).fillna('')
         current_key, start_row = None, 0
         
+        # A列（勤務地列）を走査してKeyを設定
         for i in range(len(df)):
             val_a = str(df.iloc[i, 0]).strip()
             if val_a != "":
@@ -70,7 +77,7 @@ def extract_structured_data(loc_df):
     A-C列 + 時間列を抽出。
     - B列は常に文字列（変換なし）
     - 時間変換は勤務地行（0行目）のみ適用
-    - 1行目以降は数値であっても変換せずそのまま
+    - 1行目以降（スタッフ行）は数値であっても変換せずそのまま
     """
     if loc_df.empty: return loc_df
 
@@ -85,30 +92,32 @@ def extract_structured_data(loc_df):
 
     if col_start is None: return loc_df.iloc[:, 0:3]
 
-    # 数値範囲の終端を特定
+    # 数値範囲の終端（文字列が現れるまで）を特定
     for c in range(col_start, len(key_row)):
         val_str = str(key_row[c]).strip()
         if val_str != "" and not re.match(r'^\d+(\.\d+)?$', val_str):
             col_end = c
             break
 
-    base_info = loc_df.iloc[:, 0:3].copy()
-    time_data = loc_df.iloc[:, col_start:col_end].copy()
+    base_info = loc_df.iloc[:, 0:3].copy() # A, B, C列
+    time_data = loc_df.iloc[:, col_start:col_end].copy() # 時間データ列
 
     # 時間軸の変換（0行目のみ）
     for col in time_data.columns:
+        # 拠点情報の最初の行（見出し行）だけをHH:MMに変換
         val_top = time_data.iloc[0].loc[col]
         time_data.iloc[0, time_data.columns.get_loc(col)] = convert_num_to_time_str(val_top)
         
-        # 1行目以降はそのまま文字列化
+        # 勤務地行+1行目以降は時間ではないため、変換せず文字列として保持
         if len(time_data) > 1:
             time_data.iloc[1:, time_data.columns.get_loc(col)] = \
                 time_data.iloc[1:, time_data.columns.get_loc(col)].astype(str)
 
     return pd.concat([base_info, time_data], axis=1)
 
-# --- 4. PDF解析 (0列目全体検索) ---
+# --- 4. PDF解析 (0列目検索) ---
 def get_key_and_schedule(pdf_stream, time_dic):
+    """PDFの0列目をスキャンしてマスターのKeyと照合"""
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
     try:
@@ -118,12 +127,13 @@ def get_key_and_schedule(pdf_stream, time_dic):
         df = tables[0].df
         matched_key, raw_val = None, None
 
-        # 0列目を走査してKeyと一致する行を探す
+        # PDFの左端（0列目）全体を走査
         for val in df.iloc[:, 0]:
+            # 日付、曜日、記号を除去して純粋なKey候補を抽出
             clean_val = normalize_text(re.sub(r'[\d/:()月火水木金土日]', '', str(val)))
             if not clean_val: continue
             
-            # 部分一致で照合
+            # マスターのKeyと部分一致で照合
             found_key = next((k for k in time_dic.keys() if clean_val in k or k in clean_val), None)
             if found_key:
                 matched_key = found_key
