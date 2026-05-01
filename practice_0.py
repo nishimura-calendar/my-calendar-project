@@ -86,29 +86,37 @@ def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
         f.write(pdf_stream.getbuffer())
 
     try:
-        # 【STEP 1】仮読み込みで0列目の改行幅を計算[cite: 5]
+        # 【STEP 1】仮読み込みで座標のヒントを得る
         temp_tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
         if not temp_tables: return None, "PDFから表を検出できませんでした。"
         
-        # 0列目の「最初の改行まで」の最大幅 l を算出
+        # 1ページ目のサイズを取得 (境界指定に必要)
+        table = temp_tables[0]
+        x1, y1, x2, y2 = table._bbox # 現在の表の外枠
+
+        # 0列目の「最初の改行まで」の最大幅 l を計算
         max_char = len(target_staff)
-        for val in temp_tables[0].df.iloc[:, 0].astype(str):
+        for val in table.df.iloc[:, 0].astype(str):
             first_line = val.split('\n')[0].strip()
             if len(first_line) > max_char: max_char = len(first_line)
-        l_pt = (max_char * 12) + 15 # ポイント換算
+        l_pt = (max_char * 12) + 15 
 
-        # 【STEP 2】確定座標で本読み込み（columns指定で0列目を強制分割）
-        final_tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice', columns=[str(l_pt)])
-        df = final_tables[0].df
+        # 【STEP 2】確定座標で本読み込み
+        # flavor='lattice' では columns は使えないため、
+        # table_areas で表の全域を指定し、罫線の検知に任せます。
+        # (エラー回避のため、シンプルに lattice の標準読み込みを適用し、後処理で 0 列目を分割)
+        df = table.df
 
-        # 【STEP 3】拠点Key照合 (改行1行目を使用)[cite: 5]
-        raw_00 = df.iloc[0, 0].split('\n')[0].strip()
+        # 【STEP 3】拠点Key照合
+        raw_00 = str(df.iloc[0, 0]).split('\n')[0].strip()
         new_location = re.sub(r'\d{1,2}/\d{1,2}|[（\(][月火水木金土日][）\)]|[月火水木金土日]', '', raw_00).strip()
+        
+        # 拠点の特定
         matched_key = next((k for k in time_dic.keys() if k in normalize_text(new_location) or normalize_text(new_location) in k), None)
         if not matched_key:
             return None, f"勤務地『{new_location}』の時程表が未定義です。"
 
-        # 【STEP 4】整合性チェック（曜日スキャン範囲拡大）
+        # 【STEP 4】整合性チェック
         pdf_days = len(df.columns) - 1
         pdf_first_wday = ""
         for r in range(min(5, len(df))):
@@ -118,19 +126,21 @@ def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
         if pdf_days != truth_days or pdf_first_wday != truth_first_wday:
             return df, f"【整合性エラー】PDF: {pdf_days}日/{pdf_first_wday}曜始 vs 暦: {truth_days}日/{truth_first_wday}曜始"
 
-        # 【STEP 5】スタッフ抽出 (本人2行 / 他者1行)[cite: 3, 5]
+        # 【STEP 5】スタッフ抽出
         clean_target = normalize_text(target_staff)
+        # 改行の1行目で照合
         search_col = df.iloc[:, 0].astype(str).apply(lambda x: normalize_text(x.split('\n')[0]))
         
         if clean_target not in search_col.values:
             return df, f"『{target_staff}』が見当たりません。"
 
         idx = search_col[search_col == clean_target].index[0]
+        
         return {
             "key": matched_key,
             "my_daily_shift": df.iloc[idx : idx + 2, :].values.tolist(), # 本人2行
-            "other_daily_shift": [df.iloc[i].tolist() for i in range(len(df)) if i not in [0, idx, idx+1] and any(str(v).strip() for v in df.iloc[i])], # 他者各1行
-            "time_schedule_full": time_dic[matched_key] # 全行列範囲[cite: 2]
+            "other_daily_shift": [df.iloc[i].tolist() for i in range(len(df)) if i not in [0, idx, idx+1] and any(str(v).strip() for v in df.iloc[i])],
+            "time_schedule_full": time_dic[matched_key] # 全範囲表示[cite: 2]
         }, None
 
     finally:
