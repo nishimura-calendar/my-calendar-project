@@ -7,13 +7,11 @@ SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 st.set_page_config(page_title="シフト・時程管理システム", layout="wide")
 st.title("📅 シフト・時程管理システム")
 
-# practice_0 からサービスを取得
 drive_service, sheets_service = p0.get_unified_services()
 
 if sheets_service:
     if 'time_dic' not in st.session_state:
         with st.spinner("マスターデータ読込中..."):
-            # ここでの関数名不一致を解消
             st.session_state.time_dic = p0.time_schedule_from_drive(sheets_service, SHEET_ID)
     
     time_dic = st.session_state.time_dic
@@ -39,17 +37,26 @@ if sheets_service:
             
             if err:
                 st.error(err)
-                if isinstance(result, pd.DataFrame): st.dataframe(result)
+                if isinstance(result, pd.DataFrame): 
+                    st.info("解析途中のテーブル構造:")
+                    st.dataframe(result)
                 st.stop()
             
             st.divider()
-            st.subheader(f"📄 自分のシフト ({target_staff})")
-            st.dataframe(pd.DataFrame(result['my_daily_shift']), use_container_width=True)
+            
+            # --- ここから表示の訂正 ---
+            st.subheader(f"📄 抽出されたシフト: {target_staff} さん")
+            
+            # 本人のシフト（2行分）をデータフレーム化
+            # カラム名を日付（1, 2, 3...）に設定するとさらに見やすくなります
+            df_my = pd.DataFrame(result['my_daily_shift'])
+            st.dataframe(df_my, use_container_width=True, hide_index=True)
 
-            st.subheader("👥 他者のシフト")
-            st.dataframe(pd.DataFrame(result['other_daily_shift']), use_container_width=True)
+            with st.expander("👥 他者のシフト（参考）"):
+                df_others = pd.DataFrame(result['other_daily_shift'])
+                st.dataframe(df_others, use_container_width=True, hide_index=True)
 
-            st.subheader(f"🕒 時程表マスター ({result['key']})")
-            st.dataframe(result['time_schedule_full'], use_container_width=True)
+            st.subheader(f"🕒 対応する時程表: {result['key']}")
+            st.dataframe(result['time_schedule_full'], use_container_width=True, hide_index=True)
 else:
     st.error("Google API認証に失敗しました。")
