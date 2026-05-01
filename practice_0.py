@@ -8,18 +8,12 @@ import calendar
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# ==========================================
-# 1. 認証とテキスト正規化[cite: 5]
-# ==========================================
+# 1. 認証とテキスト正規化
 def get_unified_services():
-    """Google DriveおよびSheets APIサービスを構築"""
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
         creds = service_account.Credentials.from_service_account_info(
-            info, scopes=[
-                "https://www.googleapis.com/auth/drive.readonly",
-                "https://www.googleapis.com/auth/spreadsheets.readonly"
-            ]
+            info, scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
         )
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
@@ -28,34 +22,14 @@ def normalize_text(text):
     if not isinstance(text, str): return ""
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-# ==========================================
-# 2. 前提情報の取得[cite: 3]
-# ==========================================
-def extract_year_month_from_text(text):
-    if not text: return None, None
-    text = unicodedata.normalize('NFKC', text)
-    nums = re.findall(r'\d+', text)
-    y, m = None, None
-    month_match = re.search(r'(\d{1,2})月', text)
-    if month_match: m = int(month_match.group(1))
-    for n in nums:
-        if len(n) == 4: y = int(n)
-        elif len(n) == 2 and not y: y = 2000 + int(n)
-    if not m:
-        for n in nums:
-            val = int(n); 
-            if 1 <= val <= 12: m = val; break
-    return y, m
-
+# 2. 暦情報の取得
 def get_month_truth(year, month):
     last_day = calendar.monthrange(year, month)[1]
     first_wday_idx = calendar.monthrange(year, month)[0]
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
     return last_day, weekdays[first_wday_idx]
 
-# ==========================================
-# 3. 時程表（スプレッドシート）の動的読み込み[cite: 2, 5]
-# ==========================================
+# 3. 時程表の読み込み
 def time_schedule_from_drive(sheets_service, file_id):
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
@@ -77,70 +51,55 @@ def time_schedule_from_drive(sheets_service, file_id):
             location_data_dic[normalize_text(current_key)] = df.iloc[start_row:, :]
     return location_data_dic
 
-# ==========================================
-# 4. 座標計算と解析メインロジック
-# ==========================================
+# 4. 解析メインロジック (座標固定 & 改行・Key対応)
 def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
     truth_days, truth_first_wday = get_month_truth(year, month)
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
 
     try:
-        # 【STEP 1】仮読み込みで座標のヒントを得る
-        temp_tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
-        if not temp_tables: return None, "PDFから表を検出できませんでした。"
+        # 0列目の幅をスタッフ名とKeyの長い方に合わせる (1文字13pt計算)
+        # 長いKey（合衆国_ワシントン_T5など）でも対応できるようバッファを確保
+        l_pt = (max(len(target_staff), 10) * 13) + 20 
+
+        # 座標固定(lattice方式)
+        tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
+        if not tables: return None, "PDF解析失敗"
+        df = tables[0].df
+
+        # --- 座標ベースの情報抽出 ---
+        # 1. 拠点Key: [0,0] または [1,0] から T+数字 を探す
+        cell_00_10 = str(df.iloc[0, 0]) + str(df.iloc[1, 0])
+        key_match = re.search(r'T\d+|[^\s\n]+T\d+', cell_00_10)
+        found_key = key_match.group(0) if key_match else cell_00_10.split('\n')[0]
         
-        # 1ページ目のサイズを取得 (境界指定に必要)
-        table = temp_tables[0]
-        x1, y1, x2, y2 = table._bbox # 現在の表の外枠
-
-        # 0列目の「最初の改行まで」の最大幅 l を計算
-        max_char = len(target_staff)
-        for val in table.df.iloc[:, 0].astype(str):
-            first_line = val.split('\n')[0].strip()
-            if len(first_line) > max_char: max_char = len(first_line)
-        l_pt = (max_char * 12) + 15 
-
-        # 【STEP 2】確定座標で本読み込み
-        # flavor='lattice' では columns は使えないため、
-        # table_areas で表の全域を指定し、罫線の検知に任せます。
-        # (エラー回避のため、シンプルに lattice の標準読み込みを適用し、後処理で 0 列目を分割)
-        df = table.df
-
-        # 【STEP 3】拠点Key照合
-        raw_00 = str(df.iloc[0, 0]).split('\n')[0].strip()
-        new_location = re.sub(r'\d{1,2}/\d{1,2}|[（\(][月火水木金土日][）\)]|[月火水木金土日]', '', raw_00).strip()
-        
-        # 拠点の特定
-        matched_key = next((k for k in time_dic.keys() if k in normalize_text(new_location) or normalize_text(new_location) in k), None)
+        matched_key = next((k for k in time_dic.keys() if normalize_text(found_key) in k or k in normalize_text(found_key)), None)
         if not matched_key:
-            return None, f"勤務地『{new_location}』の時程表が未定義です。"
+            return df, f"Key『{found_key}』が時程表に見当たりません。"
 
-        # 【STEP 4】整合性チェック
-        pdf_days = len(df.columns) - 1
-        pdf_first_wday = ""
-        for r in range(min(5, len(df))):
-            match = re.search(r'[月火水木金土日]', str(df.iloc[r, 1]))
-            if match: pdf_first_wday = match.group(0); break
+        # 2. 1日の曜日: [1, 1] をピンポイント確認
+        cell_11 = str(df.iloc[1, 1])
+        wday_match = re.search(r'[月火水木金土日]', cell_11)
+        pdf_first_wday = wday_match.group(0) if wday_match else "不明"
 
-        if pdf_days != truth_days or pdf_first_wday != truth_first_wday:
-            return df, f"【整合性エラー】PDF: {pdf_days}日/{pdf_first_wday}曜始 vs 暦: {truth_days}日/{truth_first_wday}曜始"
+        # 3. 整合性チェック
+        if pdf_first_wday != truth_first_wday:
+            return df, f"【整合性エラー】PDF:[1,1]は{pdf_first_wday}曜始、暦は{truth_first_wday}曜始です。"
 
-        # 【STEP 5】スタッフ抽出
+        # 4. スタッフ抽出 (0列目の改行1行目で判定)
+        search_names = df.iloc[:, 0].apply(lambda x: normalize_text(str(x).split('\n')[0]))
         clean_target = normalize_text(target_staff)
-        # 改行の1行目で照合
-        search_col = df.iloc[:, 0].astype(str).apply(lambda x: normalize_text(x.split('\n')[0]))
         
-        if clean_target not in search_col.values:
-            return df, f"『{target_staff}』が見当たりません。"
+        if clean_target not in search_names.values:
+            return df, f"『{target_staff}』が見つかりません。"
 
-        idx = search_col[search_col == clean_target].index[0]
-        
+        idx = search_names[search_names == clean_target].index[0]
+
         return {
             "key": matched_key,
             "my_daily_shift": df.iloc[idx : idx + 2, :].values.tolist(), # 本人2行
-            "other_daily_shift": [df.iloc[i].tolist() for i in range(len(df)) if i not in [0, idx, idx+1] and any(str(v).strip() for v in df.iloc[i])],
-            "time_schedule_full": time_dic[matched_key] # 全範囲表示[cite: 2]
+            "other_daily_shift": [df.iloc[i].tolist() for i in range(len(df)) if i not in [0, 1, idx, idx+1] and any(str(v).strip() for v in df.iloc[i])], # 他者1行
+            "time_schedule_full": time_dic[matched_key]
         }, None
 
     finally:
