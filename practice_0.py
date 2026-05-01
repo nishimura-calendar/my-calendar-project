@@ -3,132 +3,168 @@ import pandas as pd
 import re
 import unicodedata
 import camelot
-import os
-import calendar
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
-# --- 1. 共通処理・正規化 ---
+# ==========================================
+# 1. 認証サービス構築（app.py 6行目対応）
+# ==========================================
 def get_unified_services():
+    """Google DriveおよびSheets APIサービスを構築"""
     if "gcp_service_account" in st.secrets:
         info = st.secrets["gcp_service_account"]
         creds = service_account.Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+            info, scopes=[
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly"
+            ]
         )
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     return None, None
 
+# ==========================================
+# 2. テキスト正規化・クレンジング
+# ==========================================
 def normalize_text(text):
+    """空白除去、NFKC正規化、小文字化を行う"""
     if not isinstance(text, str): return ""
     return re.sub(r'[\s　]', '', unicodedata.normalize('NFKC', text)).lower()
 
-def get_month_truth(year, month):
-    last_day = calendar.monthrange(year, month)[1]
-    first_wday_idx = calendar.monthrange(year, month)[0]
-    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-    return last_day, weekdays[first_wday_idx]
+def clean_key_from_pdf_val(val):
+    """
+    PDFの座標[0,0]から取得した値から、日付・曜日・時刻を除去。
+    スプレッドシートのA列(Key)と照合可能な純粋な勤務地名にする。
+    """
+    text = str(val)
+    # YYYY/MM/DD, MM/DD 形式の除去
+    text = re.sub(r'\d{4}/\d{1,2}/\d{1,2}', '', text)
+    text = re.sub(r'\d{1,2}/\d{1,2}', '', text)
+    # (水) などの曜日、および時刻(00:00)の除去
+    text = re.sub(r'\([月火水木金土日]\)', '', text)
+    text = re.sub(r'\d{1,2}:\d{2}', '', text)
+    return normalize_text(text)
 
-# --- 2. 時程表マスター読込 ---
+# ==========================================
+# 3. スプレッドシート行列範囲抽出ロジック
+# ==========================================
 def time_schedule_from_drive(sheets_service, file_id):
+    """
+    A列を行方向に検索してKeyを特定。
+    D列以降を列方向に検索して行列範囲（時間軸）を切り出す。
+    """
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=file_id).execute()
     sheets = spreadsheet.get('sheets', [])
     location_data_dic = {}
+
     for s in sheets:
         title = s.get("properties", {}).get("title")
-        result = sheets_service.spreadsheets().values().get(spreadsheetId=file_id, range=f"'{title}'!A1:Z300").execute()
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=file_id, range=f"'{title}'!A1:Z300").execute()
         vals = result.get('values', [])
         if not vals: continue
+
         df = pd.DataFrame(vals).fillna('')
-        current_key, start_row = None, 0
+        current_key = None
+        start_row = 0
+        
+        # A列(0列目)を行方向に走査してKey(勤務地)を特定
         for i in range(len(df)):
             val_a = str(df.iloc[i, 0]).strip()
             if val_a != "":
                 if current_key is not None:
-                    location_data_dic[normalize_text(current_key)] = df.iloc[start_row:i, :]
-                current_key, start_row = val_a, i
+                    # 前のKeyの行列範囲を確定させて辞書登録
+                    location_data_dic[normalize_text(current_key)] = extract_col_range(df.iloc[start_row:i, :])
+                current_key = val_a
+                start_row = i
+        
+        # 最後のKey（勤務地）を登録
         if current_key is not None:
-            location_data_dic[normalize_text(current_key)] = df.iloc[start_row:, :]
+            location_data_dic[normalize_text(current_key)] = extract_col_range(df.iloc[start_row:, :])
+                
     return location_data_dic
 
-# --- 3. メイン解析ロジック ---
-def process_full_logic(pdf_stream, target_staff, time_dic, year, month):
-    truth_days, truth_first_wday = get_month_truth(year, month)
+def extract_col_range(loc_df):
+    """
+    D列(3列目)以降を列方向に検索。
+    数字が見つかってから、次に文字列が現れる直前までを有効な時間列とする。
+    """
+    if loc_df.empty: return loc_df
+    sample_row = loc_df.iloc[0, :].tolist()
+    
+    col_start = 3 # デフォルト開始(D列)
+    col_end = len(sample_row)
+    
+    # 最初に数字（時間に変換可能なもの）が見つかる位置
+    for c in range(3, len(sample_row)):
+        if re.match(r'^-?\d+(\.\d+)?$', str(sample_row[c])):
+            col_start = c
+            break
+            
+    # 数字が続いた後、最初に「数字以外の文字列」が見つかる位置
+    for c in range(col_start, len(sample_row)):
+        val = str(sample_row[c]).strip()
+        if val != "" and not re.match(r'^-?\d+(\.\d+)?$', val):
+            col_end = c
+            break
+            
+    # A(勤務地), B(Key), C(ロッカー)列 ＋ 特定した時間軸列 を結合
+    return pd.concat([loc_df.iloc[:, 0:3], loc_df.iloc[:, col_start:col_end]], axis=1)
+
+# ==========================================
+# 4. PDF座標指定・Key照合ロジック（基本事項の7）
+# ==========================================
+def pdf_reader_with_logic_7(pdf_stream, target_staff, time_dic):
+    """
+    PDFの座標[0,0], [0,1], [1,1]を使用して勤務地Keyを特定。
+    スプレッドシートのKeyと一致する場合にのみ通過資格を認める。
+    """
+    clean_target = normalize_text(target_staff)
+    # Streamlit上のファイルを一時保存
     with open("temp.pdf", "wb") as f:
         f.write(pdf_stream.getbuffer())
-
+    
     try:
-        # split_text=True でセル内の改行を保持
-        tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice', split_text=True)
-        if not tables: return None, "PDFから表を検出できませんでした。"
-        df = tables[0].df
+        # 格子状の表(lattice)として読み込み
+        tables = camelot.read_pdf("temp.pdf", pages='all', flavor='lattice')
+    except Exception as e:
+        st.error(f"Camelot解析失敗: {e}")
+        return []
 
-        # A. Keyの特定 ( [1,0] を優先、なければ吸い込まれた [0,0] から探す )
-        key_search_area = str(df.iloc[1, 0]) + " " + str(df.iloc[0, 0])
-        key_match = re.search(r'T\d+', key_search_area)
-        found_key = key_match.group(0) if key_match else "不明"
+    final_results = []
+    for table in tables:
+        df = table.df
+        if df.empty or len(df) < 2 or len(df.columns) < 2: continue
         
-        matched_key = next((k for k in time_dic.keys() if found_key in k or k in found_key), None)
-        if not matched_key:
-            return df, f"拠点Key『{found_key}』がマスターに見当たりません。"
-
-        # B. 日付・曜日の「定規」確認 ([0,1]の日付 と [1,1]の曜日)[cite: 2]
-        pdf_day_one = re.sub(r'\D', '', str(df.iloc[0, 1]))
-        pdf_wday_one = re.search(r'[月火水木金土日]', str(df.iloc[1, 1]))
+        # --- 座標による位置決め ---
+        val_00 = df.iloc[0, 0] # 勤務地・日付等の混在セル
+        val_01 = df.iloc[0, 1] # 補足情報
+        val_11 = df.iloc[1, 1] # 補足情報
         
-        extracted_wday = pdf_wday_one.group(0) if pdf_wday_one else "不明"
-
-        # 整合性チェック
-        if extracted_wday != truth_first_wday:
-            return df, f"【整合性エラー】PDF[1,1]は「{extracted_first_wday}曜」、暦は「{truth_first_wday}曜」です。"
-
-        # C. 名前と資格の「2行分割」スキャン
-        clean_target = normalize_text(target_staff)
-        target_idx = None
+        # [0,0]から不要な文字を除去してKey(勤務地)を抽出
+        pdf_key = clean_key_from_pdf_val(val_00)
         
-        # 0列目を走査
-        for i in range(len(df)):
-            cell_val = str(df.iloc[i, 0])
-            # 改行で分割して1行目（名前）を確認
-            parts = cell_val.split('\n')
-            if clean_target in normalize_text(parts[0]) and i >= 2:
-                target_idx = i
-                break
-
-        if target_idx is None:
-            return df, f"『{target_staff}』が見つかりません。"
-
-        # D. 本人のシフト (名前行と資格行の2行を抽出)
-        my_shift = []
-        for offset in [0, 1]:
-            row_data = df.iloc[target_idx + offset].tolist()
-            # セル内の改行を処理して表示用に見栄えを整える
-            my_shift.append(row_data)
-
-        # E. 他者のシフト (ヘッダーと本人以外を1行ずつ)
-        other_shifts = []
-        for i in range(2, len(df)):
-            if i != target_idx and i != target_idx + 1:
-                row = df.iloc[i].tolist()
-                if any(str(v).strip() for v in row):
-                    other_shifts.append(row)
-
-        return {
-            "key": matched_key,
-            "my_daily_shift": my_shift,
-            "other_daily_shift": other_shifts,
-            "time_schedule_full": time_dic[matched_key]
-        }, None
-
-    finally:
-        if os.path.exists("temp.pdf"): os.remove("temp.pdf")
-
-def extract_year_month_from_text(text):
-    text = unicodedata.normalize('NFKC', text)
-    nums = re.findall(r'\d+', text)
-    y, m = None, None
-    month_match = re.search(r'(\d{1,2})月', text)
-    if month_match: m = int(month_match.group(1))
-    for n in nums:
-        if len(n) == 4: y = int(n)
-        elif len(n) == 2 and not y: y = 2000 + int(n)
-    return y, m
+        # スタッフ名の行を検索(0列目)
+        search_col = df.iloc[:, 0].astype(str).apply(normalize_text)
+        if clean_target in search_col.values:
+            idx = search_col[search_col == clean_target].index[0]
+            # 自分(2行)のシフトデータを切り出し
+            my_data = df.iloc[idx : idx + 2, :].copy()
+            
+            # --- 第三関門：通過資格（Key照合）の判断 ---
+            matched_master_key = None
+            if pdf_key in time_dic:
+                matched_master_key = pdf_key
+            else:
+                # 表記揺れ対応（PDFが"T1(1)"でマスターが"T1"などの場合）
+                matched_master_key = next((k for k in time_dic.keys() if k in pdf_key or pdf_key in k), None)
+            
+            # 合致するKeyが見つかった場合のみ、結果に追加
+            if matched_master_key:
+                final_results.append({
+                    'key': matched_master_key,
+                    'coords': {"[0,0]": val_00, "[0,1]": val_01, "[1,1]": val_11},
+                    'my_data': my_data,
+                    'time_range': time_dic[matched_master_key]
+                })
+                
+    return final_results
