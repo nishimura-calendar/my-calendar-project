@@ -15,16 +15,11 @@ def get_unified_services():
             info = dict(st.secrets["gcp_service_account"])
         else:
             info = dict(st.secrets)
-            
         if not info or "project_id" not in info:
             return None, None
-            
         creds = service_account.Credentials.from_service_account_info(
             info, 
-            scopes=[
-                "https://www.googleapis.com/auth/drive.readonly", 
-                "https://www.googleapis.com/auth/spreadsheets.readonly"
-            ]
+            scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
         )
         return build('drive', 'v3', credentials=creds), build('sheets', 'v4', credentials=creds)
     except Exception:
@@ -63,7 +58,6 @@ def process_schedule_block(block_df):
             return f"{hours:02d}:{minutes:02d}"
         except (ValueError, TypeError): return val
     new_df = block_df.iloc[:, :3].copy()
-    # Pandas 2.1+ 対応: mapを使用
     time_cols = block_df.iloc[:, 3:].map(num_to_time)
     return pd.concat([new_df, time_cols], axis=1)
 
@@ -71,66 +65,56 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if manual_date:
         y, m = manual_date
     else:
-        # 年: 4桁の数字を検索
+        # 年: 4桁数字, 月: 先頭から最初の1-2桁数字
         match_y = re.search(r'(\d{4})', filename)
-        # 月: 先頭から検索して最初の1〜2桁
         match_m = re.search(r'(\d{1,2})', filename)
-        
         if match_y and match_m:
-            y = int(match_y.group(1))
-            m = int(match_m.group(1))
+            y, m = int(match_y.group(1)), int(match_m.group(1))
         else:
-            return False, "年月を特定できません", None
+            return False, "理由: ファイル名から年月を特定できません。手動入力が必要です。", None
     
     _, last_day_calc = calendar.monthrange(y, m)
     w_list = ["月", "火", "水", "木", "金", "土", "日"]
     first_w_calc = w_list[calendar.weekday(y, m, 1)]
-
     found_dates = [int(d) for d in re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', pdf_0_0)]
     found_days = re.findall(r'[月火水木金土日]', pdf_0_0)
-    
     last_day_pdf = max(found_dates) if found_dates else 0
     first_w_pdf = found_days[0] if found_days else ""
 
     if last_day_calc == last_day_pdf and first_w_calc == first_w_pdf:
         return True, "通過", (found_dates, found_days, y, m)
-    return False, f"整合性エラー: 算出={last_day_calc}日({first_w_calc}) / PDF={last_day_pdf}日({first_w_pdf})", None
+    else:
+        # 不一致時の理由を表示 (OK)[cite: 3]
+        reason = f"理由: 指定年月({y}/{m})とPDFの内容が一致しません。\n"
+        reason += f"期待: 1日({first_w_calc})、末日({last_day_calc}日) / "
+        reason += f"PDF: 1日({first_w_pdf})、末日({last_day_pdf}日)"
+        return False, reason, None
 
 def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
     with open("temp.pdf", "wb") as f: f.write(pdf_stream.getbuffer())
     try:
         tables = camelot.read_pdf("temp.pdf", pages='1', flavor='lattice')
-        if not tables: return None, "表未検出"
+        if not tables: return None, "理由: 表が検出されませんでした。"
         raw_df = tables[0].df
         raw_0_0 = str(raw_df.iloc[0, 0])
-        
         success, msg, date_info = verify_first_gate(filename, raw_0_0, manual_date)
         if not success: return None, msg
-
         found_dates, found_days, y, m = date_info
         location = "T1"
         for k in master_keys:
             if k in normalize_text(raw_0_0):
                 location = k
                 break
-        
         staff_list = []
         for i in range(2, len(raw_df), 2):
             name = str(raw_df.iloc[i, 0]).split('\n')[0].strip()
             if name and name.lower() != 'nan': staff_list.append(name)
-
         final_rows = [[""] + found_dates, [location] + found_days]
         for i in range(2, len(raw_df)):
             cell = str(raw_df.iloc[i, 0]).strip()
             row_data = raw_df.iloc[i, 1:].tolist()
             name_val = cell.split('\n')[0] if i % 2 == 0 else cell
             final_rows.append([name_val] + row_data)
-
-        return {
-            "df": pd.DataFrame(final_rows),
-            "location": location,
-            "staff_list": staff_list,
-            "year": y, "month": m
-        }, "通過"
+        return {"df": pd.DataFrame(final_rows), "location": location, "staff_list": staff_list, "year": y, "month": m}, "通過"
     finally:
         if os.path.exists("temp.pdf"): os.remove("temp.pdf")
