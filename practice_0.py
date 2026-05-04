@@ -83,7 +83,8 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if last_day_calc == last_day_pdf and first_w_calc == first_w_pdf:
         return True, "通過", (found_dates, found_days, y, m)
     else:
-        reason = f"理由: 指定年月({y}/{m})とPDF内容が一致しません。\n期待: 1日({first_w_calc}) / PDF: 1日({first_w_pdf})"[cite: 3]
+        # エラーマーカー[cite: 3] を削除しました
+        reason = f"理由: 指定年月({y}/{m})とPDF内容が一致しません。\n期待: 1日({first_w_calc})、末日({last_day_calc}日) / PDF: 1日({first_w_pdf})、末日({last_day_pdf}日)"
         return False, reason, None
 
 def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
