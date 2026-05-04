@@ -43,19 +43,27 @@ def load_time_schedule(sheets_service, file_id):
         if current_loc:
             time_dic[normalize_text(current_loc)] = process_schedule_block(df.iloc[start_idx:, :])
     return time_dic
-
+    
 def process_schedule_block(block_df):
     def num_to_time(val):
         try:
+            # 入力が数値（または数値文字列）の場合のみ変換を試みる
             f_val = float(val)
             hours = int(f_val)
             minutes = int(round((f_val - hours) * 60))
             return f"{hours:02d}:{minutes:02d}"
-        except: return val
-    new_df = block_df.iloc[:, :3].copy()
-    time_cols = block_df.iloc[:, 3:].applymap(num_to_time)
-    return pd.concat([new_df, time_cols], axis=1)
+        except (ValueError, TypeError):
+            # 変換できない場合（すでに文字列など）はそのまま返す
+            return val
 
+    # A〜C列を保持
+    new_df = block_df.iloc[:, :3].copy()
+    # D列以降（時間データ）に対して一括処理
+    # Pandas 2.1+ に対応するため applymap ではなく map を使用
+    time_cols = block_df.iloc[:, 3:].map(num_to_time) 
+    
+    return pd.concat([new_df, time_cols], axis=1)
+    
 # --- 第一関門: 日付・曜日の整合性 (source: 9) ---
 def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if manual_date:
