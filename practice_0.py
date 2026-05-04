@@ -83,7 +83,6 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if last_day_calc == last_day_pdf and first_w_calc == first_w_pdf:
         return True, "通過", (found_dates, found_days, y, m)
     else:
-        # エラーマーカー[cite: 3] を削除しました
         reason = f"理由: 指定年月({y}/{m})とPDF内容が一致しません。\n期待: 1日({first_w_calc})、末日({last_day_calc}日) / PDF: 1日({first_w_pdf})、末日({last_day_pdf}日)"
         return False, reason, None
 
@@ -107,7 +106,9 @@ def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
         staff_list = []
         for i in range(2, len(raw_df), 2):
             name = str(raw_df.iloc[i, 0]).split('\n')[0].strip()
-            if name and name.lower() != 'nan': staff_list.append(name)
+            # ヘッダー行や拠点名が入っている行を除外
+            if name and name.lower() != 'nan' and name != location: 
+                staff_list.append(name)
             
         final_rows = [[""] + found_dates, [location] + found_days]
         for i in range(2, len(raw_df)):
