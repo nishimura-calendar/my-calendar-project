@@ -24,7 +24,6 @@ if uploaded_file:
         st.warning("マスターデータの準備を待っています...")
         st.stop()
 
-    # 年月抽出
     match_y = re.search(r'(\d{4})', uploaded_file.name)
     match_m = re.search(r'(\d{1,2})', uploaded_file.name)
     manual_date = None
@@ -38,23 +37,23 @@ if uploaded_file:
 
     res, msg = p0.analyze_pdf_structural(uploaded_file, st.session_state.time_dic.keys(), uploaded_file.name, manual_date)
 
-    # --- ① 不一致時: 理由を表示しPDFを映す ---
+    # --- 不一致・エラー発生時: 理由を表示し、PDFを表示する ---
     if not res:
-        st.error(f"プログラム停止: {msg}")[cite: 3]
+        st.error(f"プログラム停止: {msg}")
         base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
         st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf">', unsafe_allow_html=True)
         st.stop()
 
-    # --- 正常時: UI表示 ---
+    # --- 成功時 ---
     loc_key = p0.normalize_text(res['location'])
     st.success(f"✅ {res['year']}年{res['month']}月 / 拠点: {res['location']}")
 
-    # --- ② 氏名選択: カーソル移動で確定させない設定 ---
+    # 氏名選択ボックス（矢印キーで操作可能にするための設定）
     target_staff = st.selectbox(
-        "スタッフを選択してください",
+        "スタッフを選択してください（矢印キーで上下移動、Enterで確定）",
         options=["該当なし"] + res['staff_list'],
-        index=None, # 初期値を空に
-        placeholder="ここをクリックしてリストから選択...",
+        index=None,
+        placeholder="ここをクリックまたは入力して検索...",
         key="staff_selector"
     )
 
@@ -74,7 +73,7 @@ if uploaded_file:
                 st.subheader("👥 他スタッフの状況")
                 st.dataframe(other_daily_staff, hide_index=True, use_container_width=True)
                 
-                # --- ③ 時程表の表示復活 ---
+                # 時程表の表示
                 if loc_key in st.session_state.time_dic:
                     st.subheader(f"⏰ 時程表（マスター）: {res['location']}")
                     st.dataframe(st.session_state.time_dic[loc_key], hide_index=True, use_container_width=True)
