@@ -6,57 +6,52 @@ import base64
 SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 st.set_page_config(page_title="PDF照合システム", layout="wide")
 
-# 時程表マスターのロード
 if 'time_dic' not in st.session_state:
     st.session_state.time_dic = None
 
+# APIサービス取得
 drive, sheets = p0.get_unified_services()
 if sheets and st.session_state.time_dic is None:
     try:
         st.session_state.time_dic = p0.load_time_schedule(sheets, SHEET_ID)
-    except Exception as e:
-        st.error(f"マスター読込失敗: {e}")
+    except:
+        st.error("マスターデータの読み込みに失敗しました。")
 
 uploaded_file = st.file_uploader("PDFファイルをアップロード", type="pdf")
 
 if uploaded_file:
-    res, msg = p0.analyze_pdf_structural(uploaded_file, st.session_state.time_dic.keys(), uploaded_file.name)
+    # 解析実行
+    res, msg = p0.analyze_pdf_structural(uploaded_file, st.session_state.time_dic.keys() if st.session_state.time_dic else [], uploaded_file.name)
 
-    # --- ① 不一致時の挙動 ---
-    if not res:
-        st.error(f"プログラム停止: {msg}")
+    # --- ① 不一致（解析失敗）時の表示 ---
+    if res is None:
+        st.error(f"⚠️ 解析エラー: {msg}")
+        # PDFをBase64で表示
         uploaded_file.seek(0)
         base64_pdf = base64.b64encode(uploaded_file.read()).decode('utf-8')
-        st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf">', unsafe_allow_html=True)
-        st.stop()
+        pdf_display = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf">'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+        st.stop() # ここで確実に止める
 
-    # --- ② サイドバー：ボタンをなくし、Enter確定にする ---
-    with st.sidebar:
-        st.title("👤 スタッフ選択")
-        st.info("矢印キーで選択し、Enterで確定してください。")
-        
-        # st.selectboxは、矢印キーで選んでいる最中は値が確定せず、
-        # Enterを押すかフォーカスを外すと確定するため、誤爆を防げます。
-        target_staff = st.selectbox(
-            "スタッフ一覧",
-            options=["該当なし"] + res['staff_list'],
-            index=0,
-            key="target_staff_box"
-        )
-
-    # --- ③ 表示ロジック ---
+    # --- ② 解析成功後の操作 ---
     st.success(f"✅ {res['year']}年{res['month']}月 / 拠点: {res['location']}")
     
+    # 氏名選択（Enterで確定）
+    target_staff = st.selectbox(
+        "スタッフを選択してEnterを押してください",
+        options=["該当なし"] + res['staff_list'],
+        index=0
+    )
+
     if target_staff != "該当なし":
         df = res['df']
         loc_key = p0.normalize_text(res['location'])
         
         try:
-            # 本人の2行
+            # データ抽出
             idx = df[df[0] == target_staff].index[0]
             my_daily_shift = df.iloc[idx : idx+2, :]
             
-            # 他スタッフ（拠点名行をスキップ）
             other_indices = []
             for i in range(2, len(df), 2):
                 row_name = str(df.iloc[i, 0]).strip()
@@ -64,10 +59,7 @@ if uploaded_file:
                     other_indices.append(i)
             other_daily_staff = df.iloc[other_indices, :]
 
-            # 拠点時程表
-            time_schedule = st.session_state.time_dic.get(loc_key, None)
-
-            # --- 描画 ---
+            # 表示
             st.divider()
             st.subheader(f"📅 {target_staff} の個人シフト")
             st.dataframe(my_daily_shift, hide_index=True, use_container_width=True)
@@ -75,11 +67,11 @@ if uploaded_file:
             st.subheader("👥 他スタッフの勤務状況")
             st.dataframe(other_daily_staff, hide_index=True, use_container_width=True)
             
-            if time_schedule is not None:
+            if loc_key in st.session_state.time_dic:
                 st.subheader(f"⏰ 拠点時程表: {res['location']}")
-                st.dataframe(time_schedule, hide_index=True, use_container_width=True)
+                st.dataframe(st.session_state.time_dic[loc_key], hide_index=True, use_container_width=True)
 
         except Exception as e:
-            st.error(f"データ抽出エラー: {e}")
+            st.error(f"表示処理中にエラーが発生しました: {e}")
     else:
-        st.info("サイドバーで名前を選択し、Enterキーを押してください。")
+        st.info("スタッフ名を選択すると詳細が表示されます。")
