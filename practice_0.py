@@ -12,7 +12,7 @@ def get_calc_date_info(y, m):
     return last_day, first_w
 
 def load_master_from_sheets(service, spreadsheet_id):
-    """時程表を読み込み、勤務地をキーに辞書登録[cite: 3, 5]"""
+    """時程表を読み込み、勤務地をキーに辞書登録[cite: 5]"""
     spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     time_dic = {}
     for s in spreadsheet.get('sheets', []):
@@ -34,13 +34,12 @@ def load_master_from_sheets(service, spreadsheet_id):
     return time_dic
 
 def process_time_block(block):
-    """時程表の時間列変換[cite: 3]"""
+    """時程表の時間変換処理[cite: 3]"""
     def to_time(v):
         try:
             f = float(v)
             return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
         except: return v
-
     time_cols = []
     for col in range(3, block.shape[1]):
         try:
@@ -48,54 +47,51 @@ def process_time_block(block):
             time_cols.append(col)
         except:
             if time_cols: break
-    
     res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
     for i in range(len(time_cols)):
         res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・座標設定・データ抽出"""
+    """第一関門・データ抽出[cite: 9]"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
     raw_0_0 = str(df.iloc[0, 0])
     
-    # ② ファイル内容から抽出
-    # 日付文字列（連続した数字）を抽出
-    date_nums = re.findall(r'\d+', raw_0_0)
-    pdf_last_day = int(date_nums[-1]) if date_nums else 0
-    # 曜日を抽出
+    # ② ファイル内容[0,0]から抽出[cite: 9]
+    # 「123...31」のような連続数字から最大の数(月末)を取得
+    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
+    pdf_last_day = max(nums) if nums else 0
+    # 最初の曜日文字を第一曜日として取得
     days_found = re.findall(r'[月火水木金土日]', raw_0_0)
     pdf_first_w = days_found[0] if days_found else ""
     
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
     
+    # ①=②判定[cite: 9]
     if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        reason = f"第一関門失敗: 計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
+        reason = f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
         return None, reason
 
-    # <2> location抽出: 日付文字列(連続数字の始〜終)と曜日文字列を除去[cite: 8]
-    # 連続した数字の塊をすべて除去
-    location = re.sub(r'\d+', '', raw_0_0)
-    # 曜日および付随する記号を除去
+    # ＜2＞ location抽出：数字列(日付)と曜日文字列を除去[cite: 9]
+    location = re.sub(r'\d+', '', raw_0_0) 
     location = re.sub(r'\(?[月火水木金土日]\)?', '', location)
-    # その他年月表記などを掃除
     location = re.sub(r'[年月\s/：:-]', '', location).strip()
     
-    # 整形データ作成
-    rows = []
-    rows.append([""] + df.iloc[0, 1:].tolist()) # [0,0]=""[cite: 8]
-    rows.append([location] + df.iloc[1, 1:].tolist()) # [1,0]=location[cite: 8]
+    # ＜1＞ 座標設定用の変数算出[cite: 9]
+    staff_names = [str(df.iloc[i, 0]).split('\n')[0].strip() for i in range(2, len(df), 2) if str(df.iloc[i, 0]).strip()]
+    max_n_len = max([len(n) for n in staff_names]) if staff_names else 0
+    l_val = math.ceil(max(len(location), max_n_len))
     
-    staff_names = []
+    # データ組替[cite: 9]
+    rows = []
+    rows.append([""] + df.iloc[0, 1:].tolist()) # [0,0]=""
+    rows.append([location] + df.iloc[1, 1:].tolist()) # [1,0]=location
+    
     for i in range(2, len(df)):
         cell = str(df.iloc[i, 0]).strip()
-        if i % 2 == 0 and cell:
-            name = cell.split('\n')[0]
-            staff_names.append(name)
-            rows.append([name] + df.iloc[i, 1:].tolist()) # 氏名[cite: 8]
-        else:
-            rows.append([cell] + df.iloc[i, 1:].tolist()) # 資格[cite: 8]
+        name_or_qual = cell.split('\n')[0] if i % 2 == 0 else cell
+        rows.append([name_or_qual] + df.iloc[i, 1:].tolist())
             
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
