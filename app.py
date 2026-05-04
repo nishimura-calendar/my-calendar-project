@@ -37,23 +37,23 @@ if uploaded_file:
 
     res, msg = p0.analyze_pdf_structural(uploaded_file, st.session_state.time_dic.keys(), uploaded_file.name, manual_date)
 
-    # --- 不一致・エラー発生時: 理由を表示し、PDFを表示する ---
+    # --- ① 不一致時: 理由表示 ＋ PDFをそのまま表示 ---
     if not res:
         st.error(f"プログラム停止: {msg}")
         base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-        st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600" type="application/pdf">', unsafe_allow_html=True)
+        st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf">', unsafe_allow_html=True)
         st.stop()
 
     # --- 成功時 ---
     loc_key = p0.normalize_text(res['location'])
     st.success(f"✅ {res['year']}年{res['month']}月 / 拠点: {res['location']}")
 
-    # 氏名選択ボックス（矢印キーで操作可能にするための設定）
+    # --- ② 氏名ボックス（スクロール・連動性確保） ---
     target_staff = st.selectbox(
-        "スタッフを選択してください（矢印キーで上下移動、Enterで確定）",
+        "スタッフを選択（矢印キーで移動・スクロール連動）",
         options=["該当なし"] + res['staff_list'],
         index=None,
-        placeholder="ここをクリックまたは入力して検索...",
+        placeholder="氏名を入力または選択してください...",
         key="staff_selector"
     )
 
@@ -63,7 +63,15 @@ if uploaded_file:
             try:
                 idx = df[df[0] == target_staff].index[0]
                 my_daily_shift = df.iloc[idx : idx+2, :]
-                other_indices = [i for i in range(2, len(df), 2) if df.iloc[i, 0] != target_staff]
+                
+                # --- ③ other_daily_shift: 氏名=拠点名(key)の行をスキップ ---
+                # 2行目以降（日付・曜日行より下）から、氏名が拠点名でない行のみ抽出
+                other_indices = []
+                for i in range(2, len(df), 2):
+                    row_name = str(df.iloc[i, 0]).strip()
+                    if row_name != target_staff and row_name != res['location']:
+                        other_indices.append(i)
+                
                 other_daily_staff = df.iloc[other_indices, :]
 
                 st.divider()
@@ -73,9 +81,8 @@ if uploaded_file:
                 st.subheader("👥 他スタッフの状況")
                 st.dataframe(other_daily_staff, hide_index=True, use_container_width=True)
                 
-                # 時程表の表示
                 if loc_key in st.session_state.time_dic:
-                    st.subheader(f"⏰ 時程表（マスター）: {res['location']}")
+                    st.subheader(f"⏰ 時程表: {res['location']}")
                     st.dataframe(st.session_state.time_dic[loc_key], hide_index=True, use_container_width=True)
 
             except Exception as e:
