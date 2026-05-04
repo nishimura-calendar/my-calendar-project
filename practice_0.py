@@ -69,7 +69,7 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
         if match_y and match_m:
             y, m = int(match_y.group(1)), int(match_m.group(1))
         else:
-            return False, "理由: ファイル名から年月を特定できません。手動入力が必要です。", None
+            return False, "理由: ファイル名から年月を特定できません。", None
     
     _, last_day_calc = calendar.monthrange(y, m)
     w_list = ["月", "火", "水", "木", "金", "土", "日"]
@@ -83,7 +83,7 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if last_day_calc == last_day_pdf and first_w_calc == first_w_pdf:
         return True, "通過", (found_dates, found_days, y, m)
     else:
-        reason = f"理由: 指定年月({y}/{m})とPDF内容が一致しません。\n期待: 1日({first_w_calc})末日({last_day_calc}) / PDF: 1日({first_w_pdf})末日({last_day_pdf})"
+        reason = f"理由: 指定年月({y}/{m})とPDF内容が不一致。\n期待: 1日({first_w_calc})末日({last_day_calc}) / PDF: 1日({first_w_pdf})末日({last_day_pdf})"
         return False, reason, None
 
 def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
@@ -97,7 +97,7 @@ def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
         if not success: return None, msg
         
         found_dates, found_days, y, m = date_info
-        location = "T1"
+        location = "特定不能"
         for k in master_keys:
             if k in normalize_text(raw_0_0):
                 location = k
