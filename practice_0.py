@@ -4,7 +4,6 @@ import re
 import unicodedata
 import camelot
 import os
-import math
 import calendar
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
@@ -65,7 +64,6 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if manual_date:
         y, m = manual_date
     else:
-        # 年: 4桁数字, 月: 先頭から最初の1-2桁数字
         match_y = re.search(r'(\d{4})', filename)
         match_m = re.search(r'(\d{1,2})', filename)
         if match_y and match_m:
@@ -76,6 +74,7 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     _, last_day_calc = calendar.monthrange(y, m)
     w_list = ["月", "火", "水", "木", "金", "土", "日"]
     first_w_calc = w_list[calendar.weekday(y, m, 1)]
+
     found_dates = [int(d) for d in re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', pdf_0_0)]
     found_days = re.findall(r'[月火水木金土日]', pdf_0_0)
     last_day_pdf = max(found_dates) if found_dates else 0
@@ -84,10 +83,7 @@ def verify_first_gate(filename, pdf_0_0, manual_date=None):
     if last_day_calc == last_day_pdf and first_w_calc == first_w_pdf:
         return True, "通過", (found_dates, found_days, y, m)
     else:
-        # 不一致時の理由を表示 (OK)[cite: 3]
-        reason = f"理由: 指定年月({y}/{m})とPDFの内容が一致しません。\n"
-        reason += f"期待: 1日({first_w_calc})、末日({last_day_calc}日) / "
-        reason += f"PDF: 1日({first_w_pdf})、末日({last_day_pdf}日)"
+        reason = f"理由: 指定年月({y}/{m})とPDF内容が一致しません。\n期待: 1日({first_w_calc}) / PDF: 1日({first_w_pdf})"[cite: 3]
         return False, reason, None
 
 def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
@@ -99,16 +95,19 @@ def analyze_pdf_structural(pdf_stream, master_keys, filename, manual_date=None):
         raw_0_0 = str(raw_df.iloc[0, 0])
         success, msg, date_info = verify_first_gate(filename, raw_0_0, manual_date)
         if not success: return None, msg
+        
         found_dates, found_days, y, m = date_info
         location = "T1"
         for k in master_keys:
             if k in normalize_text(raw_0_0):
                 location = k
                 break
+        
         staff_list = []
         for i in range(2, len(raw_df), 2):
             name = str(raw_df.iloc[i, 0]).split('\n')[0].strip()
             if name and name.lower() != 'nan': staff_list.append(name)
+            
         final_rows = [[""] + found_dates, [location] + found_days]
         for i in range(2, len(raw_df)):
             cell = str(raw_df.iloc[i, 0]).strip()
