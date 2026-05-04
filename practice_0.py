@@ -3,9 +3,9 @@ import camelot
 import re
 import calendar
 import unicodedata
+import math
 
 def normalize_strict(text):
-    """余計な変換をせず、最小限の正規化のみ行う"""
     if not isinstance(text, str): return ""
     return unicodedata.normalize('NFKC', text).strip()
 
@@ -15,16 +15,6 @@ def get_calc_date_info(y, m):
     w_list = ["月", "火", "水", "木", "金", "土", "日"]
     first_w = w_list[calendar.weekday(y, m, 1)]
     return last_day, first_w
-
-def convert_to_time(val):
-    """時程表の数値を時刻形式(HH:mm)に変換[cite: 3]"""
-    try:
-        f_val = float(val)
-        hours = int(f_val)
-        minutes = int(round((f_val - hours) * 60))
-        return f"{hours:02d}:{minutes:02d}"
-    except:
-        return val
 
 def load_master_from_sheets(service, spreadsheet_id):
     """時程表を読み込み、勤務地をキーに辞書登録[cite: 3, 5]"""
@@ -49,53 +39,67 @@ def load_master_from_sheets(service, spreadsheet_id):
     return time_dic
 
 def process_time_block(block):
-    """時程表の数値列のみを時刻に変換[cite: 3]"""
+    """勤務地行のD列以降のみ時間変換[cite: 3]"""
+    def to_time(v):
+        try:
+            f = float(v)
+            return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
+        except: return v
+
     time_cols = []
     for col in range(3, block.shape[1]):
-        v = block.iloc[0, col]
         try:
-            float(v); time_cols.append(col)
+            float(block.iloc[0, col])
+            time_cols.append(col)
         except:
             if time_cols: break
     
     res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
-    for i, _ in enumerate(time_cols):
-        res_df.iloc[0, 3 + i] = convert_to_time(res_df.iloc[0, 3 + i])
+    for i in range(len(time_cols)):
+        res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・座標設定・PDF抽出"""
+    """第一関門・座標設定・データ抽出"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDFから表を抽出できませんでした。"
     df = tables[0].df
-    
-    # ② ファイル内容[0,0]から抽出
     raw_0_0 = str(df.iloc[0, 0])
-    all_numbers = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', raw_0_0)
-    pdf_dates = [int(n) for n in all_numbers]
-    pdf_last_day = max(pdf_dates) if pdf_dates else 0
+    
+    # ② ファイル内容から日数・曜日を抽出
+    dates = [int(n) for n in re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', raw_0_0)]
+    pdf_last_day = max(dates) if dates else 0
     days_found = re.findall(r'[月火水木金土日]', raw_0_0)
     pdf_first_w = days_found[0] if days_found else ""
     
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
     
-    # 第一関門判定[cite: 6]
+    # 第一関門判定[cite: 7]
     if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        reason = f"不一致：計算上の月末は{calc_last_day}日({calc_first_w})ですが、PDFからは{pdf_last_day}日({pdf_first_w})が検出されました。"
+        reason = f"不一致：計算={calc_last_day}日({calc_first_w}) / PDF={pdf_last_day}日({pdf_first_w})"
         return None, reason
 
-    # [0,0]の値から日付・曜日を除去してlocationを特定[cite: 6]
-    location = re.sub(r'[\d月火水木金土日\s/年.()-]', '', raw_0_0).strip()
+    # <2> location特定: [0,0]から日付文字列、曜日文字列を除去[cite: 7]
+    # 数字は除去せず、年月や曜日を表す漢字・記号のみを除去する
+    location = raw_0_0
+    for d_str in re.findall(r'\d+日', location): location = location.replace(d_str, "")
+    for w_str in re.findall(r'\(?[月火水木金土日]\)?', location): location = location.replace(w_str, "")
+    location = re.sub(r'[\s/月年-]', '', location).strip()
     
-    # データの組替[cite: 6]
+    # <1> 座標の設定（概念としての保持）[cite: 7]
+    # 実装上は抽出データの整形として反映
+    staff_names = [str(df.iloc[i, 0]).split('\n')[0].strip() for i in range(2, len(df), 2)]
+    max_name_len = max([len(n) for n in staff_names]) if staff_names else 0
+    l_coord = math.ceil(max(len(location), max_name_len))
+    
+    # データ組替[cite: 7]
     rows = []
-    rows.append([""] + df.iloc[0, 1:].tolist()) # 日付行
-    rows.append([location] + df.iloc[1, 1:].tolist()) # 曜日行
+    rows.append([""] + df.iloc[0, 1:].tolist()) # [0,0]=""
+    rows.append([location] + df.iloc[1, 1:].tolist()) # [1,0]=location
     
-    staff_list = []
     for i in range(2, len(df)):
-        name = str(df.iloc[i, 0]).split('\n')[0].strip()
-        rows.append([name] + df.iloc[i, 1:].tolist())
-        if i % 2 == 0 and name: staff_list.append(name)
+        cell = str(df.iloc[i, 0]).strip()
+        name_val = cell.split('\n')[0] if i % 2 == 0 else cell # 氏名と資格
+        rows.append([name_val] + df.iloc[i, 1:].tolist())
             
-    return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_list}, "通過"
+    return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
