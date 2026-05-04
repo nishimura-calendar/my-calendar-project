@@ -2,11 +2,11 @@ import streamlit as st
 import practice_0 as p0
 import pandas as pd
 import base64
-import re
 
 SHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 st.set_page_config(page_title="PDF照合システム", layout="wide")
 
+# 時程表マスターのロード
 if 'time_dic' not in st.session_state:
     st.session_state.time_dic = None
 
@@ -30,18 +30,21 @@ if uploaded_file:
         st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf">', unsafe_allow_html=True)
         st.stop()
 
-    # --- ② サイドバー操作 ---
+    # --- ② サイドバー：ボタンをなくし、Enter確定にする ---
     with st.sidebar:
         st.title("👤 スタッフ選択")
-        with st.form("staff_select_form"):
-            target_staff = st.radio(
-                "リストを選択してEnter",
-                options=["該当なし"] + res['staff_list'],
-                index=0
-            )
-            submitted = st.form_submit_button("表示を確定する")
+        st.info("矢印キーで選択し、Enterで確定してください。")
+        
+        # st.selectboxは、矢印キーで選んでいる最中は値が確定せず、
+        # Enterを押すかフォーカスを外すと確定するため、誤爆を防げます。
+        target_staff = st.selectbox(
+            "スタッフ一覧",
+            options=["該当なし"] + res['staff_list'],
+            index=0,
+            key="target_staff_box"
+        )
 
-    # --- ③ 表示ロジック（デフォルト・該当なし時は表を表示しない） ---
+    # --- ③ 表示ロジック ---
     st.success(f"✅ {res['year']}年{res['month']}月 / 拠点: {res['location']}")
     
     if target_staff != "該当なし":
@@ -49,7 +52,7 @@ if uploaded_file:
         loc_key = p0.normalize_text(res['location'])
         
         try:
-            # 本人
+            # 本人の2行
             idx = df[df[0] == target_staff].index[0]
             my_daily_shift = df.iloc[idx : idx+2, :]
             
@@ -61,10 +64,10 @@ if uploaded_file:
                     other_indices.append(i)
             other_daily_staff = df.iloc[other_indices, :]
 
-            # 時程表
+            # 拠点時程表
             time_schedule = st.session_state.time_dic.get(loc_key, None)
 
-            # 表示実行
+            # --- 描画 ---
             st.divider()
             st.subheader(f"📅 {target_staff} の個人シフト")
             st.dataframe(my_daily_shift, hide_index=True, use_container_width=True)
@@ -79,5 +82,4 @@ if uploaded_file:
         except Exception as e:
             st.error(f"データ抽出エラー: {e}")
     else:
-        # デフォルト時：表は一切出さず、案内メッセージのみ
-        st.info("左側のサイドバーからスタッフ名を選択し、「表示を確定する」ボタン（またはEnter）を押してください。")
+        st.info("サイドバーで名前を選択し、Enterキーを押してください。")
