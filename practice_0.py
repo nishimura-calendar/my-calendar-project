@@ -2,12 +2,7 @@ import pandas as pd
 import camelot
 import re
 import calendar
-import unicodedata
 import math
-
-def normalize_strict(text):
-    if not isinstance(text, str): return ""
-    return unicodedata.normalize('NFKC', text).strip()
 
 def get_calc_date_info(y, m):
     """① ファイル名から算出する日数と第一曜日"""
@@ -39,7 +34,7 @@ def load_master_from_sheets(service, spreadsheet_id):
     return time_dic
 
 def process_time_block(block):
-    """勤務地行のD列以降のみ時間変換[cite: 3]"""
+    """時程表の時間列変換[cite: 3]"""
     def to_time(v):
         try:
             f = float(v)
@@ -62,44 +57,45 @@ def process_time_block(block):
 def analyze_pdf_structure(pdf_path, y, m):
     """第一関門・座標設定・データ抽出"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
-    if not tables: return None, "PDFから表を抽出できませんでした。"
+    if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
     raw_0_0 = str(df.iloc[0, 0])
     
-    # ② ファイル内容から日数・曜日を抽出
-    dates = [int(n) for n in re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', raw_0_0)]
-    pdf_last_day = max(dates) if dates else 0
+    # ② ファイル内容から抽出
+    # 日付文字列（連続した数字）を抽出
+    date_nums = re.findall(r'\d+', raw_0_0)
+    pdf_last_day = int(date_nums[-1]) if date_nums else 0
+    # 曜日を抽出
     days_found = re.findall(r'[月火水木金土日]', raw_0_0)
     pdf_first_w = days_found[0] if days_found else ""
     
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
     
-    # 第一関門判定[cite: 7]
     if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        reason = f"不一致：計算={calc_last_day}日({calc_first_w}) / PDF={pdf_last_day}日({pdf_first_w})"
+        reason = f"第一関門失敗: 計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
         return None, reason
 
-    # <2> location特定: [0,0]から日付文字列、曜日文字列を除去[cite: 7]
-    # 数字は除去せず、年月や曜日を表す漢字・記号のみを除去する
-    location = raw_0_0
-    for d_str in re.findall(r'\d+日', location): location = location.replace(d_str, "")
-    for w_str in re.findall(r'\(?[月火水木金土日]\)?', location): location = location.replace(w_str, "")
-    location = re.sub(r'[\s/月年-]', '', location).strip()
+    # <2> location抽出: 日付文字列(連続数字の始〜終)と曜日文字列を除去[cite: 8]
+    # 連続した数字の塊をすべて除去
+    location = re.sub(r'\d+', '', raw_0_0)
+    # 曜日および付随する記号を除去
+    location = re.sub(r'\(?[月火水木金土日]\)?', '', location)
+    # その他年月表記などを掃除
+    location = re.sub(r'[年月\s/：:-]', '', location).strip()
     
-    # <1> 座標の設定（概念としての保持）[cite: 7]
-    # 実装上は抽出データの整形として反映
-    staff_names = [str(df.iloc[i, 0]).split('\n')[0].strip() for i in range(2, len(df), 2)]
-    max_name_len = max([len(n) for n in staff_names]) if staff_names else 0
-    l_coord = math.ceil(max(len(location), max_name_len))
-    
-    # データ組替[cite: 7]
+    # 整形データ作成
     rows = []
-    rows.append([""] + df.iloc[0, 1:].tolist()) # [0,0]=""
-    rows.append([location] + df.iloc[1, 1:].tolist()) # [1,0]=location
+    rows.append([""] + df.iloc[0, 1:].tolist()) # [0,0]=""[cite: 8]
+    rows.append([location] + df.iloc[1, 1:].tolist()) # [1,0]=location[cite: 8]
     
+    staff_names = []
     for i in range(2, len(df)):
         cell = str(df.iloc[i, 0]).strip()
-        name_val = cell.split('\n')[0] if i % 2 == 0 else cell # 氏名と資格
-        rows.append([name_val] + df.iloc[i, 1:].tolist())
+        if i % 2 == 0 and cell:
+            name = cell.split('\n')[0]
+            staff_names.append(name)
+            rows.append([name] + df.iloc[i, 1:].tolist()) # 氏名[cite: 8]
+        else:
+            rows.append([cell] + df.iloc[i, 1:].tolist()) # 資格[cite: 8]
             
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
