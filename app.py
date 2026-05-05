@@ -2,7 +2,7 @@ import streamlit as st
 import practice_0 as p0
 import base64
 import re
-import fitz  # PyMuPDF: PDFを画像化して確実に表示するために使用
+import fitz  # PyMuPDF
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
@@ -19,24 +19,22 @@ def get_service():
     return build('sheets', 'v4', credentials=creds)
 
 def display_pdf_as_image(pdf_path):
-    """PDFを画像に変換して確実に表示"""
+    """PDFを画像に変換して確実に表示[cite: 4]"""
     try:
         doc = fitz.open(pdf_path)
         page = doc.load_page(0)  # 1ページ目
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 高画質化
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 高画質
         img_bytes = pix.tobytes("png")
         st.image(img_bytes, caption="アップロードされたPDFの確認", use_container_width=True)
         doc.close()
     except Exception as e:
         st.warning(f"PDFプレビューの生成に失敗しました: {e}")
 
-def stop_with_pdf_image(error_text, pdf_path):
-    """エラー表示、画像表示、停止のセット[cite: 2, 4]"""
+def stop_with_pdf_image_only(error_text, pdf_path):
+    """エラー表示と画像表示のみを行い停止（ダウンロードボタンなし）"""
     st.error(error_text)
     display_pdf_as_image(pdf_path)
-    # 万が一のためのダウンロードボタン
-    with open(pdf_path, "rb") as f:
-        st.download_button("PDFファイルをダウンロード", f, file_name="check_file.pdf")
+    # ダウンロードボタンは削除しました
     st.stop()
 
 st.set_page_config(layout="wide")
@@ -49,7 +47,7 @@ if 'time_dic' not in st.session_state:
     except Exception as e:
         st.error(f"時程表読込失敗: {e}"); st.stop()
 
-# 2. PDFアップロード[cite: 3]
+# 2. PDFアップロード
 uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
 
 if uploaded_file:
@@ -75,15 +73,15 @@ if uploaded_file:
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
         if res is None:
-            # 不一致時の要求メッセージを表示[cite: 2]
-            stop_with_pdf_image("ファイル名とファイル内容に相違があります。確認して下さい。", "temp.pdf")
+            # 不一致時の要求メッセージを表示し画像を表示して停止[cite: 2]
+            stop_with_pdf_image_only("ファイル名とファイル内容に相違があります。確認して下さい。", "temp.pdf")
 
-        # 第２関門：location照合[cite: 2]
+        # 第２関門：location照合
         location = res['location']
         if location not in st.session_state.time_dic:
-            stop_with_pdf_image(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
+            stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
         
-        # 第３関門：スタッフ選択[cite: 2]
+        # 第３関門：スタッフ選択
         st.success(f"勤務地「{location}」の照合に成功しました。")
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
@@ -92,7 +90,6 @@ if uploaded_file:
             if target_staff in df[0].values:
                 idx = df[df[0] == target_staff].index[0]
                 st.write(f"### {target_staff} の抽出データ")
-                # my_daily_shift, other_daily_shift, time_schedule の表示[cite: 2]
                 st.write("#### my_daily_shift")
                 st.dataframe(df.iloc[idx : idx+2, 1:], hide_index=True)
                 st.write("#### other_daily_shift")
@@ -100,4 +97,4 @@ if uploaded_file:
                 st.write("#### time_schedule")
                 st.dataframe(st.session_state.time_dic[location], hide_index=True)
             else:
-                stop_with_pdf_image("target_staffが見つかりません。確認して下さい。", "temp.pdf")
+                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
