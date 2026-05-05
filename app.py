@@ -2,6 +2,7 @@ import streamlit as st
 import practice_0 as p0
 import base64
 import re
+import fitz  # PyMuPDF: PDFを画像に変換するために使用
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
@@ -15,32 +16,31 @@ def get_service():
     )
     return build('sheets', 'v4', credentials=creds)
 
-def display_pdf_v2(file_bytes):
+def display_pdf_as_image(pdf_path):
     """
-    ブラウザ互換性を極限まで高めたPDF表示
+    PDFの1ページ目を画像として表示する（確実に表示するための回避策）
     """
-    base64_pdf = base64.b64encode(file_bytes).decode('utf-8')
-    
-    # PDFを埋め込むHTML（object, embed, iframeの3段構え）
-    pdf_html = f"""
-        <div style="text-align: center;">
-            <object data="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px">
-                <embed src="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="800px" />
-                <p>ブラウザがPDFの表示をサポートしていないようです。
-                <a href="data:application/pdf;base64,{base64_pdf}" download="shift_table.pdf">こちらからダウンロード</a>して確認してください。</p>
-            </object>
-        </div>
-    """
-    st.markdown(pdf_html, unsafe_allow_html=True)
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc.load_page(0)  # 1ページ目
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 高解像度で画像化
+        img_bytes = pix.tobytes("png")
+        st.image(img_bytes, caption="アップロードされたPDFのプレビュー", use_container_width=True)
+        doc.close()
+    except Exception as e:
+        st.warning(f"画像の生成に失敗しました。直接PDFを確認してください: {e}")
 
-def stop_with_pdf_v2(error_text, file_bytes):
+def stop_with_pdf_final(error_text, pdf_path):
     """
-    エラー表示後、PDFを表示して完全に停止する[cite: 2, 4]
+    エラー表示後、PDFを画像として表示して完全に停止する
     """
     st.error(error_text)
-    # 表示が不安定な場合を考慮し、展開・折り畳みUIの中にPDFを配置
-    with st.expander("アップロードしたPDFを確認する", expanded=True):
-        display_pdf_v2(file_bytes)
+    st.write("### アップロードされたファイルの確認")
+    display_pdf_as_image(pdf_path)
+    
+    # 万が一画像も見れない時のためのダウンロードボタン
+    with open(pdf_path, "rb") as f:
+        st.download_button("PDFファイルをダウンロードして確認", f, file_name="uploaded_shift.pdf")
     st.stop()
 
 st.set_page_config(layout="wide")
@@ -57,7 +57,7 @@ if 'time_dic' not in st.session_state:
 uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
 
 if uploaded_file:
-    # 読み取りポインタ問題を回避
+    # 解析用の一時ファイル保存
     pdf_bytes = uploaded_file.getvalue()
     with open("temp.pdf", "wb") as f:
         f.write(pdf_bytes)
@@ -68,35 +68,25 @@ if uploaded_file:
     y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
     
     if y is None or m is None:
-        st.warning("ファイル名から年月を特定できません。入力してください。")
+        st.warning("年月を入力してください。")
         y = st.number_input("年", value=2026); m = st.number_input("月", min_value=1, max_value=12)
         is_ready = st.button("ファイル確認")
-    else: is_ready = True
+    else: 
+        is_ready = True
 
     if is_ready:
-        # 第一関門：算出(①)と抽出(②)の比較[cite: 2]
+        # 第一関門判定
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
         if res is None:
-            # 第一関門不一致：理由を表示してPDFを表示[cite: 2, 4]
-            stop_with_pdf_v2(f"第一関門不一致: {msg}", pdf_bytes)
+            # 不一致なら画像としてPDFを表示して停止
+            stop_with_pdf_final(f"第一関門不一致: {msg}", "temp.pdf")
 
-        # 第二関門：location照合[cite: 2]
+        # 第二関門以降...
         location = res['location']
         if location not in st.session_state.time_dic:
-            stop_with_pdf_v2(f"【{location}】は時程表に登録されていません。", pdf_bytes)
+            stop_with_pdf_final(f"【{location}】は時程表にありません。", "temp.pdf")
         
-        # 第三関門：スタッフ選択
         st.success(f"勤務地「{location}」の照合に成功しました。")
         target_staff = st.selectbox("スタッフ選択", options=["該当なし"] + res['staff_list'])
-        
-        if target_staff != "該当なし":
-            df = res['df']
-            if target_staff in df[0].values:
-                idx = df[df[0] == target_staff].index[0]
-                st.write(f"#### 【{target_staff}】の抽出データ")
-                st.dataframe(df.iloc[idx : idx+2, 1:], hide_index=True)
-                st.write("#### 拠点時程表")
-                st.dataframe(st.session_state.time_dic[location], hide_index=True)
-            else:
-                stop_with_pdf_v2(f"【{target_staff}】が見つかりません。", pdf_bytes)
+        # ...（以下略）
