@@ -1,8 +1,7 @@
 import streamlit as st
 import practice_0 as p0
-import base64
-import re
 import fitz  # PyMuPDF
+import re
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
@@ -19,11 +18,11 @@ def get_service():
     return build('sheets', 'v4', credentials=creds)
 
 def display_pdf_as_image(pdf_path):
-    """PDFを画像に変換して確実に表示[cite: 4]"""
+    """PDFを画像に変換して表示"""
     try:
         doc = fitz.open(pdf_path)
-        page = doc.load_page(0)  # 1ページ目
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 高画質
+        page = doc.load_page(0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         img_bytes = pix.tobytes("png")
         st.image(img_bytes, caption="アップロードされたPDFの確認", use_container_width=True)
         doc.close()
@@ -31,10 +30,9 @@ def display_pdf_as_image(pdf_path):
         st.warning(f"PDFプレビューの生成に失敗しました: {e}")
 
 def stop_with_pdf_image_only(error_text, pdf_path):
-    """エラー表示と画像表示のみを行い停止（ダウンロードボタンなし）"""
+    """エラー表示と画像表示のみを行い停止"""
     st.error(error_text)
     display_pdf_as_image(pdf_path)
-    # ダウンロードボタンは削除しました
     st.stop()
 
 st.set_page_config(layout="wide")
@@ -51,12 +49,10 @@ if 'time_dic' not in st.session_state:
 uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
 
 if uploaded_file:
-    # 後の解析と画像化のために一時保存[cite: 4]
     pdf_bytes = uploaded_file.getvalue()
     with open("temp.pdf", "wb") as f:
         f.write(pdf_bytes)
 
-    # 年月抽出
     fname = uploaded_file.name
     match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
     y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
@@ -69,32 +65,43 @@ if uploaded_file:
         is_ready = True
 
     if is_ready:
-        # 第一関門判定[cite: 2]
+        # 第一関門判定 
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
         if res is None:
-            # 不一致時の要求メッセージを表示し画像を表示して停止[cite: 2]
-            stop_with_pdf_image_only("ファイル名とファイル内容に相違があります。確認して下さい。", "temp.pdf")
+            # 不一致時：ファイル名も含めて表示 
+            error_msg = f"ファイル名【{fname}】とファイル内容に相違があります。確認して下さい。\n\n理由：{msg}"
+            stop_with_pdf_image_only(error_msg, "temp.pdf")
 
         # 第２関門：location照合
         location = res['location']
         if location not in st.session_state.time_dic:
             stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
         
-        # 第３関門：スタッフ選択
+        # 第３関門：スタッフ選択 
         st.success(f"勤務地「{location}」の照合に成功しました。")
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
         if target_staff != "該当なし":
-            df = res['df']
-            if target_staff in df[0].values:
-                idx = df[df[0] == target_staff].index[0]
+            # 指定されたスタッフのデータを抽出 
+            shift_data = p0.extract_target_data(res['df'], target_staff, location)
+            
+            if shift_data:
                 st.write(f"### {target_staff} の抽出データ")
-                st.write("#### my_daily_shift")
-                st.dataframe(df.iloc[idx : idx+2, 1:], hide_index=True)
-                st.write("#### other_daily_shift")
-                st.dataframe(df.drop([idx, idx+1]).iloc[2:, 1:], hide_index=True)
+                
                 st.write("#### time_schedule")
                 st.dataframe(st.session_state.time_dic[location], hide_index=True)
+                
+                st.write("#### my_daily_shift")
+                st.dataframe(shift_data['my_daily_shift'], hide_index=True)
+                
+                st.write("#### other_daily_shift")
+                st.dataframe(shift_data['other_daily_shift'], hide_index=True)
+                
+                # 次のステップへの準備としてセッションに保存（必要に応じて）
+                st.session_state.current_data = {
+                    "time_schedule": st.session_state.time_dic[location],
+                    **shift_data
+                }
             else:
                 stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
