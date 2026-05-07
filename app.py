@@ -65,43 +65,49 @@ if uploaded_file:
         is_ready = True
 
     if is_ready:
-        # 第一関門判定 
+        # 第1関門
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
         if res is None:
-            # 不一致時：ファイル名も含めて表示 
             error_msg = f"ファイル名【{fname}】とファイル内容に相違があります。確認して下さい。\n\n理由：{msg}"
             stop_with_pdf_image_only(error_msg, "temp.pdf")
 
-        # 第２関門：location照合
+        # 第2関門
         location = res['location']
         if location not in st.session_state.time_dic:
             stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
         
-        # 第３関門：スタッフ選択 
+        # 第3関門
         st.success(f"勤務地「{location}」の照合に成功しました。")
+        # プルダウンに氏名一覧を表示（該当なしを含む）
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
         if target_staff != "該当なし":
-            # 指定されたスタッフのデータを抽出 
+            # データの抽出実行
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
-                st.write(f"### {target_staff} の抽出データ")
+                # 仕様に基づき、勤務地(location)をキーとして辞書登録
+                # time_schedule, my_daily_shift, other_daily_shiftを格納
+                st.session_state.final_result = {
+                    location: {
+                        "time_schedule": st.session_state.time_dic[location],
+                        "my_daily_shift": shift_data['my_daily_shift'],
+                        "other_daily_shift": shift_data['other_daily_shift']
+                    }
+                }
+                
+                # 表示処理
+                st.write(f"### {target_staff} の抽出結果（勤務地: {location}）")
                 
                 st.write("#### time_schedule")
-                st.dataframe(st.session_state.time_dic[location], hide_index=True)
+                st.dataframe(st.session_state.final_result[location]["time_schedule"], hide_index=True)
                 
                 st.write("#### my_daily_shift")
-                st.dataframe(shift_data['my_daily_shift'], hide_index=True)
+                st.dataframe(st.session_state.final_result[location]["my_daily_shift"], hide_index=True)
                 
                 st.write("#### other_daily_shift")
-                st.dataframe(shift_data['other_daily_shift'], hide_index=True)
-                
-                # 次のステップへの準備としてセッションに保存（必要に応じて）
-                st.session_state.current_data = {
-                    "time_schedule": st.session_state.time_dic[location],
-                    **shift_data
-                }
+                st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
             else:
+                # target_staffが見つからない場合
                 stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
