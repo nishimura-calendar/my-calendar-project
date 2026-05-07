@@ -1,11 +1,12 @@
 import streamlit as st
 import practice_0 as p0
 import re
+import fitz
 
 st.set_page_config(layout="wide")
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
-# --- 1. 時程表の読込 ---
+# 1. 時程表の事前読込
 if 'time_dic' not in st.session_state:
     try:
         service = p0.get_service()
@@ -13,15 +14,13 @@ if 'time_dic' not in st.session_state:
     except Exception as e:
         st.error(f"時程表読込失敗: {e}"); st.stop()
 
-# --- 2. 画面構成 ---
-st.title("シフト管理システム - 全データ表示")
-
+# 2. PDFアップロード
+st.title("シフト解析・全データ表示システム")
 uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
 
 if uploaded_file:
-    # ファイル名の全表示
-    st.info(f"📄 処理中のファイル: {uploaded_file.name}")
-    
+    # ファイル名全表示
+    st.info(f"📄 対象ファイル: {uploaded_file.name}")
     with open("temp.pdf", "wb") as f:
         f.write(uploaded_file.getvalue())
 
@@ -34,37 +33,37 @@ if uploaded_file:
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         if res:
             location = res['location']
-            st.success(f"拠点「{location}」の解析が完了しました。")
+            st.success(f"拠点「{location}」を照合しました。")
             
-            target_staff = st.selectbox("スタッフを選択してください", 
-                                       options=["未選択"] + res['staff_list'])
+            # スタッフ選択
+            target_staff = st.selectbox("スタッフを選択してください", options=["未選択"] + res['staff_list'])
             
             if target_staff != "未選択":
                 df = res['df']
                 idx = df[df[0] == target_staff].index[0]
                 
                 st.divider()
-                st.header(f"📊 {target_staff} さんの全関連データ")
+                st.header(f"📊 {target_staff} さんの全データ表示")
 
-                # ① my_daily_shift (個人の2行)
-                st.subheader("1. my_daily_shift")
-                my_shift = df.iloc[idx : idx+2, 0:]
-                st.dataframe(my_shift, hide_index=True, use_container_width=True)
+                # ① 個人のシフト (my_daily_shift)
+                st.subheader("1. my_daily_shift (個人の勤務時間)")
+                st.dataframe(df.iloc[idx : idx+2, 0:], hide_index=True, use_container_width=True)
 
-                # ② other_daily_shift (他スタッフ全員 & 拠点名行の除外)
-                st.subheader("2. other_daily_shift")
-                # 自分の2行を除去
+                # ② 他全員のシフト (other_daily_shift)
+                st.subheader("2. other_daily_shift (他スタッフの勤務状況)")
+                # 自分を除去
                 other_df = df.drop([idx, idx+1]).iloc[2:, 0:]
-                # ★ 拠点名(location)と一致する行を、列0から完全に排除して「全表示」
+                # ★ 途中の拠点名(location)行を完全に排除
                 other_df_clean = other_df[other_df[0] != location]
                 st.dataframe(other_df_clean, hide_index=True, use_container_width=True)
 
-                # ③ time_schedule (スプレッドシートマスタ)
-                st.subheader(f"3. time_schedule ({location})")
+                # ③ 拠点マスタ (time_schedule)
+                st.subheader(f"3. time_schedule (拠点「{location}」の時程)")
                 if location in st.session_state.time_dic:
                     st.dataframe(st.session_state.time_dic[location], hide_index=True, use_container_width=True)
                 else:
                     st.warning(f"時程表に {location} が見つかりません。")
 
-                st.markdown("---")
-                st.caption("全てのデータ（個人・全体・マスタ）を表示しました。")
+                st.info("全てのデータを正常に表示しました。")
+        else:
+            st.error(msg)
