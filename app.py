@@ -1,113 +1,74 @@
 import streamlit as st
 import practice_0 as p0
-import fitz  # PyMuPDF
 import re
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
-
-# スプレッドシートID
-SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-
-def get_service():
-    """GCP認証"""
-    info = dict(st.secrets["gcp_service_account"])
-    creds = service_account.Credentials.from_service_account_info(
-        info, 
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    )
-    return build('sheets', 'v4', credentials=creds)
-
-def display_pdf_as_image(pdf_path):
-    """PDFを画像に変換して表示"""
-    try:
-        doc = fitz.open(pdf_path)
-        page = doc.load_page(0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        img_bytes = pix.tobytes("png")
-        st.image(img_bytes, caption="アップロードされたPDFの確認", use_container_width=True)
-        doc.close()
-    except Exception as e:
-        st.warning(f"PDFプレビューの生成に失敗しました: {e}")
-
-def stop_with_pdf_image_only(error_text, pdf_path):
-    """エラー表示と画像表示のみを行い停止"""
-    st.error(error_text)
-    display_pdf_as_image(pdf_path)
-    st.stop()
+import fitz
 
 st.set_page_config(layout="wide")
+SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
 # 1. 時程表の事前読込
 if 'time_dic' not in st.session_state:
     try:
-        service = get_service()
+        service = p0.get_service()
         st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
     except Exception as e:
         st.error(f"時程表読込失敗: {e}"); st.stop()
 
-# 2. PDFアップロード
+# 2. メインUI
+st.title("シフト解析・カレンダー生成")
 uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
 
 if uploaded_file:
-    pdf_bytes = uploaded_file.getvalue()
     with open("temp.pdf", "wb") as f:
-        f.write(pdf_bytes)
+        f.write(uploaded_file.getvalue())
 
+    # 年月抽出
     fname = uploaded_file.name
     match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
     y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
     
-    if y is None or m is None:
-        st.warning("年月を入力してください。")
-        y = st.number_input("年", value=2026); m = st.number_input("月", min_value=1, max_value=12)
-        is_ready = st.button("ファイル確認")
-    else: 
-        is_ready = True
-
-    if is_ready:
-        # 第1関門
+    if y and m:
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
-        
-        if res is None:
-            error_msg = f"ファイル名【{fname}】とファイル内容に相違があります。確認して下さい。\n\n理由：{msg}"
-            stop_with_pdf_image_only(error_msg, "temp.pdf")
-
-        # 第2関門
-        location = res['location']
-        if location not in st.session_state.time_dic:
-            stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
-        
-        # 第3関門
-        st.success(f"勤務地「{location}」の照合に成功しました。")
-        # プルダウンに氏名一覧を表示（該当なしを含む）
-        target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
-        
-        if target_staff != "該当なし":
-            # データの抽出実行
-            shift_data = p0.extract_target_data(res['df'], target_staff, location)
+        if res:
+            location = res['location']
+            st.success(f"拠点「{location}」を照合しました。")
             
-            if shift_data:
-                # 仕様に基づき、勤務地(location)をキーとして辞書登録
-                # time_schedule, my_daily_shift, other_daily_shiftを格納
-                st.session_state.final_result = {
-                    location: {
-                        "time_schedule": st.session_state.time_dic[location],
-                        "my_daily_shift": shift_data['my_daily_shift'],
-                        "other_daily_shift": shift_data['other_daily_shift']
-                    }
-                }
+            target_staff = st.selectbox("スタッフを選択してください", options=["未選択"] + res['staff_list'])
+            df = res['df']
+            st.divider()
+
+            if target_staff != "未選択":
+                # --- ① 全表示セクション ---
+                st.header(f"📊 {target_staff} さんの抽出データ")
                 
-                # 表示処理
-                st.write(f"### {target_staff} の抽出結果（勤務地: {location}）")
-                
-                st.write("#### time_schedule")
-                st.dataframe(st.session_state.final_result[location]["time_schedule"], hide_index=True)
-                
-                st.write("#### my_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["my_daily_shift"], hide_index=True)
-                
-                st.write("#### other_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
-            else:
-                # target_staffが見つからない場合
-                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
+                # my_daily_shift
+                idx = df[df[0] == target_staff].index[0]
+                st.subheader("1. my_daily_shift")
+                st.dataframe(df.iloc[idx : idx+2, 0:], hide_index=True, use_container_width=True)
+
+                # other_daily_shift (本人と拠点名を除去)
+                st.subheader("2. other_daily_shift")
+                other_df = df.drop([idx, idx+1]).iloc[2:, 0:]
+                other_df_clean = other_df[other_df[0] != location]
+                st.dataframe(other_df_clean, hide_index=True, use_container_width=True)
+
+                # time_schedule
+                st.subheader(f"3. time_schedule ({location})")
+                if location in st.session_state.time_dic:
+                    st.dataframe(st.session_state.time_dic[location], hide_index=True, use_container_width=True)
+
+                # --- ② カレンダー生成セクション ---
+                st.divider()
+                st.header("📅 カレンダーデータ生成")
+                if st.button(f"{target_staff} さんのCSVを作成"):
+                    cal_df = p0.generate_calendar_data(target_staff, location, df, st.session_state.time_dic, y, m)
+                    if cal_df is not None:
+                        st.dataframe(cal_df, use_container_width=True, hide_index=True)
+                        csv = cal_df.to_csv(index=False, encoding='utf_8_sig')
+                        st.download_button("CSVをダウンロード", data=csv, file_name=f"{y}{m:02d}_{target_staff}.csv", mime="text/csv")
+        else:
+            st.error(msg)
+            # 解析失敗時はPDFを表示
+            doc = fitz.open("temp.pdf")
+            img = doc.load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+            st.image(img, use_container_width=True)
