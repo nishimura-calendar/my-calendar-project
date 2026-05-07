@@ -33,28 +33,29 @@ if uploaded_file:
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         if res:
             location = res['location']
+            # 第2関門：location照合
             if location not in st.session_state.time_dic:
-                st.error(f"「{location}」は時程表の勤務地に登録されていません。確認が必要です。")
+                st.error(f"「{location}」は時程表に登録されていません。確認が必要です。")
                 st.image(fitz.open("temp.pdf").load_page(0).get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png"))
                 st.stop()
             
-            st.success(f"勤務地「{location}」を特定しました")
-            target_staff = st.selectbox("スタッフを選択して下さい", options=["未選択"] + res['staff_list'])
+            st.success(f"第2関門通過：勤務地「{location}」")
+            
+            # 第3関門：スタッフ選択
+            target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
             df = res['df']
             
-            if target_staff != "未選択":
+            if target_staff != "該当なし":
                 st.divider()
+                # 抽出データの表示
                 idx = df[df[0] == target_staff].index[0]
-                # データ表示
                 st.subheader("my_daily_shift")
                 st.dataframe(df.iloc[idx:idx+2, :], hide_index=True)
                 st.subheader("other_daily_shift")
                 other_df = df.drop([idx, idx+1]).iloc[2:, :][df[0] != location]
                 st.dataframe(other_df, hide_index=True)
-                st.subheader("time_schedule")
-                st.dataframe(st.session_state.time_dic[location], hide_index=True)
                 
-                if st.button("CSVカレンダーを生成"):
+                if st.button("カレンダーCSVを作成"):
                     cal_df = p0.generate_calendar_data(target_staff, location, df, st.session_state.time_dic, y, m)
                     if cal_df is not None:
                         st.dataframe(cal_df, use_container_width=True, hide_index=True)
