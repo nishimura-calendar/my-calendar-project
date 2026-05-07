@@ -16,12 +16,11 @@ def load_master_from_sheets(service, spreadsheet_id):
     time_dic = {}
     for s in spreadsheet.get('sheets', []):
         title = s.get("properties", {}).get("title")
-        res = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id, range=f"'{title}'!A1:Z300"
-        ).execute()
+        res = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{title}'!A1:Z300").execute()
         vals = res.get('values', [])
         if not vals: continue
         df = pd.DataFrame(vals).fillna('')
+
         current_loc, start_idx = None, 0
         for i in range(len(df)):
             val_a = str(df.iloc[i, 0]).strip()
@@ -34,7 +33,7 @@ def load_master_from_sheets(service, spreadsheet_id):
     return time_dic
 
 def process_time_block(block):
-    """時程データの整形と数値時間変換"""
+    """時程表の時間変換処理"""
     def to_time(v):
         try:
             f = float(v)
@@ -53,99 +52,62 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """PDF解析：第1関門（日付チェック）→ location特定"""
+    """第一関門・データ抽出 [cite: 1]"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
+    raw_0_0 = str(df.iloc[0, 0]).strip()
     
-    # [0,0]セルの生データを取得（改行をスペースに置換）
-    raw_0_0 = str(df.iloc[0, 0])
-    clean_0_0 = raw_0_0.replace('\n', ' ').strip()
-    
-    # --- 第1関門：日付文字列・曜日文字列の検証 ---
-    # ① 計算値
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
-    
-    # ② 抽出値（数字の最大値と最初の曜日を抽出）
-    nums = [int(n) for n in re.findall(r'\d+', clean_0_0)]
+    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
     pdf_last_day = max(nums) if nums else 0
-    pdf_first_w_list = re.findall(r'[月火水木金土日]', clean_0_0)
-    pdf_first_w = pdf_first_w_list[0] if pdf_first_w_list else ""
+    pdf_first_w = (re.findall(r'[月火水木金土日]', raw_0_0) + [""])[0]
     
-    # 第一関門判定：locationはここでは使わない
     if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        return None, f"第1関門不一致：算出={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
+        return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
 
-    # --- ＜2＞工程：locationの特定（引き算） ---
-    # 曜日の前後にある数字（日付）を塊として除去する
-    # 「1個以上の数字 + 0個以上の空白 + 曜日」を消去。これによりT1の1を守る。
-    location_tmp = re.sub(r'\d+\s*[月火水木金土日]', '', clean_0_0)
-    # 残りの定型ノイズを消去
-    location_tmp = re.sub(r'\d+年\d+月度|勤務予定表|～|~|-|－|：|:', '', location_tmp)
-    # まだ数字がバラバラ残っている場合（1 2 3...）を消去
-    location_tmp = re.sub(r'[\d\s]+', ' ', location_tmp)
+    # location抽出
+    location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
+    location = re.sub(r'\d+[\s～~-]+\d+', '', location)
+    location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
+    location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
     
-    location = location_tmp.strip()
-
     # データ組替とスタッフリスト作成
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
+    
     staff_names = []
     for i in range(2, len(df)):
         cell = str(df.iloc[i, 0]).strip()
         val = cell.split('\n')[0] if i % 2 == 0 else cell
         rows.append([val] + df.iloc[i, 1:].tolist())
+        
         if i % 2 == 0 and val and val != location:
             staff_names.append(val)
             
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
-def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedule, final_rows):
-    """メイン工程：詳細計算"""
-    time_shift = time_schedule.fillna("").astype(str)
-    final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
-    
-    my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
-    if my_time_shift.empty: return
-
-    prev_val = ""
-    for t_col in range(3, my_time_shift.shape[1]):
-        current_val = my_time_shift.iloc[0, t_col]
-        if current_val != prev_val:
-            if current_val != "": 
-                valid_codes = time_shift[time_shift.iloc[:, t_col] == current_val].iloc[:, 1].tolist()
-                names = [str(r[0]).strip() for _, r in other_staff_shift.iterrows() if r[col] in valid_codes]
-                staff_str = ",".join(names) if names else "なし"
-                final_rows.append([f"<{current_val}> {staff_str}", target_date, time_shift.iloc[0, t_col], target_date, "", "False", "", ""])
-            else:
-                is_out = (my_time_shift.iloc[0, t_col:] == "").all()
-                final_rows[-1][0] += " => (退勤)" if is_out else ""
-                final_rows[-1][4] = time_shift.iloc[0, t_col]
-        prev_val = current_val
-
-def generate_calendar_data(target_staff, location, df, time_dic, y, m):
-    """メイン工程：1日〜末日巡回"""
-    if location not in time_dic: return None
-    time_schedule = time_dic[location]
-    final_rows = []
-    
+def extract_target_data(df, target_staff, location):
+    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
+    if target_staff not in df[0].values:
+        return None
+        
     idx = df[df[0] == target_staff].index[0]
-    my_codes = df.iloc[idx, 1:]
-    my_details = df.iloc[idx+1, 1:]
-    other_staff = df.drop([idx, idx+1]).iloc[2:, :][df[0] != location]
-
-    for i, (code, detail) in enumerate(zip(my_codes, my_details)):
-        day = i + 1
-        target_date = f"{y}/{m:02d}/{day:02d}"
-        c_s, d_s = str(code).strip(), str(detail).strip()
-        if not c_s or c_s == "なし": continue
-
-        if any(x in c_s for x in ["休", "公休", "有給", "有休", "特休"]):
-            final_rows.append([f"{target_staff}_{c_s}", target_date, "", target_date, "", "True", "", ""])
-        elif "本町" in d_s or "他" in c_s:
-            final_rows.append([f"{target_staff}_{c_s}(他拠点)", target_date, "", target_date, "", "True", f"詳細:{d_s}", ""])
-        else:
-            shift_cal(target_staff, target_date, i+1, c_s, other_staff, time_schedule, final_rows)
-
-    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
+    
+    # my_daily_shift: target_staff行 + その下段（資格行）
+    my_daily_shift = df.iloc[idx : idx+2, :].copy()
+    
+    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
+    other_indices = []
+    for i in range(2, len(df)):
+        val_0 = str(df.iloc[i, 0]).strip()
+        if i != idx and i != (idx + 1) and val_0 != location and val_0 != "":
+            other_indices.append(i)
+            
+    other_daily_shift = df.iloc[other_indices, :].copy()
+    
+    return {
+        "my_daily_shift": my_daily_shift,
+        "other_daily_shift": other_daily_shift
+    }
