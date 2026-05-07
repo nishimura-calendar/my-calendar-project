@@ -53,26 +53,31 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """PDF解析、第一関門判定、location特定"""
+    """PDF解析、第一関門判定、location特定（引き算ロジック）"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
-    raw_0_0 = str(df.iloc[0, 0]).strip()
+    raw_0_0 = str(df.iloc[0, 0])
     
-    # 第一関門判定
+    # --- locationの特定（曜日の相棒である数字を引き算する） ---
+    text = raw_0_0.replace('\n', ' ').strip()
+    # 「数字（分断対応）＋空白＋曜日」の塊をすべて除去
+    # 曜日の2倍程度の文字数（数字+空白+曜日）がこの正規表現で一括除去されます
+    text = re.sub(r'[\d\s]+[月火水木金土日]', '', text)
+    # その他の定型ノイズを引き算
+    text = re.sub(r'\d+年\d+月度|勤務予定表|～|~|-|－|：|:', '', text)
+    location = text.strip()
+
+    # 第一関門判定（元の値から日付・曜日を確認）
     nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
     pdf_last_day = max(nums) if nums else 0
     pdf_first_w = re.findall(r'[月火水木金土日]', raw_0_0)[0] if re.findall(r'[月火水木金土日]', raw_0_0) else ""
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
+    
     if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
+        return None, f"不一致：算出={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
 
-    # location特定
-    loc = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
-    loc = re.sub(r'\d+[\s～~-]+\d+', '', loc)
-    location = re.sub(r'[年月日で\s/：:-]', '', loc).strip()
-
-    # スタッフリストとデータ整形
+    # データ組替
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
@@ -87,7 +92,7 @@ def analyze_pdf_structure(pdf_path, y, m):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "成功"
 
 def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedule, final_rows):
-    """通常シフト詳細計算（引き継ぎ相手全員分を抽出）"""
+    """通常シフト詳細計算（引き継ぎ相手全員抽出）"""
     time_shift = time_schedule.fillna("").astype(str)
     final_rows.append([f"{key}_{shift_info}", target_date, "", target_date, "", "True", "", ""])
     
@@ -99,11 +104,10 @@ def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedul
         current_val = my_time_shift.iloc[0, t_col]
         if current_val != prev_val:
             if current_val != "": 
-                # 同じ時刻に同じ場所にいる人を全員抽出
+                # 同時刻・同場所にいる他スタッフを全員抽出（カンマ区切り）
                 valid_codes = time_shift[time_shift.iloc[:, t_col] == current_val].iloc[:, 1].tolist()
                 names = [str(r[0]).strip() for _, r in other_staff_shift.iterrows() if r[col] in valid_codes]
                 staff_str = ",".join(names) if names else "なし"
-                
                 final_rows.append([f"<{current_val}> {staff_str}", target_date, time_shift.iloc[0, t_col], target_date, "", "False", "", ""])
             else:
                 is_out = (my_time_shift.iloc[0, t_col:] == "").all()
@@ -112,7 +116,7 @@ def shift_cal(key, target_date, col, shift_info, other_staff_shift, time_schedul
         prev_val = current_val
 
 def generate_calendar_data(target_staff, location, df, time_dic, y, m):
-    """メイン工程：全日程巡回"""
+    """メイン工程：1日〜月末巡回"""
     if location not in time_dic: return None
     time_schedule = time_dic[location]
     final_rows = []
