@@ -1,70 +1,105 @@
-import streamlit as st
-import practice_0 as p0
+import pandas as pd
+import camelot
 import re
+import calendar
+import streamlit as st
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
 
-st.set_page_config(layout="wide")
-SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+def get_service():
+    """GCP認証"""
+    info = dict(st.secrets["gcp_service_account"])
+    creds = service_account.Credentials.from_service_account_info(
+        info, 
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    )
+    return build('sheets', 'v4', credentials=creds)
 
-# --- 1. 時程表の読込 ---
-if 'time_dic' not in st.session_state:
-    try:
-        service = p0.get_service()
-        st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
-    except Exception as e:
-        st.error(f"時程表読込失敗: {e}"); st.stop()
+def get_calc_date_info(y, m):
+    """ファイル名から算出する日数と第一曜日"""
+    _, last_day = calendar.monthrange(y, m)
+    w_list = ["月", "火", "水", "木", "金", "土", "日"]
+    first_w = w_list[calendar.weekday(y, m, 1)]
+    return last_day, first_w
 
-# --- 2. 画面構成 ---
-st.title("シフト管理システム - 全データ表示")
+def load_master_from_sheets(service, spreadsheet_id):
+    """スプレッドシートから時程表を読込"""
+    spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    time_dic = {}
+    for s in spreadsheet.get('sheets', []):
+        title = s.get("properties", {}).get("title")
+        res = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, range=f"'{title}'!A1:Z300"
+        ).execute()
+        vals = res.get('values', [])
+        if not vals: continue
+        df = pd.DataFrame(vals).fillna('')
+        current_loc, start_idx = None, 0
+        for i in range(len(df)):
+            val_a = str(df.iloc[i, 0]).strip()
+            if val_a != "":
+                if current_loc:
+                    time_dic[current_loc] = process_time_block(df.iloc[start_idx:i, :])
+                current_loc, start_idx = val_a, i
+        if current_loc:
+            time_dic[current_loc] = process_time_block(df.iloc[start_idx:, :])
+    return time_dic
 
-uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
+def process_time_block(block):
+    """時程データの数値変換"""
+    def to_time(v):
+        try:
+            f = float(v)
+            return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
+        except: return v
+    time_cols = []
+    for col in range(3, block.shape[1]):
+        try:
+            float(block.iloc[0, col])
+            time_cols.append(col)
+        except:
+            if time_cols: break
+    res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
+    for i in range(len(time_cols)):
+        res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
+    return res_df
 
-if uploaded_file:
-    # ファイル名の全表示
-    st.info(f"📄 処理中のファイル: {uploaded_file.name}")
+def analyze_pdf_structure(pdf_path, y, m):
+    """PDF解析とデータ組替"""
+    tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
+    if not tables: return None, "PDF表抽出失敗"
+    df = tables[0].df
+    raw_0_0 = str(df.iloc[0, 0]).strip()
     
-    with open("temp.pdf", "wb") as f:
-        f.write(uploaded_file.getvalue())
-
-    # 年月抽出
-    fname = uploaded_file.name
-    match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
-    y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
+    # 【重要】locationの抽出
+    loc = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
+    loc = re.sub(r'\d+[\s～~-]+\d+', '', loc)
+    loc = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', loc)
+    location = re.sub(r'[年月日で\s/：:-]', '', loc).strip()
     
-    if y and m:
-        res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
-        if res:
-            location = res['location']
-            st.success(f"拠点「{location}」の解析が完了しました。")
+    # 第一関門判定
+    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
+    pdf_last_day = max(nums) if nums else 0
+    pdf_first_w = re.findall(r'[月火水木金土日]', raw_0_0)[0] if re.findall(r'[月火水木金土日]', raw_0_0) else ""
+    calc_last_day, calc_first_w = get_calc_date_info(y, m)
+    
+    if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
+        return None, f"不一致：計算={calc_last_day} / PDF={pdf_last_day}"
+
+    # 【重要】スタッフリストからlocation(T1等)を排除
+    staff_names = []
+    for i in range(2, len(df), 2):
+        name = str(df.iloc[i, 0]).split('\n')[0].strip()
+        if name and name != location:
+            staff_names.append(name)
+    
+    # データ組替
+    rows = []
+    rows.append([""] + df.iloc[0, 1:].tolist()) 
+    rows.append([location] + df.iloc[1, 1:].tolist()) 
+    for i in range(2, len(df)):
+        cell = str(df.iloc[i, 0]).strip()
+        val = cell.split('\n')[0] if i % 2 == 0 else cell
+        rows.append([val] + df.iloc[i, 1:].tolist())
             
-            target_staff = st.selectbox("スタッフを選択してください", 
-                                       options=["未選択"] + res['staff_list'])
-            
-            if target_staff != "未選択":
-                df = res['df']
-                idx = df[df[0] == target_staff].index[0]
-                
-                st.divider()
-                st.header(f"📊 {target_staff} さんの全関連データ")
-
-                # ① my_daily_shift (個人の2行)
-                st.subheader("1. my_daily_shift")
-                my_shift = df.iloc[idx : idx+2, 0:]
-                st.dataframe(my_shift, hide_index=True, use_container_width=True)
-
-                # ② other_daily_shift (他スタッフ全員 & 拠点名行の除外)
-                st.subheader("2. other_daily_shift")
-                # 自分の2行を除去
-                other_df = df.drop([idx, idx+1]).iloc[2:, 0:]
-                # ★ 拠点名(location)と一致する行を、列0から完全に排除して「全表示」
-                other_df_clean = other_df[other_df[0] != location]
-                st.dataframe(other_df_clean, hide_index=True, use_container_width=True)
-
-                # ③ time_schedule (スプレッドシートマスタ)
-                st.subheader(f"3. time_schedule ({location})")
-                if location in st.session_state.time_dic:
-                    st.dataframe(st.session_state.time_dic[location], hide_index=True, use_container_width=True)
-                else:
-                    st.warning(f"時程表に {location} が見つかりません。")
-
-                st.markdown("---")
-                st.caption("全てのデータ（個人・全体・マスタ）を表示しました。")
+    return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "成功"
