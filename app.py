@@ -1,7 +1,9 @@
 import streamlit as st
 import practice_0 as p0
+import time_schedule as ts  # ご提示いただいた時程表解析スクリプト
 import fitz  # PyMuPDF
 import re
+import pandas as pd
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
@@ -9,16 +11,17 @@ from google.oauth2 import service_account
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
 def get_service():
-    """GCP認証"""
+    """GCP認証を行いサービスを生成"""
     info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
         info, 
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/drive.readonly"]
     )
-    return build('sheets', 'v4', credentials=creds)
+    return build('sheets', 'v4', credentials=creds), build('drive', 'v3', credentials=creds)
 
 def display_pdf_as_image(pdf_path):
-    """PDFを画像に変換して表示"""
+    """PDFを画像に変換して画面表示"""
     try:
         doc = fitz.open(pdf_path)
         page = doc.load_page(0)
@@ -30,84 +33,79 @@ def display_pdf_as_image(pdf_path):
         st.warning(f"PDFプレビューの生成に失敗しました: {e}")
 
 def stop_with_pdf_image_only(error_text, pdf_path):
-    """エラー表示と画像表示のみを行い停止"""
+    """エラーと画像のみを表示して処理を停止"""
     st.error(error_text)
     display_pdf_as_image(pdf_path)
     st.stop()
 
-st.set_page_config(layout="wide")
+# --- Streamlit アプリケーション画面 ---
+st.title("🚗 シフトカレンダー自動生成システム")
+st.write("PDFのシフト表を読み込み、Google Drive上の時程表と照合してカレンダー登録データを生成します。")
 
-# 1. 時程表の事前読込
-if 'time_dic' not in st.session_state:
-    try:
-        service = get_service()
-        st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
-    except Exception as e:
-        st.error(f"時程表読込失敗: {e}"); st.stop()
+# PDFファイルのアップロード
+uploaded_file = st.file_uploader("PDFシフト表ファイルをアップロードしてください", type=["pdf"])
 
-# 2. PDFアップロード
-uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
+# 年月選択のUI
+c1, c2 = st.columns(2)
+year_input = c1.number_input("年を入力 (例: 2026)", min_value=2000, max_value=2100, value=2026)
+month_input = c2.number_input("月を入力 (例: 1)", min_value=1, max_value=12, value=1)
 
 if uploaded_file:
-    pdf_bytes = uploaded_file.getvalue()
-    with open("temp.pdf", "wb") as f:
-        f.write(pdf_bytes)
+    # 一時ファイルとして書き込み
+    with open("temp_shift.pdf", "wb") as f:
+        f.write(uploaded_file.getbuffer())
+        
+    # 1. Driveから時程表マスターを自動検出・読み込み
+    try:
+        sheets_service, drive_service = get_service()
+        if "time_dic" not in st.session_state:
+            # time_schedule.py の自動特定＆時刻文字列変換ロジックをダイレクトに使用
+            st.session_state.time_dic = ts.time_schedule_from_drive(drive_service, SPREADSHEET_ID)
+    except Exception as e:
+        st.error(f"時程表（Google Drive）の自動解析に失敗しました: {e}")
+        st.stop()
 
-    fname = uploaded_file.name
-    match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
-    y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
+    # 2. 第1関門のチェック実行
+    res, message = p0.check_first_stage("temp_shift.pdf", year_input, month_input)
     
-    if y is None or m is None:
-        st.warning("年月を入力してください。")
-        y = st.number_input("年", value=2026); m = st.number_input("月", min_value=1, max_value=12)
-        is_ready = st.button("ファイル確認")
-    else: 
-        is_ready = True
-
-    if is_ready:
-        # 第1関門
-        res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
-        
-        if res is None:
-            error_msg = f"ファイル名【{fname}】とファイル内容に相違があります。確認して下さい。\n\n理由：{msg}"
-            stop_with_pdf_image_only(error_msg, "temp.pdf")
-
-        # 第2関門
+    if message != "通過":
+        stop_with_pdf_image_only(message, "temp_shift.pdf")
+    else:
         location = res['location']
-        if location not in st.session_state.time_dic:
-            stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
         
-        # 第3関門
-        st.success(f"勤務地「{location}」の照合に成功しました。")
-        # プルダウンに氏名一覧を表示（該当なしを含む）
-        target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
+        # 【第2関門チェック】 
+        if location not in st.session_state.time_dic:
+            stop_with_pdf_image_only(
+                f"第2関門エラー: location「{location}」は時程表の勤務地キー(T1/T2)に設定されていません。確認が必要です。", 
+                "temp_shift.pdf"
+            )
+            
+        # 3. 第3関門: スタッフのプルダウン選択
+        target_staff = st.selectbox(
+            "シフトカレンダーを作成するスタッフを選んで下さい。", 
+            options=["該当なし"] + res['staff_list']
+        )
         
         if target_staff != "該当なし":
             # データの抽出実行
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
-                # 仕様に基づき、勤務地(location)をキーとして辞書登録
-                # time_schedule, my_daily_shift, other_daily_shiftを格納
-                st.session_state.final_result = {
-                    location: {
-                        "time_schedule": st.session_state.time_dic[location],
-                        "my_daily_shift": shift_data['my_daily_shift'],
-                        "other_daily_shift": shift_data['other_daily_shift']
-                    }
-                }
+                # time_schedule.py で作成された自動検出DFを適用
+                time_schedule_df = st.session_state.time_dic[location]
+                my_daily_shift_df = shift_data['my_daily_shift']
                 
-                # 表示処理
-                st.write(f"### {target_staff} の抽出結果（勤務地: {location}）")
+                st.success(f"🎉 すべての関門をクリアしました！ ({target_staff} / 勤務地: {location})")
                 
-                st.write("#### time_schedule")
-                st.dataframe(st.session_state.final_result[location]["time_schedule"], hide_index=True)
+                # 【カレンダー登録データ生成メイン工程（3．カレンダー登録）】
+                calendar_df = p0.generate_calendar_records(
+                    year_input, month_input, location, time_schedule_df, my_daily_shift_df
+                )
                 
-                st.write("#### my_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["my_daily_shift"], hide_index=True)
+                # 完成したカレンダーデータのプレビュー
+                st.write("### 📅 カレンダー登録用データリスト（完成）")
+                st.write("「1日の大枠予定」と、値の変化点をトリガーにした「時間別の詳細予定」が2重でセット登録されています。")
+                st.dataframe(calendar_df, use_container_width=True)
                 
-                st.write("#### other_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
             else:
-                # target_staffが見つからない場合
-                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
+                stop_with_pdf_image_only("指定されたスタッフのデータ抽出に失敗しました。", "temp_shift.pdf")
