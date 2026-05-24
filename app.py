@@ -1,6 +1,5 @@
 import streamlit as st
 import practice_0 as p0
-import time_schedule as ts  # ご提示いただいた時程表解析スクリプト
 import fitz  # PyMuPDF
 import re
 import pandas as pd
@@ -11,7 +10,7 @@ from google.oauth2 import service_account
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
 def get_service():
-    """GCP認証を行いサービスを生成"""
+    """GCP認証"""
     info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
         info, 
@@ -38,31 +37,28 @@ def stop_with_pdf_image_only(error_text, pdf_path):
     display_pdf_as_image(pdf_path)
     st.stop()
 
-# --- Streamlit アプリケーション画面 ---
+# --- UI設定 ---
 st.title("🚗 シフトカレンダー自動生成システム")
-st.write("PDFのシフト表を読み込み、Google Drive上の時程表と照合してカレンダー登録データを生成します。")
+st.write("Google Drive上の時程表モデルを利用し、PDFから『大枠予定』と『時間別予定』を確実に分離抽出します。")
 
-# PDFファイルのアップロード
 uploaded_file = st.file_uploader("PDFシフト表ファイルをアップロードしてください", type=["pdf"])
 
-# 年月選択のUI
+# 年月選択ボックス
 c1, c2 = st.columns(2)
 year_input = c1.number_input("年を入力 (例: 2026)", min_value=2000, max_value=2100, value=2026)
 month_input = c2.number_input("月を入力 (例: 1)", min_value=1, max_value=12, value=1)
 
 if uploaded_file:
-    # 一時ファイルとして書き込み
     with open("temp_shift.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
         
-    # 1. Driveから時程表マスターを自動検出・読み込み
+    # 1. Google Driveから時程表マスター辞書を直接構築（合体関数を呼び出し）
     try:
         sheets_service, drive_service = get_service()
         if "time_dic" not in st.session_state:
-            # time_schedule.py の自動特定＆時刻文字列変換ロジックをダイレクトに使用
-            st.session_state.time_dic = ts.time_schedule_from_drive(drive_service, SPREADSHEET_ID)
+            st.session_state.time_dic = p0.time_schedule_from_drive(drive_service, SPREADSHEET_ID)
     except Exception as e:
-        st.error(f"時程表（Google Drive）の自動解析に失敗しました: {e}")
+        st.error(f"時程表（Google Drive）の自動解析・同期に失敗しました: {e}")
         st.stop()
 
     # 2. 第1関門のチェック実行
@@ -73,7 +69,7 @@ if uploaded_file:
     else:
         location = res['location']
         
-        # 【第2関門チェック】 
+        # 【第2関門チェック】
         if location not in st.session_state.time_dic:
             stop_with_pdf_image_only(
                 f"第2関門エラー: location「{location}」は時程表の勤務地キー(T1/T2)に設定されていません。確認が必要です。", 
@@ -91,20 +87,19 @@ if uploaded_file:
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
-                # time_schedule.py で作成された自動検出DFを適用
                 time_schedule_df = st.session_state.time_dic[location]
                 my_daily_shift_df = shift_data['my_daily_shift']
                 
-                st.success(f"🎉 すべての関門をクリアしました！ ({target_staff} / 勤務地: {location})")
+                st.success(f"🎉 すべての関門を正常にクリアしました！ ({target_staff} / 勤務地: {location})")
                 
                 # 【カレンダー登録データ生成メイン工程（3．カレンダー登録）】
                 calendar_df = p0.generate_calendar_records(
                     year_input, month_input, location, time_schedule_df, my_daily_shift_df
                 )
                 
-                # 完成したカレンダーデータのプレビュー
-                st.write("### 📅 カレンダー登録用データリスト（完成）")
-                st.write("「1日の大枠予定」と、値の変化点をトリガーにした「時間別の詳細予定」が2重でセット登録されています。")
+                # 結果データフレームの表示
+                st.write("### 📅 カレンダー登録用データリスト（完成予定）")
+                st.write("1日の大枠予定と、エッジトリガーで検出された時間別予定が理想的なセット構造で生成されています。")
                 st.dataframe(calendar_df, use_container_width=True)
                 
             else:
