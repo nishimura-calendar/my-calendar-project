@@ -184,4 +184,28 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                                 handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
                         
                         subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
-                        subject = re.sub(r'\
+                        subject = re.sub(r'\s+', ' ', subject_raw).strip()
+                        
+                        if added_sub_row and len(final_rows) > 0:
+                            final_rows[-1][4] = current_time  
+                            
+                        final_rows.append([subject, target_date, current_time, target_date, "", "False", "", ""])
+                        added_sub_row = True
+                        prev_val = current_val
+                    else:
+                        if added_sub_row and len(final_rows) > 0:
+                            final_rows[-1][4] = current_time  
+                            remaining_cells = my_time_shift.iloc[0, t_col:]
+                            if (remaining_cells == "").all() or (remaining_cells == "0").all() or (remaining_cells == "なし").all():
+                                taking_over_department = " => (退勤)"
+                            else:
+                                taking_over_department = ""
+                                
+                            final_rows[-1][0] = final_rows[-1][0] + taking_over_department
+                            added_sub_row = False
+                        prev_val = ""
+
+                if added_sub_row and len(final_rows) > 0 and final_rows[-1][4] == "":
+                    final_rows[-1][4] = my_time_shift.columns[-1]
+
+    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
