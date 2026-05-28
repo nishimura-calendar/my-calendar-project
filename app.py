@@ -108,7 +108,7 @@ if uploaded_file:
                 my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
                 other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
                 
-                # カッコが正常に閉じられていなかった箇所を修正
+                # 引数のカッコが正常に閉じるよう確実に修正
                 calendar_df = p0.generate_calendar_records(
                     year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
                 )
