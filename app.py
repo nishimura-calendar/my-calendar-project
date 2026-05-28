@@ -58,8 +58,8 @@ if uploaded_file:
         st.error(f"時程表マスターの取得に失敗しました: {e}")
         st.stop()
 
-    # 第1関門チェック
-    res, message = p0.check_first_stage("temp_shift.pdf", year_input, month_input)
+    # 第1関門チェック (原本通りのanalyze_pdf_structureをコール)
+    res, message = p0.analyze_pdf_structure("temp_shift.pdf", year_input, month_input)
     
     if message != "通過":
         stop_with_pdf_image_only(message, "temp_shift.pdf")
@@ -79,7 +79,6 @@ if uploaded_file:
             
             if shift_data:
                 # 仕様に基づき、勤務地(location)をキーとして辞書登録
-                # time_schedule, my_daily_shift, other_daily_shiftを格納
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
@@ -100,27 +99,35 @@ if uploaded_file:
                 st.write("#### other_daily_shift")
                 st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
                 
-                # --- [3] カレンダー自動生成連携 ---
+                # --- [3] プログラム作成手順に基づく自動生成アクション領域 ---
                 st.write("---")
-                st.write("### 📆 3．カレンダー登録（CSV出力結果）")
+                st.write("### 📆 3．プログラム作成手順に基づくカレンダー自動生成")
                 
-                time_schedule_df = st.session_state.final_result[location]["time_schedule"]
-                my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
-                other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
-                
-                calendar_df = p0.generate_calendar_records(
-                    year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
-                )
-                
-                st.dataframe(calendar_df, use_container_width=True, hide_index=True)
-                
-                # CSVダウンロード機能
-                csv_bytes = calendar_df.to_csv(index=False, encoding='utf-8-sig')
-                st.download_button(
-                    label="📥 Googleカレンダー用CSVをダウンロード",
-                    data=csv_bytes,
-                    file_name=f"google_calendar_{year_input}_{month_input}_{target_staff}.csv",
-                    mime="text/csv"
-                )
+                # 仕様書に基づき、ボタンを押すことで稼働する[3]を実装
+                if st.button("Googleカレンダー登録用データを生成（[3]を実行）"):
+                    time_schedule_df = st.session_state.final_result[location]["time_schedule"]
+                    my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
+                    other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
+                    
+                    calendar_df = p0.generate_calendar_records(
+                        year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
+                    )
+                    
+                    st.session_state.calendar_df = calendar_df
+                    st.success("カレンダー用データの生成に成功しました！")
+
+                # 生成データが存在すればプレビューとダウンロードボタンを表示
+                if "calendar_df" in st.session_state:
+                    st.write("#### カレンダー登録用CSVプレビュー")
+                    st.dataframe(st.session_state.calendar_df, use_container_width=True, hide_index=True)
+                    
+                    # CSVダウンロード
+                    csv_bytes = st.session_state.calendar_df.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 Googleカレンダー用CSVをダウンロード",
+                        data=csv_bytes,
+                        file_name=f"google_calendar_{year_input}_{month_input}_{target_staff}.csv",
+                        mime="text/csv"
+                    )
             else:
                 stop_with_pdf_image_only("指定されたスタッフのデータ抽出に失敗しました。", "temp_shift.pdf")
