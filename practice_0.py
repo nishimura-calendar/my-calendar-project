@@ -72,28 +72,12 @@ def check_first_stage(pdf_path, year, month):
     if calc_last_day != pdf_last_day or calc_first_w != pdf_first_w:
         return None, f"第1関門不整合: 算出値({calc_last_day}日/{calc_first_w}) != PDF値({pdf_last_day}日/{pdf_first_w})"
         
-    # --- 【重要】勤務地抽出ロジックの修正 ---
     cell_00 = str(df.iloc[0, 0])
-    # 全角英数字を半角に変換し、前後の不要な改行や空白を削除
-    cell_clean = cell_00.translate(str.maketrans('０１２３４５６７８９Ｔ', '0123456789T')).strip()
+    location = cell_00.split('\n')[0] if '\n' in cell_00 else cell_00
+    location = re.sub(r'\d+', '', location)
+    location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
+    location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
     
-    # 改行で分割し、空行ではない最初の行を獲得
-    lines = [line.strip() for line in cell_clean.split('\n') if line.strip()]
-    raw_location = lines[0] if lines else cell_clean
-    
-    # 日付や曜日、記号などの余分なノイズを除去
-    location_cleaned = re.sub(r'\d+', '', raw_location)
-    location_cleaned = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location_cleaned)
-    location_cleaned = re.sub(r'[年月日で\s/：:-]', '', location_cleaned).strip()
-    
-    # T1 / T2 へのマッピングを確実に判定
-    if "T1" in raw_location or "第1" in raw_location or "1" in raw_location:
-        location = "T1"
-    elif "T2" in raw_location or "第2" in raw_location or "2" in raw_location:
-        location = "T2"
-    else:
-        location = location_cleaned if location_cleaned else raw_location
-
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
@@ -149,4 +133,13 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
             continue
             
         if info == "本町":
-            final_rows.append(
+            final_rows.append(["本町", target_date, "", target_date, "", "True", "1行上=本町", "本町"])
+            maru = re.findall(r'[①-⑨]', sub_info)
+            desc_val = f"休憩={maru[0]}" if maru else ""
+            final_rows.append(["本町", target_date, "09:00", target_date, "14:00", "False", desc_val, "本町"])
+            continue
+            
+        if (time_shift.iloc[:, 1] == info).any():
+            final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
+            
+            my_time_shift = time
