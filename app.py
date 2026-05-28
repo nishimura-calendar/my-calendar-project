@@ -79,6 +79,7 @@ if uploaded_file:
             
             if shift_data:
                 # 仕様に基づき、勤務地(location)をキーとして辞書登録
+                # time_schedule, my_daily_shift, other_daily_shiftを格納
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
@@ -107,8 +108,20 @@ if uploaded_file:
                 my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
                 other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
                 
+                # カッコが正常に閉じられていなかった箇所を修正
                 calendar_df = p0.generate_calendar_records(
                     year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
                 )
                 
-                st.dataframe(calendar_df, use_container_width=True, hide
+                st.dataframe(calendar_df, use_container_width=True, hide_index=True)
+                
+                # CSVダウンロード機能
+                csv_bytes = calendar_df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    label="📥 Googleカレンダー用CSVをダウンロード",
+                    data=csv_bytes,
+                    file_name=f"google_calendar_{year_input}_{month_input}_{target_staff}.csv",
+                    mime="text/csv"
+                )
+            else:
+                stop_with_pdf_image_only("指定されたスタッフのデータ抽出に失敗しました。", "temp_shift.pdf")
