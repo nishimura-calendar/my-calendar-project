@@ -131,7 +131,6 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
         info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()       
         sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()   
         
-        # 原本通りの判定ロジック
         if info == "なし": info = ""
         if sub_info == "なし": sub_info = ""
         
@@ -172,4 +171,17 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                                 taking_over_staff = f"with {','.join(other_names)}"
                                 
                         handing_over_department = ""
-                        if prev_val
+                        if prev_val != "":
+                            handing_over_department = f"<{prev_val}>"
+                            
+                        handing_over_staff = ""
+                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
+                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
+                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
+                            if not other_staff_shift_df.empty:
+                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
+                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
+                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
+                        
+                        subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
+                        subject = re.sub(r'\
