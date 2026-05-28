@@ -32,57 +32,47 @@ def load_master_from_sheets(service, spreadsheet_id):
             time_dic[current_loc] = process_time_block(df.iloc[start_idx:, :])
     return time_dic
 
-def process_time_block(block_df):
-    """数値列(6.25等)を時刻形式(06:15)のヘッダーに変換し整形"""
-    block_df = block_df.reset_index(drop=True)
-    header_row = block_df.iloc[0].tolist()
-    
-    new_headers = []
-    for col_idx, val in enumerate(header_row):
-        if col_idx < 3:
-            new_headers.append(val)
-            continue
+def process_time_block(block):
+    """時程表の時間変換処理"""
+    def to_time(v):
         try:
-            f_v = float(val)
-            if 0 <= f_v <= 28:
-                h = int(f_v)
-                m = int(round((f_v - h) * 60))
-                new_headers.append(f"{h:02d}:{m:02d}")
-            else:
-                new_headers.append(str(val))
-        except (ValueError, TypeError):
-            new_headers.append(str(val))
-            
-    block_df.columns = new_headers
-    return block_df.iloc[1:].reset_index(drop=True)
+            f = float(v)
+            return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
+        except: return v
+    time_cols = []
+    for col in range(3, block.shape[1]):
+        try:
+            float(block.iloc[0, col])
+            time_cols.append(col)
+        except:
+            if time_cols: break
+    res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
+    for i in range(len(time_cols)):
+        res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
+    return res_df
 
-def check_first_stage(pdf_path, year, month):
-    """[2] <1> 第1関門: 日数と第1曜日の整合性チェック"""
-    calc_last_day, calc_first_w = get_calc_date_info(year, month)
-    
-    tables = camelot.read_pdf(pdf_path, pages='1', flavor='stream')
-    if not tables:
-        return None, "PDFからテーブルを検出できませんでした。"
-    
+def analyze_pdf_structure(pdf_path, y, m):
+    """第一関門・データ抽出 [cite: 1]"""
+    tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
+    if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
+    raw_0_0 = str(df.iloc[0, 0]).strip()
     
-    pdf_last_day = calc_last_day  
-    pdf_first_w = calc_first_w
+    calc_last_day, calc_first_w = get_calc_date_info(y, m)
+    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
+    pdf_last_day = max(nums) if nums else 0
+    pdf_first_w = (re.findall(r'[月火水木金土日]', raw_0_0) + [""])[0]
     
-    if calc_last_day != pdf_last_day or calc_first_w != pdf_first_w:
-        return None, f"第1関門不整合: 算出値({calc_last_day}日/{calc_first_w}) != PDF値({pdf_last_day}日/{pdf_first_w})"
-        
-    cell_00 = str(df.iloc[0, 0])
-    location = cell_00.split('\n')[0] if '\n' in cell_00 else cell_00
-    location = re.sub(r'\d+', '', location)
+    if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
+        return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
+
+    # location抽出
+    location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
+    location = re.sub(r'\d+[\s～~-]+\d+', '', location)
     location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
     location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
     
-    if "T1" in location or "第1" in location:
-        location = "T1"
-    elif "T2" in location or "第2" in location:
-        location = "T2"
-    
+    # データ組替とスタッフリスト作成
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
@@ -99,126 +89,25 @@ def check_first_stage(pdf_path, year, month):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出"""
+    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
     if target_staff not in df[0].values:
         return None
         
     idx = df[df[0] == target_staff].index[0]
-    my_daily_shift = df.iloc[idx : idx+2, 1:]
     
-    other_rows = []
-    for i in range(2, len(df), 2):
-        s_name = df.iloc[i, 0]
-        if s_name != target_staff and s_name != location and s_name != "":
-            other_rows.append(df.iloc[i:i+2, 1:])
+    # my_daily_shift: target_staff行 + その下段（資格行）
+    my_daily_shift = df.iloc[idx : idx+2, :].copy()
+    
+    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
+    other_indices = []
+    for i in range(2, len(df)):
+        val_0 = str(df.iloc[i, 0]).strip()
+        if i != idx and i != (idx + 1) and val_0 != location and val_0 != "":
+            other_indices.append(i)
             
-    other_daily_shift = pd.concat(other_rows) if other_rows else pd.DataFrame()
+    other_daily_shift = df.iloc[other_indices, :].copy()
     
     return {
-        'my_daily_shift': my_daily_shift,
-        'other_daily_shift': other_daily_shift
+        "my_daily_shift": my_daily_shift,
+        "other_daily_shift": other_daily_shift
     }
-
-def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
-    """3．カレンダー登録の作成"""
-    final_rows = []
-    time_shift = time_schedule_df.fillna("").astype(str)
-    
-    for col_idx in my_daily_shift_df.columns:
-        day_num = int(col_idx)
-        target_date = f"{year}/{month:02d}/{day_num:02d}"
-        
-        info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()       
-        sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()   
-        
-        # 表記揺れ（全角・半角クォーテーション）に対応した「なし」の安全な除去
-        if info in ["なし", "”なし”", "“なし”", '"なし"', "'なし'"]:
-            info = ""
-        if sub_info in ["なし", "”なし”", "“なし”", '"なし"', "'なし'"]:
-            sub_info = ""
-        
-        if info in ["休", "休日", "公休", "有給", "有休", "他", ""]:
-            continue
-            
-        if info == "本町":
-            final_rows.append(["本町", target_date, "", target_date, "", "True", "1行上=本町", "本町"])
-            maru = re.findall(r'[①-⑨]', sub_info)
-            desc_val = f"休憩={maru[0]}" if maru else ""
-            final_rows.append(["本町", target_date, "09:00", target_date, "14:00", "False", desc_val, "本町"])
-            continue
-            
-        if (time_shift.iloc[:, 1] == info).any():
-            final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
-            
-            my_time_shift = time_shift[time_shift.iloc[:, 1] == info]
-            if not my_time_shift.empty:
-                prev_val = ""
-                added_sub_row = False
-                
-                for t_col in range(3, my_time_shift.shape[1]):
-                    current_val = my_time_shift.iloc[0, t_col].strip()
-                    if current_val in ["なし", "0", "”なし”", "“なし”", '"なし"', "'なし'"]:
-                        current_val = ""
-                        
-                    if current_val == prev_val:
-                        continue
-                        
-                    current_time = my_time_shift.columns[t_col]  
-                    
-                    if current_val != "":
-                        taking_over_department = f"<{current_val}>"
-                        taking_over_staff = ""
-                        
-                        if not other_staff_shift_df.empty and col_idx <= other_staff_shift_df.shape[1]:
-                            mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
-                            other_names = other_staff_shift_df[mask_other_col].iloc[:, 0].tolist()
-                            if other_names:
-                                taking_over_staff = f"with {','.join(other_names)}"
-                                
-                        handing_over_department = ""
-                        if prev_val != "":
-                            handing_over_department = f"<{prev_val}>"
-                            
-                        handing_over_staff = ""
-                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
-                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
-                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
-                            if not other_staff_shift_df.empty:
-                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
-                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
-                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
-                        
-                        subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
-                        subject = re.sub(r'\s+', ' ', subject_raw).strip()
-                        
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            
-                        final_rows.append([subject, target_date, current_time, target_date, "", "False", "", ""])
-                        added_sub_row = True
-                        prev_val = current_val
-                    else:
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            remaining_cells = my_time_shift.iloc[0, t_col:]
-                            
-                            is_empty_end = True
-                            for cell in remaining_cells:
-                                c_str = str(cell).strip()
-                                if c_str not in ["", "0", "なし", "”なし”", "“なし”", '"なし"', "'なし'"]:
-                                    is_empty_end = False
-                                    break
-                                    
-                            if is_empty_end:
-                                taking_over_department = " => (退勤)"
-                            else:
-                                taking_over_department = ""
-                                
-                            final_rows[-1][0] = final_rows[-1][0] + taking_over_department
-                            added_sub_row = False
-                        prev_val = ""
-
-                if added_sub_row and len(final_rows) > 0 and final_rows[-1][4] == "":
-                    final_rows[-1][4] = my_time_shift.columns[-1]
-
-    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
