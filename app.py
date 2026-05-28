@@ -35,48 +35,60 @@ def stop_with_pdf_image_only(error_text, pdf_path):
     display_pdf_as_image(pdf_path)
     st.stop()
 
-# メインUI画面
-st.title("📅 シフト管理・カレンダー生成システム")
+st.set_page_config(layout="wide")
 
-# PDFファイルのアップロード
-uploaded_file = st.file_uploader("PDFシフト表ファイルをアップロードしてください", type=["pdf"])
-
-# 年月入力UI
-c1, c2 = st.columns(2)
-year_input = c1.number_input("年を入力", min_value=2000, max_value=2100, value=2026)
-month_input = c2.number_input("月を入力", min_value=1, max_value=12, value=1)
-
-if uploaded_file:
-    with open("temp_shift.pdf", "wb") as f:
-        f.write(uploaded_file.getbuffer())
-        
+# 1. 時程表の事前読込
+if 'time_dic' not in st.session_state:
     try:
         service = get_service()
-        if "time_dic" not in st.session_state:
-            st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
+        st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
     except Exception as e:
-        st.error(f"時程表マスターの取得に失敗しました: {e}")
-        st.stop()
+        st.error(f"時程表読込失敗: {e}"); st.stop()
 
-    # 第1関門チェック
-    res, message = p0.check_first_stage("temp_shift.pdf", year_input, month_input)
+# 2. PDFアップロード
+uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
+
+if uploaded_file:
+    pdf_bytes = uploaded_file.getvalue()
+    with open("temp.pdf", "wb") as f:
+        f.write(pdf_bytes)
+
+    fname = uploaded_file.name
+    match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
+    y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
     
-    if message != "通過":
-        stop_with_pdf_image_only(message, "temp_shift.pdf")
-    else:
-        location = res['location']
+    if y is None or m is None:
+        st.warning("年月を入力してください。")
+        y = st.number_input("年", value=2026); m = st.number_input("月", min_value=1, max_value=12)
+        is_ready = st.button("ファイル確認")
+    else: 
+        is_ready = True
+
+    if is_ready:
+        # 第1関門
+        res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
-        # 【第2関門チェック】 勤務地が時程表マスターに存在しない場合の例外処理
+        if res is None:
+            error_msg = f"ファイル名【{fname}】とファイル内容に相違があります。確認して下さい。\n\n理由：{msg}"
+            stop_with_pdf_image_only(error_msg, "temp.pdf")
+
+        # 第2関門
+        location = res['location']
         if location not in st.session_state.time_dic:
-            error_msg = f"勤務地-{location}-が時程表に設定されていません。確認が必要です。"
-            stop_with_pdf_image_only(error_msg, "temp_shift.pdf")
-            
+            stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
+        
+        # 第3関門
+        st.success(f"勤務地「{location}」の照合に成功しました。")
+        # プルダウンに氏名一覧を表示（該当なしを含む）
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
         if target_staff != "該当なし":
+            # データの抽出実行
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
+                # 仕様に基づき、勤務地(location)をキーとして辞書登録
+                # time_schedule, my_daily_shift, other_daily_shiftを格納
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
@@ -85,6 +97,7 @@ if uploaded_file:
                     }
                 }
                 
+                # 表示処理
                 st.write(f"### {target_staff} の抽出結果（勤務地: {location}）")
                 
                 st.write("#### time_schedule")
@@ -95,28 +108,6 @@ if uploaded_file:
                 
                 st.write("#### other_daily_shift")
                 st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
-                
-                # --- [3] カレンダーデータの自動生成とCSV出力 ---
-                st.write("---")
-                st.write("### 📆 3．カレンダー登録（CSV出力結果）")
-                
-                time_schedule_df = st.session_state.final_result[location]["time_schedule"]
-                my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
-                other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
-                
-                calendar_df = p0.generate_calendar_records(
-                    year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
-                )
-                
-                st.dataframe(calendar_df, use_container_width=True, hide_index=True)
-                
-                # ダウンロードCSVの生成
-                csv_bytes = calendar_df.to_csv(index=False, encoding='utf-8-sig')
-                st.download_button(
-                    label="📥 Googleカレンダー用CSVをダウンロード",
-                    data=csv_bytes,
-                    file_name=f"google_calendar_{year_input}_{month_input}_{target_staff}.csv",
-                    mime="text/csv"
-                )
             else:
-                stop_with_pdf_image_only("指定されたスタッフのデータ抽出に失敗しました。", "temp_shift.pdf")
+                # target_staffが見つからない場合
+                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
