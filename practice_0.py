@@ -131,11 +131,9 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
         info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()       
         sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()   
         
-        # 安全な文字列比較で「なし」を除去（SyntaxError対策）
-        if info == "なし" or "なし" in info:
-            info = ""
-        if sub_info == "なし" or "なし" in sub_info:
-            sub_info = ""
+        # 原本通りの判定ロジック
+        if info == "なし": info = ""
+        if sub_info == "なし": sub_info = ""
         
         if info in ["休", "休日", "公休", "有給", "有休", "他", ""]:
             continue
@@ -156,10 +154,8 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                 added_sub_row = False
                 
                 for t_col in range(3, my_time_shift.shape[1]):
-                    current_val = str(my_time_shift.iloc[0, t_col]).strip()
-                    if current_val == "なし" or current_val == "0" or current_val == "":
-                        current_val = ""
-                        
+                    current_val = my_time_shift.iloc[0, t_col]
+                    if current_val == "なし": current_val = ""
                     if current_val == prev_val:
                         continue
                         
@@ -176,14 +172,4 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                                 taking_over_staff = f"with {','.join(other_names)}"
                                 
                         handing_over_department = ""
-                        if prev_val != "":
-                            handing_over_department = f"<{prev_val}>"
-                            
-                        handing_over_staff = ""
-                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
-                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
-                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
-                            if not other_staff_shift_df.empty:
-                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
-                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
-                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
+                        if prev_val
