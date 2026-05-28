@@ -78,8 +78,6 @@ if uploaded_file:
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
-                # 仕様に基づき、勤務地(location)をキーとして辞書登録
-                # time_schedule, my_daily_shift, other_daily_shiftを格納
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
@@ -108,7 +106,6 @@ if uploaded_file:
                 my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
                 other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
                 
-                # 引数のカッコが正常に閉じるよう確実に修正
                 calendar_df = p0.generate_calendar_records(
                     year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
                 )
