@@ -72,17 +72,28 @@ def check_first_stage(pdf_path, year, month):
     if calc_last_day != pdf_last_day or calc_first_w != pdf_first_w:
         return None, f"第1関門不整合: 算出値({calc_last_day}日/{calc_first_w}) != PDF値({pdf_last_day}日/{pdf_first_w})"
         
+    # --- 【重要】勤務地抽出ロジックの修正 ---
     cell_00 = str(df.iloc[0, 0])
-    location = cell_00.split('\n')[0] if '\n' in cell_00 else cell_00
-    location = re.sub(r'\d+', '', location)
-    location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
-    location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
+    # 全角英数字を半角に変換し、前後の不要な改行や空白を削除
+    cell_clean = cell_00.translate(str.maketrans('０１２３４５６７８９Ｔ', '0123456789T')).strip()
     
-    if "T1" in location or "第1" in location:
+    # 改行で分割し、空行ではない最初の行を獲得
+    lines = [line.strip() for line in cell_clean.split('\n') if line.strip()]
+    raw_location = lines[0] if lines else cell_clean
+    
+    # 日付や曜日、記号などの余分なノイズを除去
+    location_cleaned = re.sub(r'\d+', '', raw_location)
+    location_cleaned = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location_cleaned)
+    location_cleaned = re.sub(r'[年月日で\s/：:-]', '', location_cleaned).strip()
+    
+    # T1 / T2 へのマッピングを確実に判定
+    if "T1" in raw_location or "第1" in raw_location or "1" in raw_location:
         location = "T1"
-    elif "T2" in location or "第2" in location:
+    elif "T2" in raw_location or "第2" in raw_location or "2" in raw_location:
         location = "T2"
-    
+    else:
+        location = location_cleaned if location_cleaned else raw_location
+
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
@@ -138,74 +149,4 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
             continue
             
         if info == "本町":
-            final_rows.append(["本町", target_date, "", target_date, "", "True", "1行上=本町", "本町"])
-            maru = re.findall(r'[①-⑨]', sub_info)
-            desc_val = f"休憩={maru[0]}" if maru else ""
-            final_rows.append(["本町", target_date, "09:00", target_date, "14:00", "False", desc_val, "本町"])
-            continue
-            
-        if (time_shift.iloc[:, 1] == info).any():
-            final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
-            
-            my_time_shift = time_shift[time_shift.iloc[:, 1] == info]
-            if not my_time_shift.empty:
-                prev_val = ""
-                added_sub_row = False
-                
-                for t_col in range(3, my_time_shift.shape[1]):
-                    current_val = my_time_shift.iloc[0, t_col]
-                    if current_val == "なし": current_val = ""
-                    if current_val == prev_val:
-                        continue
-                        
-                    current_time = my_time_shift.columns[t_col]  
-                    
-                    if current_val != "":
-                        taking_over_department = f"<{current_val}>"
-                        taking_over_staff = ""
-                        
-                        if not other_staff_shift_df.empty and col_idx <= other_staff_shift_df.shape[1]:
-                            mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
-                            other_names = other_staff_shift_df[mask_other_col].iloc[:, 0].tolist()
-                            if other_names:
-                                taking_over_staff = f"with {','.join(other_names)}"
-                                
-                        handing_over_department = ""
-                        if prev_val != "":
-                            handing_over_department = f"<{prev_val}>"
-                            
-                        handing_over_staff = ""
-                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
-                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
-                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
-                            if not other_staff_shift_df.empty:
-                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
-                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
-                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
-                        
-                        subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
-                        subject = re.sub(r'\s+', ' ', subject_raw).strip()
-                        
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            
-                        final_rows.append([subject, target_date, current_time, target_date, "", "False", "", ""])
-                        added_sub_row = True
-                        prev_val = current_val
-                    else:
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            remaining_cells = my_time_shift.iloc[0, t_col:]
-                            if (remaining_cells == "").all() or (remaining_cells == "0").all() or (remaining_cells == "なし").all():
-                                taking_over_department = " => (退勤)"
-                            else:
-                                taking_over_department = ""
-                                
-                            final_rows[-1][0] = final_rows[-1][0] + taking_over_department
-                            added_sub_row = False
-                        prev_val = ""
-
-                if added_sub_row and len(final_rows) > 0 and final_rows[-1][4] == "":
-                    final_rows[-1][4] = my_time_shift.columns[-1]
-
-    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
+            final_rows.append(
