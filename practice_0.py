@@ -99,4 +99,36 @@ def check_first_stage(pdf_path, year, month):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other
+    """第3関門：my_daily_shift, other_daily_shiftの抽出"""
+    if target_staff not in df[0].values:
+        return None
+        
+    idx = df[df[0] == target_staff].index[0]
+    my_daily_shift = df.iloc[idx : idx+2, 1:]
+    
+    other_rows = []
+    for i in range(2, len(df), 2):
+        s_name = df.iloc[i, 0]
+        if s_name != target_staff and s_name != location and s_name != "":
+            other_rows.append(df.iloc[i:i+2, 1:])
+            
+    other_daily_shift = pd.concat(other_rows) if other_rows else pd.DataFrame()
+    
+    return {
+        'my_daily_shift': my_daily_shift,
+        'other_daily_shift': other_daily_shift
+    }
+
+def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
+    """3．カレンダー登録の作成"""
+    final_rows = []
+    time_shift = time_schedule_df.fillna("").astype(str)
+    
+    for col_idx in my_daily_shift_df.columns:
+        day_num = int(col_idx)
+        target_date = f"{year}/{month:02d}/{day_num:02d}"
+        
+        info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()       
+        sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()   
+        
+        if info in
