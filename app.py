@@ -66,7 +66,7 @@ if uploaded_file:
     else:
         location = res['location']
         
-        # 【第2関門チェック】 勤務地が時程表キーに含まれない場合のエラー制御
+        # 【第2関門チェック】 勤務地が時程表マスターに存在しない場合の例外処理
         if location not in st.session_state.time_dic:
             error_msg = f"勤務地-{location}-が時程表に設定されていません。確認が必要です。"
             stop_with_pdf_image_only(error_msg, "temp_shift.pdf")
@@ -96,9 +96,27 @@ if uploaded_file:
                 st.write("#### other_daily_shift")
                 st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
                 
-                # --- [3] カレンダーデータの自動生成と表示 ---
+                # --- [3] カレンダーデータの自動生成とCSV出力 ---
                 st.write("---")
                 st.write("### 📆 3．カレンダー登録（CSV出力結果）")
                 
                 time_schedule_df = st.session_state.final_result[location]["time_schedule"]
                 my_daily_shift_df = st.session_state.final_result[location]["my_daily_shift"]
+                other_staff_shift_df = st.session_state.final_result[location]["other_daily_shift"]
+                
+                calendar_df = p0.generate_calendar_records(
+                    year_input, month_input, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df
+                )
+                
+                st.dataframe(calendar_df, use_container_width=True, hide_index=True)
+                
+                # ダウンロードCSVの生成
+                csv_bytes = calendar_df.to_csv(index=False, encoding='utf-8-sig')
+                st.download_button(
+                    label="📥 Googleカレンダー用CSVをダウンロード",
+                    data=csv_bytes,
+                    file_name=f"google_calendar_{year_input}_{month_input}_{target_staff}.csv",
+                    mime="text/csv"
+                )
+            else:
+                stop_with_pdf_image_only("指定されたスタッフのデータ抽出に失敗しました。", "temp_shift.pdf")
