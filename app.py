@@ -78,6 +78,8 @@ if uploaded_file:
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
+                # 仕様に基づき、勤務地(location)をキーとして辞書登録
+                # time_schedule, my_daily_shift, other_daily_shiftを格納
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
