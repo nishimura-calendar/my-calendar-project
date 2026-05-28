@@ -131,4 +131,61 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
         info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()       
         sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()   
         
-        if info in
+        # 表記揺れ（全角・半角クォーテーション）に対応した「なし」の安全な除去
+        if info in ["なし", "”なし”", "“なし”", '"なし"', "'なし'"]:
+            info = ""
+        if sub_info in ["なし", "”なし”", "“なし”", '"なし"', "'なし'"]:
+            sub_info = ""
+        
+        if info in ["休", "休日", "公休", "有給", "有休", "他", ""]:
+            continue
+            
+        if info == "本町":
+            final_rows.append(["本町", target_date, "", target_date, "", "True", "1行上=本町", "本町"])
+            maru = re.findall(r'[①-⑨]', sub_info)
+            desc_val = f"休憩={maru[0]}" if maru else ""
+            final_rows.append(["本町", target_date, "09:00", target_date, "14:00", "False", desc_val, "本町"])
+            continue
+            
+        if (time_shift.iloc[:, 1] == info).any():
+            final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
+            
+            my_time_shift = time_shift[time_shift.iloc[:, 1] == info]
+            if not my_time_shift.empty:
+                prev_val = ""
+                added_sub_row = False
+                
+                for t_col in range(3, my_time_shift.shape[1]):
+                    current_val = my_time_shift.iloc[0, t_col].strip()
+                    if current_val in ["なし", "0", "”なし”", "“なし”", '"なし"', "'なし'"]:
+                        current_val = ""
+                        
+                    if current_val == prev_val:
+                        continue
+                        
+                    current_time = my_time_shift.columns[t_col]  
+                    
+                    if current_val != "":
+                        taking_over_department = f"<{current_val}>"
+                        taking_over_staff = ""
+                        
+                        if not other_staff_shift_df.empty and col_idx <= other_staff_shift_df.shape[1]:
+                            mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
+                            other_names = other_staff_shift_df[mask_other_col].iloc[:, 0].tolist()
+                            if other_names:
+                                taking_over_staff = f"with {','.join(other_names)}"
+                                
+                        handing_over_department = ""
+                        if prev_val != "":
+                            handing_over_department = f"<{prev_val}>"
+                            
+                        handing_over_staff = ""
+                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
+                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
+                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
+                            if not other_staff_shift_df.empty:
+                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
+                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
+                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
+                        
+                        subject_raw = f"{handing_over_department
