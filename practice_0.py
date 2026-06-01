@@ -3,9 +3,9 @@ import camelot
 import re
 import calendar
 
-# ==========================================
+# =====================================================================
 # [1] 時程表（スプレッドシートマスター）読込処理
-# ==========================================
+# =====================================================================
 
 def load_master_from_sheets(service, spreadsheet_id):
     """
@@ -17,7 +17,7 @@ def load_master_from_sheets(service, spreadsheet_id):
     
     for s in spreadsheet.get('sheets', []):
         title = s.get("properties", {}).get("title")
-        # 余裕を持って A1:Z300 の範囲を読み込み
+        # A1:Z300 の範囲を余裕を持って読み込み
         res = service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id, 
             range=f"'{title}'!A1:Z300"
@@ -69,9 +69,9 @@ def process_time_block(block):
     return res_df
 
 
-# ==========================================
+# =====================================================================
 # [2] PDFシフト予定表ファイル読込 ＆ 各関門検証
-# ==========================================
+# =====================================================================
 
 def get_calc_date_info(y, m):
     """ファイル名（年月）から算出する論理上の「最終日付（日数）」と「最終曜日」を取得する"""
@@ -145,7 +145,7 @@ def analyze_pdf_structure(pdf_path, y, m):
         val = cell.split('\n')[0] if i % 2 == 0 else cell
         rows.append([val] + df.iloc[i, 1:].tolist())
         
-        # スタッフ名リストを生成（ノイズの除外）
+        # スタッフ名リストを生成（ヘッダー等のノイズを除外）
         if i % 2 == 0 and val and val != location_c and not re.search(r'警備隊|株式会社|総括|予定表', val):
             staff_names.append(val)
             
@@ -158,9 +158,9 @@ def analyze_pdf_structure(pdf_path, y, m):
     return result_data, "通過"
 
 
-# ==========================================
+# =====================================================================
 # [3] 特定スタッフの個別シフト・他スタッフシフトの分離抽出
-# ==========================================
+# =====================================================================
 
 def extract_target_data(df, target_staff, location):
     """
@@ -188,9 +188,9 @@ def extract_target_data(df, target_staff, location):
     }
 
 
-# ==========================================
+# =====================================================================
 # [4] Googleカレンダー登録用CSVデータの自動生成
-# ==========================================
+# =====================================================================
 
 def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
     """
@@ -211,11 +211,11 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
         info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()
         sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()
         
-        # "なし" の表記ゆれ自動相殺
+        # "なし" の表記ゆれ自動マージ消去
         if info == "なし": info = ""
         if sub_info == "なし": sub_info = ""
         
-        # 休み関連のスキップ
+        # 休み関連のスキップ判定
         if info in ["休", "休日", "公休", "有給", "有休", "他", ""]:
             continue
             
@@ -229,69 +229,4 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
             
         # 通常のシフトコードの処理（時程表とのマッピング）
         if (time_shift.iloc[:, 1] == info).any():
-            final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
-            
-            my_time_shift = time_shift[time_shift.iloc[:, 1] == info]
-            if not my_time_shift.empty:
-                prev_val = ""
-                added_sub_row = False
-                
-                for t_col in range(3, my_time_shift.shape[1]):
-                    current_val = my_time_shift.iloc[0, t_col]
-                    if current_val == "なし": current_val = ""
-                    if current_val == prev_val:
-                        continue
-                        
-                    current_time = my_time_shift.columns[t_col]
-                    
-                    if current_val != "":
-                        taking_over_department = f"<{current_val}>"
-                        taking_over_staff = ""
-                        
-                        if not other_staff_shift_df.empty:
-                            if col_idx < other_staff_shift_df.shape[1]:
-                                mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
-                                other_names = other_staff_shift_df[mask_other_col].iloc[:, 0].tolist()
-                                if other_names:
-                                    taking_over_staff = f"with {','.join(other_names)}"
-                                
-                        handing_over_department = ""
-                        if prev_val != "":
-                            handing_over_department = f"<{prev_val}>"
-                            
-                        handing_over_staff = ""
-                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
-                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
-                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
-                            
-                            if not other_staff_shift_df.empty:
-                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
-                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
-                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
-                        
-                        subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
-                        subject = re.sub(r'\s+', ' ', subject_raw).strip()
-                        
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            
-                        final_rows.append([subject, target_date, current_time, target_date, "", "False", "", ""])
-                        added_sub_row = True
-                        prev_val = current_val
-                    else:
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            remaining_cells = my_time_shift.iloc[0, t_col:]
-                            if (remaining_cells == "").all() or (remaining_cells == "0").all() or (remaining_cells == "なし").all():
-                                taking_over_department = " => (退勤)"
-                            else:
-                                taking_over_department = ""
-                                
-                            final_rows[-1][0] = final_rows[-1][0] + taking_over_department
-                            added_sub_row = False
-                        prev_val = ""
-
-                if added_sub_row and len(final_rows) > 0 and final_rows[-1][4] == "":
-                    final_rows[-1][4] = my_time_shift.columns[-1]
-
-    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
+            final_rows.
