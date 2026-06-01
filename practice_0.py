@@ -4,7 +4,7 @@ import re
 import calendar
 
 def get_calc_date_info(y, m):
-    """A：取得した年月から最終日付（日数）と最終曜日を取得する"""
+    """A：取得した年月から算出する最終日付（日数）と最終曜日を取得する"""
     _, last_day = calendar.monthrange(y, m)
     w_list = ["月", "火", "水", "木", "金", "土", "日"]
     last_w = w_list[calendar.weekday(y, m, last_day)]
@@ -52,46 +52,51 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第1関門：日付列の有効な末尾列を正確に探索し、最終日付と最終曜日を厳密比較"""
+    """第1関門：仕様(2)に基づき、1行目の日付文字列全体から月末日・末尾曜日を厳密に特定する"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
-    raw_0_0 = str(df.iloc[0, 0]).strip()
     
-    # A：取得した（あるいはユーザー入力の）年月から算出する最終日付と最終曜日
+    # A：取得した年月から算出する最終日付と最終曜日
     calc_last_day, calc_last_w = get_calc_date_info(y, m)
     
-    # B：読み込んだPDFから、実際に有効な日付・曜日が入っている「最も右側の列」を特定する
+    # B：詠込んだpdfシフト表ファイルから最終日付と最終曜日を取得する
     pdf_last_day = 0
     pdf_last_w = ""
+    target_col_idx = -1
     
-    # 抽出されたテーブルの右端の列から左に向かって順にスキャン
-    for col_idx in range(df.shape[1] - 1, -1, -1):
-        raw_pdf_day = str(df.iloc[0, col_idx]).strip()
-        raw_pdf_week = str(df.iloc[1, col_idx]).strip()
-        
-        match_day = re.search(r'\d+', raw_pdf_day)
-        match_week = re.search(r'[月火水木金土日]', raw_pdf_week)
-        
-        # 1行目に数字、2行目に曜日が両方見つかった列を「月末列」と確定させる
-        if match_day and match_week:
-            pdf_last_day = int(match_day.group(0))
-            pdf_last_w = match_week.group(0)
-            break
-        # 2行目に日付と曜日が混在してしまっている特殊セルのケースもカバー
-        elif not match_day:
-            match_day_in_row2 = re.search(r'\d+', raw_pdf_week)
-            if match_day_in_row2 and match_week:
-                pdf_last_day = int(match_day_in_row2.group(0))
-                pdf_last_w = match_week.group(0)
-                break
-                
-    # A=Bならそのまま通過、A≠Bなら不一致としてエラーメッセージ
+    # 仕様(2)より、行0は1〜月末までの日付文字列。
+    # 各セルから数値をすべて抽出し、その中で「最大の数値」を月末日として特定する
+    for col_idx in range(1, df.shape[1]):
+        cell_text = str(df.iloc[0, col_idx]).strip()
+        # セル内のすべての数字を抽出
+        days_in_cell = [int(d) for d in re.findall(r'\d+', cell_text)]
+        if days_in_cell:
+            max_day_in_cell = max(days_in_cell)
+            if max_day_in_cell > pdf_last_day:
+                pdf_last_day = max_day_in_cell
+                target_col_idx = col_idx  # 月末日が含まれる列のインデックスを保持
+
+    # 月末日が見つかった列の、行1（曜日行）から末尾の曜日を取得する
+    if target_col_idx != -1:
+        # 行0と行1の該当セルテキストを結合して、最後の曜日を探索
+        combined_text = str(df.iloc[0, target_col_idx]) + " " + str(df.iloc[1, target_col_idx])
+        weeks_found = re.findall(r'[月火水木金土日士]', combined_text)  # 「士」の誤字も考慮
+        if weeks_found:
+            pdf_last_w = weeks_found[-1]
+            if pdf_last_w == "士":  # 「士」を「土」に補正
+                pdf_last_w = "土"
+
+    # A=Bならそのまま通過、A≠Bなら不一致エラー
     if not (pdf_last_day == calc_last_day and pdf_last_w == calc_last_w):
         return None, f"不一致：計算上の月末={calc_last_day}日({calc_last_w}) ／ PDFの末尾={pdf_last_day}日({pdf_last_w})"
 
-    # 勤務地(location)の抽出・クレンジング
-    location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
+    # [0,0]近辺から勤務地(location)を抽出
+    raw_0_0 = str(df.iloc[0, 0]).strip()
+    if raw_0_0 == "" or len(raw_0_0) <= 2:
+        raw_0_0 = str(df.iloc[1, 0]).strip()
+        
+    location = re.sub(r'\(?[月火水木金土日士]\)?', '', raw_0_0)
     location = re.sub(r'\d+[\s～~-]+\d+', '', location)
     location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
     location = re.sub(r'[年月日で\\s/：:-]', '', location).strip()
@@ -107,7 +112,7 @@ def analyze_pdf_structure(pdf_path, y, m):
         val = cell.split('\n')[0] if i % 2 == 0 else cell
         rows.append([val] + df.iloc[i, 1:].tolist())
         
-        if i % 2 == 0 and val and val != location:
+        if i % 2 == 0 and val and val != location and not re.search(r'警備隊|株式会社', val):
             staff_names.append(val)
             
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
@@ -120,11 +125,10 @@ def extract_target_data(df, target_staff, location):
     idx = df[df[0] == target_staff].index[0]
     my_daily_shift = df.iloc[idx : idx+2, 1:].copy()
     
-    # 他のスタッフデータを「各1行（上段のみ）」として美しく集約
     other_indices = []
     for i in range(2, len(df), 2):
         val_0 = str(df.iloc[i, 0]).strip()
-        if i != idx and val_0 != location and val_0 != "":
+        if i != idx and val_0 != location and val_0 != "" and not re.search(r'警備隊|株式会社', val_0):
             other_indices.append(i)
             
     other_daily_shift = df.iloc[other_indices, :].copy()
@@ -229,4 +233,4 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                 if added_sub_row and len(final_rows) > 0 and final_rows[-1][4] == "":
                     final_rows[-1][4] = my_time_shift.columns[-1]
 
-    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
+    return pd.DataFrame(
