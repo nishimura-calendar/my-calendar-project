@@ -52,7 +52,7 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第1関門：日付列が月末で美しく終わる前提に基づき、末尾セルの日付・曜日を厳密比較"""
+    """第1関門：日付列の有効な末尾列を正確に探索し、最終日付と最終曜日を厳密比較"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
@@ -61,18 +61,31 @@ def analyze_pdf_structure(pdf_path, y, m):
     # A：取得した（あるいはユーザー入力の）年月から算出する最終日付と最終曜日
     calc_last_day, calc_last_w = get_calc_date_info(y, m)
     
-    # B：読み込んだPDFの最終列（もっとも右側の列）から、最終日付と最終曜日を抽出
-    # 日付列が月末で綺麗に終わっているため、データフレームの「最後の列」を直接参照します
-    raw_pdf_day = str(df.iloc[0, df.shape[1] - 1]).strip()
-    raw_pdf_week = str(df.iloc[1, df.shape[1] - 1]).strip()
+    # B：読み込んだPDFから、実際に有効な日付・曜日が入っている「最も右側の列」を特定する
+    pdf_last_day = 0
+    pdf_last_w = ""
     
-    # セル内の文字列から数字と曜日をそれぞれ抽出
-    match_day = re.search(r'\d+', raw_pdf_day)
-    match_week = re.search(r'[月火水木金土日]', raw_pdf_week)
-    
-    pdf_last_day = int(match_day.group(0)) if match_day else 0
-    pdf_last_w = match_week.group(0) if match_week else ""
-    
+    # 抽出されたテーブルの右端の列から左に向かって順にスキャン
+    for col_idx in range(df.shape[1] - 1, -1, -1):
+        raw_pdf_day = str(df.iloc[0, col_idx]).strip()
+        raw_pdf_week = str(df.iloc[1, col_idx]).strip()
+        
+        match_day = re.search(r'\d+', raw_pdf_day)
+        match_week = re.search(r'[月火水木金土日]', raw_pdf_week)
+        
+        # 1行目に数字、2行目に曜日が両方見つかった列を「月末列」と確定させる
+        if match_day and match_week:
+            pdf_last_day = int(match_day.group(0))
+            pdf_last_w = match_week.group(0)
+            break
+        # 2行目に日付と曜日が混在してしまっている特殊セルのケースもカバー
+        elif not match_day:
+            match_day_in_row2 = re.search(r'\d+', raw_pdf_week)
+            if match_day_in_row2 and match_week:
+                pdf_last_day = int(match_day_in_row2.group(0))
+                pdf_last_w = match_week.group(0)
+                break
+                
     # A=Bならそのまま通過、A≠Bなら不一致としてエラーメッセージ
     if not (pdf_last_day == calc_last_day and pdf_last_w == calc_last_w):
         return None, f"不一致：計算上の月末={calc_last_day}日({calc_last_w}) ／ PDFの末尾={pdf_last_day}日({pdf_last_w})"
@@ -81,7 +94,7 @@ def analyze_pdf_structure(pdf_path, y, m):
     location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
     location = re.sub(r'\d+[\s～~-]+\d+', '', location)
     location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
-    location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
+    location = re.sub(r'[年月日で\\s/：:-]', '', location).strip()
     
     # 内部処理用データ構造への組み替え
     rows = []
