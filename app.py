@@ -63,14 +63,16 @@ if uploaded_file:
         m = int(match_m.group(1))
         is_ready = True
     else:
-        st.warning("ファイル名から年月を取得できませんでした。手動で入力してください。")
+        # 指示反映：自動取得できない場合に限って、指定の確認文言と手動フォームを表示
+        display_pdf_as_image("temp.pdf")
+        st.warning("「このファイルを使用しますか？ファイルの年月を入力してください。」")
         c1, c2 = st.columns(2)
         y = c1.number_input("年", value=2026)
         m = c2.number_input("月", min_value=1, max_value=12, value=1)
         is_ready = st.button("ファイル確認")
 
     if is_ready:
-        # 第1関門
+        # 第1関門 (更新した最終日付・最終曜日のチェックロジックを呼び出し)
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
         if res is None:
@@ -82,7 +84,7 @@ if uploaded_file:
         if location not in st.session_state.time_dic:
             stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
         
-        # 指示反映：「勤務地「T2」の照合に成功しました。」は非表示（必要なし）
+        # 照合成功メッセージは必要なし（非表示）
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
         if target_staff != "該当なし":
@@ -90,7 +92,7 @@ if uploaded_file:
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
-                # ⑤ 勤務地をkeyとしてmy_daily_shift、other_daily_shift、time_scheduleを辞書登録
+                # ⑤ 勤務地をkeyとして各データを辞書登録
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
@@ -99,7 +101,7 @@ if uploaded_file:
                     }
                 }
                 
-                # 指示反映：⑤の辞書登録の後、各中間データフレームの表示はすべて飛ばして進む
+                # ⑤の辞書登録の後、表示処理はスキップして直接[3]に進む
                 
                 # --- [3] カレンダー登録自動生成アクション領域 ---
                 st.write("---")
