@@ -34,7 +34,7 @@ def display_pdf_as_image(pdf_path):
 
 # --- Streamlit 画面表示構成 ---
 st.set_page_config(page_title="シフトカレンダーシステム", layout="wide")
-st.title("📅 シフトカレンダー（第1関門まで）")
+st.title("📅 シフトカレンダー（第一関門）")
 
 # [1] 時程表読込
 if "time_master" not in st.session_state:
@@ -56,40 +56,27 @@ if uploaded_file is not None:
         tmp_file.write(uploaded_file.getvalue())
         tmp_path = tmp_file.name
 
-    # ファイル名から年月の取得を試みる
+    # ① ファイル名から年月の取得を試みる
     filename = uploaded_file.name
     match_year_month = re.search(r'(\d{4})[-_/年\s](\d{1,2})', filename)
     
-    # 年月の判定と入力フォームの制御
+    y, m = None, None
+
     if match_year_month:
+        # ① ファイル名から年月が取得できる場合は、②を自動で飛ばして③へ直行する
         y = int(match_year_month.group(1))
         m = int(match_year_month.group(2))
         st.info(f"📂 ファイル名から年月を取得しました: **{y}年{m}月**")
     else:
-        # 取得できない場合はユーザーに入力して貰う
-        display_pdf_as_image(tmp_path)
-        st.warning("「このファイルを使用しますか？ファイルの年月を入力してください。」")
+        # ① ファイル名から年月が取得できない場合は、②を実行してから③へ進む
+        # ② 「このファイルを使用しますか？ファイルの年月を入力してください。」
+        st.warning("⚠️ ファイル名から年月を取得できませんでした。")
+        st.markdown("### 「このファイルを使用しますか？ファイルの年月を入力してください。」")
         
+        # pdfファイルを表示
+        display_pdf_as_image(tmp_path)
+        
+        # 入力フォームを表示
         col1, col2 = st.columns(2)
         with col1:
-            y = st.number_input("年（西暦4桁）を入力してください", min_value=2020, max_value=2040, value=2026)
-        with col2:
-            m = st.number_input("月（1〜12）を入力してください", min_value=1, max_value=12, value=1)
-
-    # 第1関門の検証処理を実行
-    success, result_msg = p0.check_first_gate(tmp_path, y, m)
-
-    if success:
-        # A=Bならそのまま通過（成功文言は出さず、次の処理へ進める状態にする）
-        st.success("🤝 第1関門を通過しました。")
-    else:
-        # A≠Bなら理由、及びpdfシフト表を表示してプログラム停止する
-        st.error(f"❌ 【第1関門不一致】プログラムを停止しました。\n\n理由: {result_msg}")
-        display_pdf_as_image(tmp_path)
-        st.stop()
-
-    # 一時ファイルの削除
-    try:
-        os.unlink(tmp_path)
-    except:
-        pass
+            y = st.number_input("年（西暦4桁）を入力してください", min_value=2020
