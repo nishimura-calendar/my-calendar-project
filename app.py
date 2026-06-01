@@ -56,27 +56,53 @@ if uploaded_file is not None:
         tmp_file.write(uploaded_file.getvalue())
         tmp_path = tmp_file.name
 
-    # ① ファイル名から年月の取得を試みる
+    # ① pdfシフト表ファイル名から年月を取得。
     filename = uploaded_file.name
     match_year_month = re.search(r'(\d{4})[-_/年\s](\d{1,2})', filename)
     
-    y, m = None, None
+    # 構文エラーの起きない安全な初期化
+    y = 0
+    m = 0
 
     if match_year_month:
-        # ① ファイル名から年月が取得できる場合は、②を自動で飛ばして③へ直行する
+        # ① ファイル名から年月が取得できる場合は、②を自動で飛ばして③へ直行
         y = int(match_year_month.group(1))
         m = int(match_year_month.group(2))
         st.info(f"📂 ファイル名から年月を取得しました: **{y}年{m}月**")
     else:
-        # ① ファイル名から年月が取得できない場合は、②を実行してから③へ進む
-        # ② 「このファイルを使用しますか？ファイルの年月を入力してください。」
+        # ① ファイル名から年月が取得できない場合は②を実行
+        # ② 取得できない場合はユーザーに入力して貰う。
         st.warning("⚠️ ファイル名から年月を取得できませんでした。")
         st.markdown("### 「このファイルを使用しますか？ファイルの年月を入力してください。」")
         
-        # pdfファイルを表示
+        # pdfファイルを表示。
         display_pdf_as_image(tmp_path)
         
-        # 入力フォームを表示
+        # 入力フォームを表示。
         col1, col2 = st.columns(2)
         with col1:
-            y = st.number_input("年（西暦4桁）を入力してください", min_value=2020
+            y = st.number_input("年（西暦4桁）を入力してください", min_value=2020, max_value=2040, value=2026, key="input_year")
+        with col2:
+            m = st.number_input("月（1〜12）を入力してください", min_value=1, max_value=12, value=1, key="input_month")
+
+    # ③、④、⑤、⑥（検証と判定処理）
+    if y > 0 and m > 0:
+        # 第1関門の検証処理を実行
+        success, result_msg = p0.check_first_gate(tmp_path, y, m)
+
+        if success:
+            # ⑤ A=Bならそのまま通過（成功のログテキストは出さず、安全な通過サインのみ）
+            st.success("🤝 第一関門を通過しました。")
+        else:
+            # ⑥ A≠Bなら理由、及びpdfシフト表を表示してプログラム停止する
+            st.error(f"❌ 【第一関門不一致】プログラムを停止しました。\n\n理由:\n{result_msg}")
+            # ②でまだPDFを表示していない場合（ファイル名から自動取得した際にエラーになった場合）のみここでPDFを表示
+            if match_year_month:
+                display_pdf_as_image(tmp_path)
+            st.stop()
+
+    # 一時ファイルの削除
+    try:
+        os.unlink(tmp_path)
+    except:
+        pass
