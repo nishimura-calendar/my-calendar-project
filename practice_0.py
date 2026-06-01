@@ -32,32 +32,27 @@ def load_master_from_sheets(service, spreadsheet_id):
             time_dic[current_loc] = process_time_block(df.iloc[start_idx:, :])
     return time_dic
 
-def process_time_block(block_df):
-    """数値列(6.25等)を時刻形式(06:15)のヘッダーに変換し整形"""
-    block_df = block_df.reset_index(drop=True)
-    header_row = block_df.iloc[0].tolist()
-    
-    new_headers = []
-    for col_idx, val in enumerate(header_row):
-        if col_idx < 3:
-            new_headers.append(val)
-            continue
+def process_time_block(block):
+    """時程表の時間変換処理"""
+    def to_time(v):
         try:
-            f_v = float(val)
-            if 0 <= f_v <= 28:
-                h = int(f_v)
-                m = int(round((f_v - h) * 60))
-                new_headers.append(f"{h:02d}:{m:02d}")
-            else:
-                new_headers.append(str(val))
-        except (ValueError, TypeError):
-            new_headers.append(str(val))
-            
-    block_df.columns = new_headers
-    return block_df.iloc[1:].reset_index(drop=True)
+            f = float(v)
+            return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
+        except: return v
+    time_cols = []
+    for col in range(3, block.shape[1]):
+        try:
+            float(block.iloc[0, col])
+            time_cols.append(col)
+        except:
+            if time_cols: break
+    res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
+    for i in range(len(time_cols)):
+        res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
+    return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・データ抽出"""
+    """第一関門・データ抽出 [cite: 1]"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
@@ -94,36 +89,35 @@ def analyze_pdf_structure(pdf_path, y, m):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出"""
+    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
     if target_staff not in df[0].values:
         return None
         
     idx = df[df[0] == target_staff].index[0]
     
     # my_daily_shift: target_staff行 + その下段（資格行）
-    my_daily_shift = df.iloc[idx : idx+2, 1:]
+    my_daily_shift = df.iloc[idx : idx+2, :].copy()
     
-    # other_daily_shift: 自分以外のスタッフ行をすべて結合（2行セットずつ）
-    other_rows = []
-    for i in range(2, len(df), 2):
-        s_name = df.iloc[i, 0]
-        if s_name != target_staff and s_name != location and s_name != "":
-            other_rows.append(df.iloc[i:i+2, :])
+    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
+    other_indices = []
+    for i in range(2, len(df)):
+        val_0 = str(df.iloc[i, 0]).strip()
+        if i != idx and i != (idx + 1) and val_0 != location and val_0 != "":
+            other_indices.append(i)
             
-    other_daily_shift = pd.concat(other_rows) if other_rows else pd.DataFrame()
+    other_daily_shift = df.iloc[other_indices, :].copy()
     
     return {
-        'my_daily_shift': my_daily_shift,
-        'other_daily_shift': other_daily_shift
+        "my_daily_shift": my_daily_shift,
+        "other_daily_shift": other_daily_shift
     }
 
-# --- ここから新規実装：[3] カレンダー自動生成ロジック（⑥までの他スタッフマスク動調対応） ---
 def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
     """[3] プログラム作成手順に基づくカレンダー自動生成（⑥まで対応版）"""
     final_rows = []
     time_shift = time_schedule_df.fillna("").astype(str)
     
-    # my_daily_shift_dfの各列（日付列）を1日から順に走査
+    # 日付列ループ処理（1日〜月末）
     for col_idx in my_daily_shift_df.columns:
         try:
             day_num = int(col_idx)
@@ -132,19 +126,15 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
             
         target_date = f"{year}/{month:02d}/{day_num:02d}"
         
-        # 該当日の上段（勤務記号）と下段（資格・休憩）
         info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()
         sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()
         
-        # 修正指示反映：”なし”および"なし"の時は空文字として扱う
         if info == "なし": info = ""
         if sub_info == "なし": sub_info = ""
         
-        # 休日判定（スキップ処理）
         if info in ["休", "休日", "公休", "有給", "有休", "他", ""]:
             continue
             
-        # 1. 「本町」の場合の特例処理
         if info == "本町":
             final_rows.append(["本町", target_date, "", target_date, "", "True", "1行上=本町", "本町"])
             maru = re.findall(r'[①-⑨]', sub_info)
@@ -152,9 +142,7 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
             final_rows.append(["本町", target_date, "09:00", target_date, "14:00", "False", desc_val, "本町"])
             continue
             
-        # 2. 通常シフト（時程表に勤務記号の一致がある場合）
         if (time_shift.iloc[:, 1] == info).any():
-            # 終日予定予定行（例: T2_A）を追加
             final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
             
             my_time_shift = time_shift[time_shift.iloc[:, 1] == info]
@@ -162,7 +150,6 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                 prev_val = ""
                 added_sub_row = False
                 
-                # 時程表の3列目（時刻ヘッダー列）以降をスキャン
                 for t_col in range(3, my_time_shift.shape[1]):
                     current_val = my_time_shift.iloc[0, t_col]
                     if current_val == "なし": current_val = ""
@@ -175,9 +162,9 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                         taking_over_department = f"<{current_val}>"
                         taking_over_staff = ""
                         
-                        # ⑥ 同一時間・同一部署にいる他スタッフをother_daily_shiftからマスク抽出
+                        # ⑥ 他スタッフの同日・同部署マスク抽出
                         if not other_staff_shift_df.empty:
-                            other_upper_rows = other_staff_shift_df.iloc[::2] # 上段行（記号行）のみを対象
+                            other_upper_rows = other_staff_shift_df.iloc[::2]
                             if col_idx <= other_upper_rows.shape[1]:
                                 mask_other_col = other_upper_rows.iloc[:, col_idx] == current_val
                                 other_names = other_upper_rows[mask_other_col].iloc[:, 0].tolist()
@@ -209,7 +196,6 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                         added_sub_row = True
                         prev_val = current_val
                     else:
-                        # 退勤の判定
                         if added_sub_row and len(final_rows) > 0:
                             final_rows[-1][4] = current_time  
                             remaining_cells = my_time_shift.iloc[0, t_col:]
