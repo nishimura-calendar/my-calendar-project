@@ -52,7 +52,7 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・データ抽出 [cite: 1]"""
+    """第一関門・データ抽出"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
@@ -89,20 +89,20 @@ def analyze_pdf_structure(pdf_path, y, m):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
+    """第3関門：my_daily_shift, other_daily_shiftの抽出"""
     if target_staff not in df[0].values:
         return None
         
     idx = df[df[0] == target_staff].index[0]
     
-    # my_daily_shift: target_staff行 + その下段（資格行）
-    my_daily_shift = df.iloc[idx : idx+2, :].copy()
+    # ④ my_daily_shift：target_staffを見つけてその行とその下段の行の2行を抽出
+    my_daily_shift = df.iloc[idx : idx+2, 1:].copy()
     
-    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
+    # ④ 【修正箇所】other_daily_shift：target_staff以外の氏名行の「各1行（上段のみ）」とする
     other_indices = []
-    for i in range(2, len(df)):
+    for i in range(2, len(df), 2):  # 2行おきに走査することで氏名行（上段）のみをキャッチ
         val_0 = str(df.iloc[i, 0]).strip()
-        if i != idx and i != (idx + 1) and val_0 != location and val_0 != "":
+        if i != idx and val_0 != location and val_0 != "":
             other_indices.append(i)
             
     other_daily_shift = df.iloc[other_indices, :].copy()
@@ -113,11 +113,11 @@ def extract_target_data(df, target_staff, location):
     }
 
 def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
-    """[3] プログラム作成手順に基づくカレンダー自動生成（⑥まで対応版）"""
+    """[3] プログラム作成手順に基づくカレンダー自動生成（他スタッフ1行変更対応版）"""
     final_rows = []
     time_shift = time_schedule_df.fillna("").astype(str)
     
-    # 日付列ループ処理（1日〜月末）
+    # 日付列ループ処理
     for col_idx in my_daily_shift_df.columns:
         try:
             day_num = int(col_idx)
@@ -162,12 +162,11 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                         taking_over_department = f"<{current_val}>"
                         taking_over_staff = ""
                         
-                        # ⑥ 他スタッフの同日・同部署マスク抽出
+                        # other_staff_shift_dfが各スタッフ1行（上段のみ）の全行構成になったため、そのまま全行を対象に走査
                         if not other_staff_shift_df.empty:
-                            other_upper_rows = other_staff_shift_df.iloc[::2]
-                            if col_idx <= other_upper_rows.shape[1]:
-                                mask_other_col = other_upper_rows.iloc[:, col_idx] == current_val
-                                other_names = other_upper_rows[mask_other_col].iloc[:, 0].tolist()
+                            if col_idx < other_staff_shift_df.shape[1]:
+                                mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
+                                other_names = other_staff_shift_df[mask_other_col].iloc[:, 0].tolist()
                                 if other_names:
                                     taking_over_staff = f"with {','.join(other_names)}"
                                 
@@ -181,9 +180,8 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                             mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
                             
                             if not other_staff_shift_df.empty:
-                                other_upper_rows = other_staff_shift_df.iloc[::2]
-                                mask_trans_handing = other_upper_rows.iloc[:, col_idx].isin(mask_handing_codes)
-                                handing_over_names = other_upper_rows[mask_trans_handing].iloc[:, 0].tolist()
+                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
+                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
                                 handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
                         
                         subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
