@@ -7,15 +7,22 @@ from google.oauth2 import service_account
 
 # スプレッドシートID
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+# CSV保存先Google DriveフォルダID
+DRIVE_FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
-def get_service():
-    """GCP認証"""
+def get_services():
+    """GCP認証 (Sheets API と Drive API を取得)"""
     info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
         info, 
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive"  # カレンダーCSVの保存に必要
+        ]
     )
-    return build('sheets', 'v4', credentials=creds)
+    sheets_service = build('sheets', 'v4', credentials=creds)
+    drive_service = build('drive', 'v3', credentials=creds)
+    return sheets_service, drive_service
 
 def display_pdf_as_image(pdf_path):
     """PDFを画像に変換して表示"""
@@ -37,13 +44,14 @@ def stop_with_pdf_image_only(error_text, pdf_path):
 
 st.set_page_config(layout="wide")
 
-# 1. 時程表の事前読込
+# 1. 時程表の事前読込とサービス初期化
 if 'time_dic' not in st.session_state:
     try:
-        service = get_service()
-        st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
+        sheets_svc, drive_svc = get_services()
+        st.session_state.drive_service = drive_svc
+        st.session_state.time_dic = p0.load_master_from_sheets(sheets_svc, SPREADSHEET_ID)
     except Exception as e:
-        st.error(f"時程表読込失敗: {e}"); st.stop()
+        st.error(f"時程表読込または認証に失敗: {e}"); st.stop()
 
 # 2. PDFアップロード
 uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
@@ -79,16 +87,12 @@ if uploaded_file:
         
         # 第3関門
         st.success(f"勤務地「{location}」の照合に成功しました。")
-        # プルダウンに氏名一覧を表示（該当なしを含む）
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
         if target_staff != "該当なし":
-            # データの抽出実行
             shift_data = p0.extract_target_data(res['df'], target_staff, location)
             
             if shift_data:
-                # 仕様に基づき、勤務地(location)をキーとして辞書登録
-                # time_schedule, my_daily_shift, other_daily_shiftを格納
                 st.session_state.final_result = {
                     location: {
                         "time_schedule": st.session_state.time_dic[location],
@@ -99,15 +103,19 @@ if uploaded_file:
                 
                 # 表示処理
                 st.write(f"### {target_staff} の抽出結果（勤務地: {location}）")
-                
                 st.write("#### time_schedule")
                 st.dataframe(st.session_state.final_result[location]["time_schedule"], hide_index=True)
-                
                 st.write("#### my_daily_shift")
                 st.dataframe(st.session_state.final_result[location]["my_daily_shift"], hide_index=True)
                 
-                st.write("#### other_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
-            else:
-                # target_staffが見つからない場合
-                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
+                # [3] カレンダー登録
+                st.write("---")
+                st.write("### カレンダー連携")
+                if st.button("カレンダー用CSVを作成しDriveへ保存"):
+                    with st.spinner("CSVを作成し保存しています..."):
+                        try:
+                            saved_files = p0.create_and_upload_calendar_csv(
+                                st.session_state.drive_service,
+                                DRIVE_FOLDER_ID,
+                                y, m, location,
+                                st.session
