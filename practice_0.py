@@ -3,22 +3,29 @@ import camelot
 import re
 import calendar
 
-def get_calc_date_info(y, m):
-    """① ファイル名から算出する日数と第一曜日"""
-    _, last_day = calendar.monthrange(y, m)
-    w_list = ["月", "火", "水", "木", "金", "土", "日"]
-    first_w = w_list[calendar.weekday(y, m, 1)]
-    return last_day, first_w
+# =====================================================================
+# [1] 時程表（スプレッドシートマスター）読込処理
+# =====================================================================
 
 def load_master_from_sheets(service, spreadsheet_id):
-    """時程表を読み込み、勤務地をキーに辞書登録"""
+    """
+    時程表（Googleスプレッドシート）を読み込み、
+    勤務地をキー（T1, T2など）にした辞書構造を作成して登録する。
+    """
     spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     time_dic = {}
+    
     for s in spreadsheet.get('sheets', []):
         title = s.get("properties", {}).get("title")
-        res = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{title}'!A1:Z300").execute()
+        # A1:Z300 の範囲を読み込み
+        res = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id, 
+            range=f"'{title}'!A1:Z300"
+        ).execute()
         vals = res.get('values', [])
-        if not vals: continue
+        if not vals: 
+            continue
+            
         df = pd.DataFrame(vals).fillna('')
 
         current_loc, start_idx = None, 0
@@ -30,84 +37,92 @@ def load_master_from_sheets(service, spreadsheet_id):
                 current_loc, start_idx = val_a, i
         if current_loc:
             time_dic[current_loc] = process_time_block(df.iloc[start_idx:, :])
+            
     return time_dic
 
+
 def process_time_block(block):
-    """時程表の時間変換処理"""
+    """
+    時程表の時間表記（6=6:00, 6.25=6:15 などの浮動小数点）を
+    正式な「HH:MM」の文字列形式に変換する補助関数。
+    """
     def to_time(v):
         try:
             f = float(v)
             return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
-        except: return v
+        except: 
+            return v
+            
     time_cols = []
     for col in range(3, block.shape[1]):
         try:
             float(block.iloc[0, col])
             time_cols.append(col)
         except:
-            if time_cols: break
+            if time_cols: 
+                break
+                
     res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
     for i in range(len(time_cols)):
         res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
+        
     return res_df
 
-def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・データ抽出 [cite: 1]"""
+
+# =====================================================================
+# [2] PDFシフト予定表ファイル読込 ＆ 第1関門検証
+# =====================================================================
+
+def get_calc_date_info(y, m):
+    """【値A】入力・取得された年月から算出する論理上の「最終日付」と「最終曜日」を取得する"""
+    _, last_day = calendar.monthrange(y, m)
+    w_list = ["月", "火", "水", "木", "金", "土", "日"]
+    last_w = w_list[calendar.weekday(y, m, last_day)]
+    return last_day, last_w
+
+
+def check_first_gate(pdf_path, y, m):
+    """
+    【第1関門】検証プログラム
+    
+    仕様：
+      - CamelotでPDFの表データを読み込む。
+      - [0,0]セルから1~月末までの日付文字列、曜日、勤務地が含まれる塊を取得。
+      - 【値A】指定年月から計算した最終日付・最終曜日
+      - 【値B】PDFの[0,0]セルから抽出した最終日付・最終曜日
+      - A=Bなら通過、A≠Bならエラー理由を返して停止。
+    """
+    # 1. Camelotを使用して読込
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
-    if not tables: return None, "PDF表抽出失敗"
+    if not tables: 
+        return False, "PDFから表構造を抽出できませんでした（Camelot読込失敗）。"
+    
     df = tables[0].df
-    raw_0_0 = str(df.iloc[0, 0]).strip()
+    cell_0_0 = str(df.iloc[0, 0]).strip()
     
-    calc_last_day, calc_first_w = get_calc_date_info(y, m)
-    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
-    pdf_last_day = max(nums) if nums else 0
-    pdf_first_w = (re.findall(r'[月火水木金土日]', raw_0_0) + [""])[0]
+    # A：取得した年月から最終日付と最終曜日を取得する
+    calc_last_day, calc_last_w = get_calc_date_info(y, m)
     
-    if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
+    # B：読み込んだpdfシフト表ファイル[0,0]から最終日付と最終曜日を取得する
+    # セル内のすべての数字を抽出して、その最大値を月末日とする
+    all_digits = [int(d) for d in re.findall(r'\d+', cell_0_0)]
+    pdf_last_day = max(all_digits) if all_digits else 0
+    
+    # セル内のすべての曜日文字を抽出して、最後の文字を月末曜日とする
+    all_weeks = re.findall(r'[月火水木金土日士]', cell_0_0)
+    pdf_last_w = all_weeks[-1] if all_weeks else ""
+    
+    # フォント誤認識「士」を「土」に自動補正
+    if pdf_last_w == "士":
+        pdf_last_w = "土"
 
-    # location抽出
-    location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
-    location = re.sub(r'\d+[\s～~-]+\d+', '', location)
-    location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
-    location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
-    
-    # データ組替とスタッフリスト作成
-    rows = []
-    rows.append([""] + df.iloc[0, 1:].tolist()) 
-    rows.append([location] + df.iloc[1, 1:].tolist())
-    
-    staff_names = []
-    for i in range(2, len(df)):
-        cell = str(df.iloc[i, 0]).strip()
-        val = cell.split('\n')[0] if i % 2 == 0 else cell
-        rows.append([val] + df.iloc[i, 1:].tolist())
-        
-        if i % 2 == 0 and val and val != location:
-            staff_names.append(val)
-            
-    return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
-
-def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
-    if target_staff not in df[0].values:
-        return None
-        
-    idx = df[df[0] == target_staff].index[0]
-    
-    # my_daily_shift: target_staff行 + その下段（資格行）
-    my_daily_shift = df.iloc[idx : idx+2, :].copy()
-    
-    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
-    other_indices = []
-    for i in range(2, len(df)):
-        val_0 = str(df.iloc[i, 0]).strip()
-        if i != idx and i != (idx + 1) and val_0 != location and val_0 != "":
-            other_indices.append(i)
-            
-    other_daily_shift = df.iloc[other_indices, :].copy()
-    
-    return {
-        "my_daily_shift": my_daily_shift,
-        "other_daily_shift": other_daily_shift
-    }
+    # A＝B ならそのまま通過。A≠B なら理由を返却。
+    if pdf_last_day == calc_last_day and pdf_last_w == calc_last_w:
+        return True, "通過"
+    else:
+        error_reason = (
+            f"最終日付または最終曜日が一致しません。\n"
+            f"【計算値A】: {calc_last_day}日 ({calc_last_w})\n"
+            f"【PDF検出値B】: {pdf_last_day}日 ({pdf_last_w})"
+        )
+        return False, error_reason
