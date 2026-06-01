@@ -55,7 +55,8 @@ if uploaded_file:
         f.write(pdf_bytes)
 
     fname = uploaded_file.name
-    match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
+    match_y = re.search(r'(\d{4})', fname)
+    match_m = re.search(r'(\d{1,2})', fname)
     
     # ファイル名から年月を取得できたか判定
     if match_y and match_m:
@@ -63,16 +64,16 @@ if uploaded_file:
         m = int(match_m.group(1))
         is_ready = True
     else:
-        # 指示反映：自動取得できない場合に限って、指定の確認文言と手動フォームを表示
+        # 指示反映：ファイル名から年月が取得できない場合、PDFを表示した上で指定メッセージと入力フォームを出す
         display_pdf_as_image("temp.pdf")
         st.warning("「このファイルを使用しますか？ファイルの年月を入力してください。」")
         c1, c2 = st.columns(2)
-        y = c1.number_input("年", value=2026)
-        m = c2.number_input("月", min_value=1, max_value=12, value=1)
+        y = c1.number_input("年", value=2026, key="manual_year")
+        m = c2.number_input("月", min_value=1, max_value=12, value=1, key="manual_month")
         is_ready = st.button("ファイル確認")
 
     if is_ready:
-        # 第1関門 (更新した最終日付・最終曜日のチェックロジックを呼び出し)
+        # 第1関門 (月末の日付と曜日の一致チェック)
         res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
         
         if res is None:
@@ -82,9 +83,9 @@ if uploaded_file:
         # 第2関門
         location = res['location']
         if location not in st.session_state.time_dic:
-            stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
+            stop_with_pdf_image_only(f"勤務地-【{location}】-が時程表に設定されていません。確認が必要です。", "temp.pdf")
         
-        # 照合成功メッセージは必要なし（非表示）
+        # 指示反映：「照合に成功しました」メッセージは必要なしのためカット
         target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
         
         if target_staff != "該当なし":
@@ -101,9 +102,9 @@ if uploaded_file:
                     }
                 }
                 
-                # ⑤の辞書登録の後、表示処理はスキップして直接[3]に進む
+                # 指示反映：⑤の辞書登録の後、中間データの表示処理は飛ばしてそのまま進む
                 
-                # --- [3] カレンダー登録自動生成アクション領域 ---
+                # --- [3] カレンダー登録自動生成セクション ---
                 st.write("---")
                 st.write(f"### 📆 {target_staff} のカレンダー登録用データの作成")
                 
