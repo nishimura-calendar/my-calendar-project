@@ -2,6 +2,8 @@ import streamlit as st
 import practice_0 as p0
 import fitz  # PyMuPDF
 import re
+import tempfile
+import os
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
@@ -9,7 +11,7 @@ from google.oauth2 import service_account
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
 def get_service():
-    """GCP認証"""
+    """GCP認証を行いGoogle Sheets APIサービスをビルド"""
     info = dict(st.secrets["gcp_service_account"])
     creds = service_account.Credentials.from_service_account_info(
         info, 
@@ -18,96 +20,76 @@ def get_service():
     return build('sheets', 'v4', credentials=creds)
 
 def display_pdf_as_image(pdf_path):
-    """PDFを画像に変換して表示"""
+    """PDFファイルを画面に表示する（確認プレビュー用）"""
     try:
         doc = fitz.open(pdf_path)
         page = doc.load_page(0)
         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
         img_bytes = pix.tobytes("png")
-        st.image(img_bytes, caption="アップロードされたPDFの確認", use_container_width=True)
+        st.image(img_bytes, caption="アップロードされたPDFシフト表", use_container_width=True)
         doc.close()
     except Exception as e:
-        st.warning(f"PDFプレビューの生成に失敗しました: {e}")
+        st.warning(f"PDFの表示に失敗しました: {e}")
 
-def stop_with_pdf_image_only(error_text, pdf_path):
-    """エラー表示と画像表示のみを行い停止"""
-    st.error(error_text)
-    display_pdf_as_image(pdf_path)
-    st.stop()
 
-st.set_page_config(layout="wide")
+# --- Streamlit 画面表示構成 ---
+st.set_page_config(page_title="シフトカレンダーシステム", layout="wide")
+st.title("📅 シフトカレンダー（第1関門まで）")
 
-# 1. 時程表の事前読込
-if 'time_dic' not in st.session_state:
+# [1] 時程表読込
+if "time_master" not in st.session_state:
     try:
         service = get_service()
-        st.session_state.time_dic = p0.load_master_from_sheets(service, SPREADSHEET_ID)
+        # 内部での読み込みのみ（成功メッセージは表示しない）
+        st.session_state.time_master = p0.load_master_from_sheets(service, SPREADSHEET_ID)
     except Exception as e:
-        st.error(f"時程表読込失敗: {e}"); st.stop()
+        st.error(f"時程表読込失敗: {e}")
+        st.stop()
 
-# 2. PDFアップロード
-uploaded_file = st.file_uploader("PDFシフト表を選択してください", type="pdf")
+# [2] pdfシフト表ファイル読込
+# <1>．pdfシフト表ファイルをアップロード
+uploaded_file = st.file_uploader("PDFシフト予定表ファイルをアップロードしてください", type=["pdf"])
 
-if uploaded_file:
-    pdf_bytes = uploaded_file.getvalue()
-    with open("temp.pdf", "wb") as f:
-        f.write(pdf_bytes)
+if uploaded_file is not None:
+    # 読み込み用の一時ファイルを作成
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
 
-    fname = uploaded_file.name
-    match_y, match_m = re.search(r'(\d{4})', fname), re.search(r'(\d{1,2})', fname)
-    y, m = (int(match_y.group(1)), int(match_m.group(1))) if (match_y and match_m) else (None, None)
+    # ファイル名から年月の取得を試みる
+    filename = uploaded_file.name
+    match_year_month = re.search(r'(\d{4})[-_/年\s](\d{1,2})', filename)
     
-    if y is None or m is None:
-        st.warning("年月を入力してください。")
-        y = st.number_input("年", value=2026); m = st.number_input("月", min_value=1, max_value=12)
-        is_ready = st.button("ファイル確認")
-    else: 
-        is_ready = True
+    # 年月の判定と入力フォームの制御
+    if match_year_month:
+        y = int(match_year_month.group(1))
+        m = int(match_year_month.group(2))
+        st.info(f"📂 ファイル名から年月を取得しました: **{y}年{m}月**")
+    else:
+        # 取得できない場合はユーザーに入力して貰う
+        display_pdf_as_image(tmp_path)
+        st.warning("「このファイルを使用しますか？ファイルの年月を入力してください。」")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            y = st.number_input("年（西暦4桁）を入力してください", min_value=2020, max_value=2040, value=2026)
+        with col2:
+            m = st.number_input("月（1〜12）を入力してください", min_value=1, max_value=12, value=1)
 
-    if is_ready:
-        # 第1関門
-        res, msg = p0.analyze_pdf_structure("temp.pdf", y, m)
-        
-        if res is None:
-            error_msg = f"ファイル名【{fname}】とファイル内容に相違があります。確認して下さい。\n\n理由：{msg}"
-            stop_with_pdf_image_only(error_msg, "temp.pdf")
+    # 第1関門の検証処理を実行
+    success, result_msg = p0.check_first_gate(tmp_path, y, m)
 
-        # 第2関門
-        location = res['location']
-        if location not in st.session_state.time_dic:
-            stop_with_pdf_image_only(f"【{location}】は時程表の勤務地には設定されていません。確認が必要です。", "temp.pdf")
-        
-        # 第3関門
-        st.success(f"勤務地「{location}」の照合に成功しました。")
-        # プルダウンに氏名一覧を表示（該当なしを含む）
-        target_staff = st.selectbox("シフトカレンダーを作成するスタッフを選んで下さい。", options=["該当なし"] + res['staff_list'])
-        
-        if target_staff != "該当なし":
-            # データの抽出実行
-            shift_data = p0.extract_target_data(res['df'], target_staff, location)
-            
-            if shift_data:
-                # 仕様に基づき、勤務地(location)をキーとして辞書登録
-                # time_schedule, my_daily_shift, other_daily_shiftを格納
-                st.session_state.final_result = {
-                    location: {
-                        "time_schedule": st.session_state.time_dic[location],
-                        "my_daily_shift": shift_data['my_daily_shift'],
-                        "other_daily_shift": shift_data['other_daily_shift']
-                    }
-                }
-                
-                # 表示処理
-                st.write(f"### {target_staff} の抽出結果（勤務地: {location}）")
-                
-                st.write("#### time_schedule")
-                st.dataframe(st.session_state.final_result[location]["time_schedule"], hide_index=True)
-                
-                st.write("#### my_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["my_daily_shift"], hide_index=True)
-                
-                st.write("#### other_daily_shift")
-                st.dataframe(st.session_state.final_result[location]["other_daily_shift"], hide_index=True)
-            else:
-                # target_staffが見つからない場合
-                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
+    if success:
+        # A=Bならそのまま通過（成功文言は出さず、次の処理へ進める状態にする）
+        st.success("🤝 第1関門を通過しました。")
+    else:
+        # A≠Bなら理由、及びpdfシフト表を表示してプログラム停止する
+        st.error(f"❌ 【第1関門不一致】プログラムを停止しました。\n\n理由: {result_msg}")
+        display_pdf_as_image(tmp_path)
+        st.stop()
+
+    # 一時ファイルの削除
+    try:
+        os.unlink(tmp_path)
+    except:
+        pass
