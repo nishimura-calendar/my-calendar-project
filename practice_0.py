@@ -4,11 +4,11 @@ import re
 import calendar
 
 def get_calc_date_info(y, m):
-    """① ファイル名から算出する日数と第一曜日"""
+    """A：取得した年月から最終日付（日数）と最終曜日を取得する"""
     _, last_day = calendar.monthrange(y, m)
     w_list = ["月", "火", "水", "木", "金", "土", "日"]
-    first_w = w_list[calendar.weekday(y, m, 1)]
-    return last_day, first_w
+    last_w = w_list[calendar.weekday(y, m, last_day)]
+    return last_day, last_w
 
 def load_master_from_sheets(service, spreadsheet_id):
     """時程表を読み込み、勤務地をキーに辞書登録"""
@@ -52,27 +52,38 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・データ抽出"""
+    """第1関門：日付列が月末で美しく終わる前提に基づき、末尾セルの日付・曜日を厳密比較"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
     raw_0_0 = str(df.iloc[0, 0]).strip()
     
-    calc_last_day, calc_first_w = get_calc_date_info(y, m)
-    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
-    pdf_last_day = max(nums) if nums else 0
-    pdf_first_w = (re.findall(r'[月火水木金土日]', raw_0_0) + [""])[0]
+    # A：取得した（あるいはユーザー入力の）年月から算出する最終日付と最終曜日
+    calc_last_day, calc_last_w = get_calc_date_info(y, m)
     
-    if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
-        return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
+    # B：読み込んだPDFの最終列（もっとも右側の列）から、最終日付と最終曜日を抽出
+    # 日付列が月末で綺麗に終わっているため、データフレームの「最後の列」を直接参照します
+    raw_pdf_day = str(df.iloc[0, df.shape[1] - 1]).strip()
+    raw_pdf_week = str(df.iloc[1, df.shape[1] - 1]).strip()
+    
+    # セル内の文字列から数字と曜日をそれぞれ抽出
+    match_day = re.search(r'\d+', raw_pdf_day)
+    match_week = re.search(r'[月火水木金土日]', raw_pdf_week)
+    
+    pdf_last_day = int(match_day.group(0)) if match_day else 0
+    pdf_last_w = match_week.group(0) if match_week else ""
+    
+    # A=Bならそのまま通過、A≠Bなら不一致としてエラーメッセージ
+    if not (pdf_last_day == calc_last_day and pdf_last_w == calc_last_w):
+        return None, f"不一致：計算上の月末={calc_last_day}日({calc_last_w}) ／ PDFの末尾={pdf_last_day}日({pdf_last_w})"
 
-    # location抽出
+    # 勤務地(location)の抽出・クレンジング
     location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
     location = re.sub(r'\d+[\s～~-]+\d+', '', location)
     location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
     location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
     
-    # データ組替とスタッフリスト作成
+    # 内部処理用データ構造への組み替え
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
@@ -89,18 +100,16 @@ def analyze_pdf_structure(pdf_path, y, m):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出"""
+    """第3関門：my_daily_shift（2行）, other_daily_shift（各1行）の抽出"""
     if target_staff not in df[0].values:
         return None
         
     idx = df[df[0] == target_staff].index[0]
-    
-    # ④ my_daily_shift：target_staffを見つけてその行とその下段の行の2行を抽出
     my_daily_shift = df.iloc[idx : idx+2, 1:].copy()
     
-    # ④ 【修正箇所】other_daily_shift：target_staff以外の氏名行の「各1行（上段のみ）」とする
+    # 他のスタッフデータを「各1行（上段のみ）」として美しく集約
     other_indices = []
-    for i in range(2, len(df), 2):  # 2行おきに走査することで氏名行（上段）のみをキャッチ
+    for i in range(2, len(df), 2):
         val_0 = str(df.iloc[i, 0]).strip()
         if i != idx and val_0 != location and val_0 != "":
             other_indices.append(i)
@@ -113,11 +122,10 @@ def extract_target_data(df, target_staff, location):
     }
 
 def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
-    """[3] プログラム作成手順に基づくカレンダー自動生成（他スタッフ1行変更対応版）"""
+    """[3] カレンダー登録用データの自動生成"""
     final_rows = []
     time_shift = time_schedule_df.fillna("").astype(str)
     
-    # 日付列ループ処理
     for col_idx in my_daily_shift_df.columns:
         try:
             day_num = int(col_idx)
@@ -162,7 +170,6 @@ def generate_calendar_records(year, month, location, time_schedule_df, my_daily_
                         taking_over_department = f"<{current_val}>"
                         taking_over_staff = ""
                         
-                        # other_staff_shift_dfが各スタッフ1行（上段のみ）の全行構成になったため、そのまま全行を対象に走査
                         if not other_staff_shift_df.empty:
                             if col_idx < other_staff_shift_df.shape[1]:
                                 mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
