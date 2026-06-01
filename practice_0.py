@@ -3,29 +3,22 @@ import camelot
 import re
 import calendar
 
-# =====================================================================
-# [1] 時程表（スプレッドシートマスター）読込処理
-# =====================================================================
+def get_calc_date_info(y, m):
+    """① ファイル名から算出する日数と第一曜日"""
+    _, last_day = calendar.monthrange(y, m)
+    w_list = ["月", "火", "水", "木", "金", "土", "日"]
+    first_w = w_list[calendar.weekday(y, m, 1)]
+    return last_day, first_w
 
 def load_master_from_sheets(service, spreadsheet_id):
-    """
-    時程表（Googleスプレッドシート）を読み込み、
-    勤務地をキー（T1, T2, 本町など）にした辞書構造を作成して登録する。
-    """
+    """時程表を読み込み、勤務地をキーに辞書登録"""
     spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     time_dic = {}
-    
     for s in spreadsheet.get('sheets', []):
         title = s.get("properties", {}).get("title")
-        # A1:Z300 の範囲を余裕を持って読み込み
-        res = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id, 
-            range=f"'{title}'!A1:Z300"
-        ).execute()
+        res = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{title}'!A1:Z300").execute()
         vals = res.get('values', [])
-        if not vals: 
-            continue
-            
+        if not vals: continue
         df = pd.DataFrame(vals).fillna('')
 
         current_loc, start_idx = None, 0
@@ -37,147 +30,79 @@ def load_master_from_sheets(service, spreadsheet_id):
                 current_loc, start_idx = val_a, i
         if current_loc:
             time_dic[current_loc] = process_time_block(df.iloc[start_idx:, :])
-            
     return time_dic
 
-
 def process_time_block(block):
-    """
-    時程表の時間表記（6=6:00, 6.25=6:15 などの浮動小数点）を
-    正式な「HH:MM」の文字列形式に変換する補助関数。
-    """
+    """時程表の時間変換処理"""
     def to_time(v):
         try:
             f = float(v)
             return f"{int(f):02d}:{int(round((f-int(f))*60)):02d}"
-        except: 
-            return v
-            
+        except: return v
     time_cols = []
     for col in range(3, block.shape[1]):
         try:
             float(block.iloc[0, col])
             time_cols.append(col)
         except:
-            if time_cols: 
-                break
-                
+            if time_cols: break
     res_df = block.iloc[:, [0, 1, 2] + time_cols].copy()
     for i in range(len(time_cols)):
         res_df.iloc[0, 3 + i] = to_time(res_df.iloc[0, 3 + i])
-        
     return res_df
 
-
-# =====================================================================
-# [2] PDFシフト予定表ファイル読込 ＆ 各関門検証
-# =====================================================================
-
-def get_calc_date_info(y, m):
-    """ファイル名（年月）から算出する論理上の「最終日付（日数）」と「最終曜日」を取得する"""
-    _, last_day = calendar.monthrange(y, m)
-    w_list = ["月", "火", "水", "木", "金", "土", "日"]
-    last_w = w_list[calendar.weekday(y, m, last_day)]
-    return last_day, last_w
-
-
 def analyze_pdf_structure(pdf_path, y, m):
-    """
-    【第1関門 ＆ 第2関門】 一体型パースメインプログラム
-    
-    仕様：
-      - [0,0]から日付、勤務地、曜日を正確に一括取得
-      - 【第1関門】 計算上の月末(A) と PDF抽出結果(B) を連動照合
-      - [0,0]から日付・曜日を除去して純粋な「勤務地(C)」を抽出
-    """
-    # 1. CamelotでPDFから表データを抽出
+    """第一関門・データ抽出 [cite: 1]"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
-    if not tables: 
-        return None, "PDF表抽出失敗"
+    if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
+    raw_0_0 = str(df.iloc[0, 0]).strip()
     
-    # A：カレンダーから計算した論理上の月末日と曜日
-    calc_last_day, calc_last_w = get_calc_date_info(y, m)
+    calc_last_day, calc_first_w = get_calc_date_info(y, m)
+    nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
+    pdf_last_day = max(nums) if nums else 0
+    pdf_first_w = (re.findall(r'[月火水木金土日]', raw_0_0) + [""])[0]
     
-    # ----------------------------------------------------
-    # 🌟 [0,0] 一括集約型・月末/曜日 抽出ロジック（第1関門）
-    # ----------------------------------------------------
-    cell_0_0 = str(df.iloc[0, 0]).strip()
-    
-    # [0,0] セルからすべての「数字」を抽出して最大値を月末日(B)とする
-    all_digits = [int(d) for d in re.findall(r'\d+', cell_0_0)]
-    pdf_last_day = max(all_digits) if all_digits else 0
-    
-    # [0,0] セルからすべての「曜日」を抽出して最後の文字を月末曜日(B)とする
-    all_weeks = re.findall(r'[月火水木金土日士]', cell_0_0)
-    pdf_last_w = all_weeks[-1] if all_weeks else ""
-    
-    # フォント誤認識「士」を「土」に自動補正
-    if pdf_last_w == "士":
-        pdf_last_w = "土"
+    if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
+        return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
 
-    # 【第1関門】照合チェック
-    if not (pdf_last_day == calc_last_day and pdf_last_w == calc_last_w):
-        error_msg = f"不一致：計算上の月末={calc_last_day}日({calc_last_w}) ／ PDF[0,0]から抽出={pdf_last_day}日({pdf_last_w})"
-        return None, error_msg
-
-    # ----------------------------------------------------
-    # 🌟 勤務地(C)の純粋抽出（第2関門用）
-    # ----------------------------------------------------
-    # 独立した日付数字を除去
-    location_c = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', cell_0_0)
-    # 曜日文字とカッコを除去
-    location_c = re.sub(r'\(?[月火水木金土日士]\)?', '', location_c)
-    # 不要な文字やスペース・改行を大掃除して純粋なキーを抽出
-    location_c = re.sub(r'[年月日で\s/：:・_ー~～-]', '', location_c).strip()
+    # location抽出
+    location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
+    location = re.sub(r'\d+[\s～~-]+\d+', '', location)
+    location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
+    location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
     
-    # ----------------------------------------------------
-    # 後続処理のためのデータマトリクス再構築
-    # ----------------------------------------------------
+    # データ組替とスタッフリスト作成
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
-    rows.append([location_c] + df.iloc[1, 1:].tolist())
+    rows.append([location] + df.iloc[1, 1:].tolist())
     
     staff_names = []
     for i in range(2, len(df)):
         cell = str(df.iloc[i, 0]).strip()
-        # 偶数行は「名前行」であるため、セル内改行があれば最初の要素（名前）のみを取得
         val = cell.split('\n')[0] if i % 2 == 0 else cell
         rows.append([val] + df.iloc[i, 1:].tolist())
         
-        # スタッフ名リストを生成（ヘッダー等のノイズを除外）
-        if i % 2 == 0 and val and val != location_c and not re.search(r'警備隊|株式会社|総括|予定表', val):
+        if i % 2 == 0 and val and val != location:
             staff_names.append(val)
             
-    result_data = {
-        "df": pd.DataFrame(rows), 
-        "location": location_c, 
-        "staff_list": staff_names
-    }
-    
-    return result_data, "通過"
-
-
-# =====================================================================
-# [3] 特定スタッフの個別シフト・他スタッフシフトの分離抽出
-# =====================================================================
+    return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """
-    【第3関門】
-    選択された本人のシフト（2行分）と、他スタッフのシフト（各1行）を
-    DataFrameから分離・抽出する。
-    """
+    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
     if target_staff not in df[0].values:
         return None
         
     idx = df[df[0] == target_staff].index[0]
-    my_daily_shift = df.iloc[idx : idx+2, 1:].copy()
     
+    # my_daily_shift: target_staff行 + その下段（資格行）
+    my_daily_shift = df.iloc[idx : idx+2, :].copy()
+    
+    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
     other_indices = []
-    for i in range(2, len(df), 2):
+    for i in range(2, len(df)):
         val_0 = str(df.iloc[i, 0]).strip()
-        if i != idx and val_0 != location and val_0 != "" and not re.search(r'警備隊|株式会社|総括|予定表', val_0):
+        if i != idx and i != (idx + 1) and val_0 != location and val_0 != "":
             other_indices.append(i)
             
     other_daily_shift = df.iloc[other_indices, :].copy()
@@ -186,113 +111,3 @@ def extract_target_data(df, target_staff, location):
         "my_daily_shift": my_daily_shift,
         "other_daily_shift": other_daily_shift
     }
-
-
-# =====================================================================
-# [4] Googleカレンダー登録用CSVデータの自動生成
-# =====================================================================
-
-def generate_calendar_records(year, month, location, time_schedule_df, my_daily_shift_df, other_staff_shift_df):
-    """
-    抽出されたシフト記号と時程表、他スタッフの動きを全自動で突き合わせ、
-    Googleカレンダーインポート用CSVデータを生成する。
-    """
-    final_rows = []
-    time_shift = time_schedule_df.fillna("").astype(str)
-    
-    for col_idx in my_daily_shift_df.columns:
-        try:
-            day_num = int(col_idx)
-        except ValueError:
-            continue
-            
-        target_date = f"{year}/{month:02d}/{day_num:02d}"
-        
-        info = str(my_daily_shift_df.iloc[0, col_idx-1]).strip()
-        sub_info = str(my_daily_shift_df.iloc[1, col_idx-1]).strip()
-        
-        # "なし" の表記ゆれ自動マージ消去
-        if info == "なし": info = ""
-        if sub_info == "なし": sub_info = ""
-        
-        # 休み関連のスキップ判定
-        if info in ["休", "休日", "公休", "有給", "有休", "他", ""]:
-            continue
-            
-        # 本町シフトの特殊処理
-        if info == "本町":
-            final_rows.append(["本町", target_date, "", target_date, "", "True", "1行上=本町", "本町"])
-            maru = re.findall(r'[①-⑨]', sub_info)
-            desc_val = f"休憩={maru[0]}" if maru else ""
-            final_rows.append(["本町", target_date, "09:00", target_date, "14:00", "False", desc_val, "本町"])
-            continue
-            
-        # 通常のシフトコードの処理（時程表とのマッピング）
-        if (time_shift.iloc[:, 1] == info).any():
-            final_rows.append([f"{location}_{info}", target_date, "", target_date, "", "True", "", ""])
-            
-            my_time_shift = time_shift[time_shift.iloc[:, 1] == info]
-            if not my_time_shift.empty:
-                prev_val = ""
-                added_sub_row = False
-                
-                for t_col in range(3, my_time_shift.shape[1]):
-                    current_val = my_time_shift.iloc[0, t_col]
-                    if current_val == "なし": current_val = ""
-                    if current_val == prev_val:
-                        continue
-                        
-                    current_time = my_time_shift.columns[t_col]
-                    
-                    if current_val != "":
-                        taking_over_department = f"<{current_val}>"
-                        taking_over_staff = ""
-                        
-                        if not other_staff_shift_df.empty:
-                            if col_idx < other_staff_shift_df.shape[1]:
-                                mask_other_col = other_staff_shift_df.iloc[:, col_idx] == current_val
-                                other_names = other_staff_shift_df[mask_other_col].iloc[:, 0].tolist()
-                                if other_names:
-                                    taking_over_staff = f"with {','.join(other_names)}"
-                                
-                        handing_over_department = ""
-                        if prev_val != "":
-                            handing_over_department = f"<{prev_val}>"
-                            
-                        handing_over_staff = ""
-                        if prev_val != "" and (time_shift.iloc[:, 1] == prev_val).any():
-                            mask_handing_dept = time_shift.iloc[:, 1] == prev_val
-                            mask_handing_codes = time_shift.loc[mask_handing_dept, time_shift.columns[1]]
-                            
-                            if not other_staff_shift_df.empty:
-                                mask_trans_handing = other_staff_shift_df.iloc[:, col_idx].isin(mask_handing_codes)
-                                handing_over_names = other_staff_shift_df[mask_trans_handing].iloc[:, 0].tolist()
-                                handing_over_staff = f"to {','.join(handing_over_names)}" if handing_over_names else ""
-                        
-                        # 独自の文字列引継ぎロジックの適用
-                        subject_raw = f"{handing_over_department} {handing_over_staff}=>{taking_over_department} {taking_over_staff}"
-                        subject = re.sub(r'\s+', ' ', subject_raw).strip()
-                        
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            
-                        final_rows.append([subject, target_date, current_time, target_date, "", "False", "", ""])
-                        added_sub_row = True
-                        prev_val = current_val
-                    else:
-                        if added_sub_row and len(final_rows) > 0:
-                            final_rows[-1][4] = current_time  
-                            remaining_cells = my_time_shift.iloc[0, t_col:]
-                            if (remaining_cells == "").all() or (remaining_cells == "0").all() or (remaining_cells == "なし").all():
-                                taking_over_department = " => (退勤)"
-                            else:
-                                taking_over_department = ""
-                                
-                            final_rows[-1][0] = final_rows[-1][0] + taking_over_department
-                            added_sub_row = False
-                        prev_val = ""
-
-                if added_sub_row and len(final_rows) > 0 and final_rows[-1][4] == "":
-                    final_rows[-1][4] = my_time_shift.columns[-1]
-
-    return pd.DataFrame(final_rows, columns=["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location"])
