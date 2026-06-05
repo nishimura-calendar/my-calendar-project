@@ -4,28 +4,29 @@ import re
 import calendar
 
 def load_and_validate_pdf(pdf_path, year, month, time_dic):
-    """[2] PDF読み込みと検証ロジック"""
+    # 1. camelotで読み込み
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     df = tables[0].df
     
-    # 勤務地(C)の抽出
+    # 2. [0,0]セルから勤務地を抽出
     raw_header = str(df.iloc[0, 0])
-    location = re.sub(r'[\d\s\u4e00-\u9fff/年月日時曜日]', '', raw_header).strip()
+    # 修正: 英数字(T1など)は残し、不要な文字(日付・曜日・記号・空白)のみを除去
+    location_candidate = re.sub(r'[\s\u4e00-\u9fff/年月日時曜日]', '', raw_header).strip()
     
-    # 第2関門：勤務地照合
+    # 3. 第2関門: 勤務地照合 (T1, T2などが含まれているか確認)
     matched_location = None
     for key in time_dic.keys():
-        if key == location:
+        if key == location_candidate:
             matched_location = key
             break
             
     if not matched_location:
-        return None, f"勤務地不一致: {location}", None
+        return None, f"勤務地不一致: {location_candidate}", None
         
     return df, "通過", matched_location
 
 def extract_target_data(df, target_staff, location):
-    """[2] <2>(3)④：シフトデータの抽出"""
+    """スタッフデータの抽出"""
     staff_rows = df[df.iloc[:, 0] == target_staff]
     if staff_rows.empty:
         return None
