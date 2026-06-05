@@ -55,7 +55,7 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・データ抽出 [cite: 2]"""
+    """第一関門・データ抽出（※稼働実績のあるオリジナルコードをそのまま使用）"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
@@ -90,7 +90,7 @@ def analyze_pdf_structure(pdf_path, y, m):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 2]"""
+    """第3関門：my_daily_shift, other_daily_shiftの抽出（※オリジナルコードそのまま）"""
     if target_staff not in df[0].values:
         return None
         
@@ -110,75 +110,81 @@ def extract_target_data(df, target_staff, location):
         "other_daily_shift": other_daily_shift
     }
 
-def create_and_upload_calendar_csv(drive_service, folder_id, y, m, location, my_shift, time_schedule):
-    """[3] カレンダー登録 CSV作成とDrive保存処理 """
-    events_holiday = []
-    events_key = []
-    events_other = []
-
-    holiday_keywords = ["休", "休日", "公休", "有休", "有給"]
+# =========================================================
+# [3] カレンダー登録用 新規追加ロジック
+# =========================================================
+def create_calendar_csv_data(y, m, location, my_shift, time_schedule):
+    """カレンダー登録.csvの仕様に基づくデータ生成"""
+    events = []
     header = ["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location", "Private"]
+    events.append(header)
 
-    has_sub_row = len(my_shift) > 1
+    _, last_day = calendar.monthrange(y, m)
 
-    for col in range(1, my_shift.shape[1]):
+    # 1列目〜最終列まで順次読み込む
+    for col in range(1, last_day + 1):
+        if col >= my_shift.shape[1]:
+            break
+            
         info = str(my_shift.iloc[0, col]).strip()
         if not info:
             continue
-
+            
         target_date = f"{y:04d}/{m:02d}/{col:02d}"
         
-        if info in holiday_keywords:
-            events_holiday.append([info, target_date, "", target_date, "", "True", "", "", "False"])
+        # (1) 時程表(time_schedule)にinfo(シフトコード)が存在する場合
+        if (time_schedule.iloc[:, 1] == info).any():
+            t_row = time_schedule[time_schedule.iloc[:, 1] == info].iloc[0]
+            start_time = ""
+            end_time = ""
+            started = False
+            
+            # test_1.py代替: 左から右へ走査し「無→有」でstart、「有→無」でendを取得
+            for c in range(3, len(t_row)):
+                val = str(t_row.iloc[c]).strip()
+                if val != "" and not started:
+                    start_time = str(time_schedule.iloc[0, c])
+                    started = True
+                elif val == "" and started:
+                    end_time = str(time_schedule.iloc[0, c])
+                    break
+                    
+            if started and end_time == "":
+                end_time = str(time_schedule.iloc[0, -1]) # 最後まで埋まっていた場合
+                
+            events.append([info, target_date, start_time, target_date, end_time, "False", "", location, "False"])
+            
+        # (3) info == "本町" の場合
         elif info == "本町":
-            # 本町専用ロジック (例: "9 ① 14" -> Start 09:00, End 14:00) 
-            sub_info = str(my_shift.iloc[1, col]).strip() if has_sub_row else ""
-            start_time, end_time = "", ""
-            m_match = re.search(r'(\d+)\s*[①②③④⑤]\s*(\d+)', sub_info)
+            sub_info = str(my_shift.iloc[1, col]).strip() if len(my_shift) > 1 else ""
+            start_time = "09:00"
+            end_time = "14:00"
+            
+            # "9①14" のような表記から時間を抽出
+            m_match = re.search(r'(\d+)\s*[①-⑨]\s*(\d+)', sub_info)
             if m_match:
                 start_time = f"{int(m_match.group(1)):02d}:00"
                 end_time = f"{int(m_match.group(2)):02d}:00"
-            events_key.append(["本町", target_date, start_time, target_date, end_time, "False", "", "本町", "False"])
-        elif info in time_schedule.iloc[:, 1].values:
-            # time_schedule連動ロジック 
-            t_row = time_schedule[time_schedule.iloc[:, 1] == info].iloc[0]
-            start_time, end_time = "", ""
-            started = False
-            
-            for t_col in range(3, len(t_row)):
-                val = str(t_row.iloc[t_col]).strip()
-                if val != "" and not started:
-                    start_time = str(time_schedule.iloc[0, t_col])
-                    started = True
-                elif val == "" and started:
-                    end_time = str(time_schedule.iloc[0, t_col])
-                    break
-            
-            if started and end_time == "":
-                end_time = str(time_schedule.iloc[0, -1])
                 
-            events_key.append([info, target_date, start_time, target_date, end_time, "False", "", location, "False"])
+            events.append(["本町", target_date, start_time, target_date, end_time, "False", "", "本町", "False"])
+            
+        # (2) それ以外 (time_scheduleになく、本町でもない。例:休、有休)
         else:
-            # その他イベント 
-            events_other.append([info, target_date, "", target_date, "", "True", "", "", "False"])
+            events.append([info, target_date, "", target_date, "", "True", "", "", "False"])
 
-    uploaded_files = {}
-    
-    def save_to_drive(data_list, suffix):
-        if not data_list: return
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(header)
-        writer.writerows(data_list)
-        
-        filename = f"{y:04d}年{m:02d}月_{suffix}.csv"
-        file_metadata = {'name': filename, 'parents': [folder_id]}
-        media = MediaIoBaseUpload(io.BytesIO(output.getvalue().encode('utf-8-sig')), mimetype='text/csv')
-        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        uploaded_files[filename] = file.get('id')
+    return events
 
-    save_to_drive(events_holiday, "休")
-    save_to_drive(events_key, location)
-    save_to_drive(events_other, "イベント")
+def create_and_upload_calendar_csv(drive_service, folder_id, y, m, location, my_shift, time_schedule):
+    """Google DriveへのCSVアップロード"""
+    events = create_calendar_csv_data(y, m, location, my_shift, time_schedule)
     
-    return uploaded_files
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerows(events)
+    
+    filename = f"{y:04d}年{m:02d}月_シフトカレンダー.csv"
+    file_metadata = {'name': filename, 'parents': [folder_id]}
+    media = MediaIoBaseUpload(io.BytesIO(output.getvalue().encode('utf-8-sig')), mimetype='text/csv')
+    
+    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    return filename, file.get('id')
