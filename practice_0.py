@@ -2,9 +2,6 @@ import pandas as pd
 import camelot
 import re
 import calendar
-import io
-import csv
-from googleapiclient.http import MediaIoBaseUpload
 
 def get_calc_date_info(y, m):
     """① ファイル名から算出する日数と第一曜日"""
@@ -55,7 +52,7 @@ def process_time_block(block):
     return res_df
 
 def analyze_pdf_structure(pdf_path, y, m):
-    """第一関門・データ抽出（※稼働実績のあるオリジナルコードをそのまま使用）"""
+    """第一関門・データ抽出 [cite: 1]"""
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
@@ -69,11 +66,13 @@ def analyze_pdf_structure(pdf_path, y, m):
     if not (pdf_last_day == calc_last_day and pdf_first_w == calc_first_w):
         return None, f"不一致：計算={calc_last_day}({calc_first_w}) / PDF={pdf_last_day}({pdf_first_w})"
 
+    # location抽出
     location = re.sub(r'\(?[月火水木金土日]\)?', '', raw_0_0)
     location = re.sub(r'\d+[\s～~-]+\d+', '', location)
     location = re.sub(r'\b([1-9]|[12][0-9]|3[01])\b', '', location)
     location = re.sub(r'[年月日で\s/：:-]', '', location).strip()
     
+    # データ組替とスタッフリスト作成
     rows = []
     rows.append([""] + df.iloc[0, 1:].tolist()) 
     rows.append([location] + df.iloc[1, 1:].tolist())
@@ -90,13 +89,16 @@ def analyze_pdf_structure(pdf_path, y, m):
     return {"df": pd.DataFrame(rows), "location": location, "staff_list": staff_names}, "通過"
 
 def extract_target_data(df, target_staff, location):
-    """第3関門：my_daily_shift, other_daily_shiftの抽出（※オリジナルコードそのまま）"""
+    """第3関門：my_daily_shift, other_daily_shiftの抽出 [cite: 1]"""
     if target_staff not in df[0].values:
         return None
         
     idx = df[df[0] == target_staff].index[0]
+    
+    # my_daily_shift: target_staff行 + その下段（資格行）
     my_daily_shift = df.iloc[idx : idx+2, :].copy()
     
+    # other_daily_shift: 空白行とlocation行、自分を除外して抽出 [cite: 1]
     other_indices = []
     for i in range(2, len(df)):
         val_0 = str(df.iloc[i, 0]).strip()
@@ -109,82 +111,3 @@ def extract_target_data(df, target_staff, location):
         "my_daily_shift": my_daily_shift,
         "other_daily_shift": other_daily_shift
     }
-
-# =========================================================
-# [3] カレンダー登録用 新規追加ロジック
-# =========================================================
-def create_calendar_csv_data(y, m, location, my_shift, time_schedule):
-    """カレンダー登録.csvの仕様に基づくデータ生成"""
-    events = []
-    header = ["Subject", "Start Date", "Start Time", "End Date", "End Time", "All Day Event", "Description", "Location", "Private"]
-    events.append(header)
-
-    _, last_day = calendar.monthrange(y, m)
-
-    # 1列目〜最終列まで順次読み込む
-    for col in range(1, last_day + 1):
-        if col >= my_shift.shape[1]:
-            break
-            
-        info = str(my_shift.iloc[0, col]).strip()
-        if not info:
-            continue
-            
-        target_date = f"{y:04d}/{m:02d}/{col:02d}"
-        
-        # (1) 時程表(time_schedule)にinfo(シフトコード)が存在する場合
-        if (time_schedule.iloc[:, 1] == info).any():
-            t_row = time_schedule[time_schedule.iloc[:, 1] == info].iloc[0]
-            start_time = ""
-            end_time = ""
-            started = False
-            
-            # test_1.py代替: 左から右へ走査し「無→有」でstart、「有→無」でendを取得
-            for c in range(3, len(t_row)):
-                val = str(t_row.iloc[c]).strip()
-                if val != "" and not started:
-                    start_time = str(time_schedule.iloc[0, c])
-                    started = True
-                elif val == "" and started:
-                    end_time = str(time_schedule.iloc[0, c])
-                    break
-                    
-            if started and end_time == "":
-                end_time = str(time_schedule.iloc[0, -1]) # 最後まで埋まっていた場合
-                
-            events.append([info, target_date, start_time, target_date, end_time, "False", "", location, "False"])
-            
-        # (3) info == "本町" の場合
-        elif info == "本町":
-            sub_info = str(my_shift.iloc[1, col]).strip() if len(my_shift) > 1 else ""
-            start_time = "09:00"
-            end_time = "14:00"
-            
-            # "9①14" のような表記から時間を抽出
-            m_match = re.search(r'(\d+)\s*[①-⑨]\s*(\d+)', sub_info)
-            if m_match:
-                start_time = f"{int(m_match.group(1)):02d}:00"
-                end_time = f"{int(m_match.group(2)):02d}:00"
-                
-            events.append(["本町", target_date, start_time, target_date, end_time, "False", "", "本町", "False"])
-            
-        # (2) それ以外 (time_scheduleになく、本町でもない。例:休、有休)
-        else:
-            events.append([info, target_date, "", target_date, "", "True", "", "", "False"])
-
-    return events
-
-def create_and_upload_calendar_csv(drive_service, folder_id, y, m, location, my_shift, time_schedule):
-    """Google DriveへのCSVアップロード"""
-    events = create_calendar_csv_data(y, m, location, my_shift, time_schedule)
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerows(events)
-    
-    filename = f"{y:04d}年{m:02d}月_シフトカレンダー.csv"
-    file_metadata = {'name': filename, 'parents': [folder_id]}
-    media = MediaIoBaseUpload(io.BytesIO(output.getvalue().encode('utf-8-sig')), mimetype='text/csv')
-    
-    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    return filename, file.get('id')
