@@ -5,7 +5,7 @@ import practice_0 as p0
 def main():
     st.title("シフトカレンダー管理システム")
     
-    # [1] マスタの読み込み（裏側で処理、表示なし）
+    # [1] マスタの裏側読み込み（画面表示なし）
     if 'time_dic' not in st.session_state:
         st.session_state.time_dic = p0.load_master_from_sheets()
 
@@ -15,10 +15,10 @@ def main():
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         
-        # 勤務地の特定（A列の0行目がT1等の勤務地コードと仮定）
+        # 勤務地の特定 (A列の0行目がT1等の勤務地コードと仮定)
         location = str(df.iloc[0, 0]).strip()
         
-        # スタッフリスト作成（人名行のみ抽出）
+        # スタッフリスト作成：人名行のみを抽出
         def is_staff(val):
             v = str(val).strip()
             return v and not v.isdigit() and v not in ['T1', 'T2', 'シフトコード', 'nan']
@@ -34,7 +34,7 @@ def main():
             
             st.success(f"{target_staff} のデータを登録しました")
             
-            # 結果表示（必要に応じて確認用として展開）
+            # 結果表示（データ確認用）
             with st.expander("データ詳細を確認"):
                 st.write("#### 1. my_daily_shift (選択スタッフの2行)")
                 st.dataframe(data["my_daily_shift"])
