@@ -3,10 +3,24 @@ import camelot
 import re
 
 def load_master_from_sheets():
-    """[1] 時程表読み込み（画面表示なし）"""
-    # 実際はCSV等を読み込み、{ "T1": df1, ... } を返す
-    return {"T1": pd.DataFrame()} 
-
+    """
+    [1] 時程表読込
+    A列を勤務地（Key）として辞書を生成し、画面表示は行わない
+    """
+    # CSVの読み込み
+    df = pd.read_csv("時程表.xlsx - Table 1.csv")
+    
+    # A列を勤務地としてグループ化し、辞書に格納
+    time_dic = {}
+    # df.iloc[:, 0] はA列を指します
+    grouped = df.groupby(df.iloc[:, 0])
+    
+    for location, group in grouped:
+        # 勤務地ごとのデータを辞書に登録
+        time_dic[str(location).strip()] = group
+        
+    return time_dic
+    
 def load_and_validate_pdf(pdf_path, time_dic):
     """[2] PDF読み込みと検証"""
     # camelotで読み込み
