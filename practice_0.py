@@ -1,65 +1,52 @@
 import pandas as pd
-import camelot
-import re
 
 def load_master_from_sheets():
     """
     [1] 時程表読込
-    A列を勤務地（Key）として辞書を生成し、画面表示は行わない
+    A列を勤務地（Key）として辞書を生成。表示は一切行わない。
     """
-    # CSVの読み込み
+    # 実際のファイルパスに合わせて修正してください
     df = pd.read_csv("時程表.xlsx - Table 1.csv")
     
-    # A列を勤務地としてグループ化し、辞書に格納
     time_dic = {}
-    # df.iloc[:, 0] はA列を指します
-    grouped = df.groupby(df.iloc[:, 0])
-    
-    for location, group in grouped:
-        # 勤務地ごとのデータを辞書に登録
+    # A列(iloc[:, 0])を勤務地としてグループ化
+    for location, group in df.groupby(df.iloc[:, 0]):
+        # キーの前後の空白を除去して辞書登録
         time_dic[str(location).strip()] = group
-        
     return time_dic
-    
-def load_and_validate_pdf(pdf_path, time_dic):
-    """[2] PDF読み込みと検証"""
-    # camelotで読み込み
-    tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
-    df = tables[0].df
-    
-    # 勤務地抽出
-    raw_header = str(df.iloc[0, 0])
-    location = re.sub(r'[\s\u4e00-\u9fff/年月日時曜日]', '', raw_header).strip()
-    
-    # 検証（辞書に存在するか）
-    if location not in time_dic:
-        return None, f"勤務地不一致: {location}", None
-        
-    return df, "通過", location
 
 def register_shift_data(df, target_staff, location, time_dic):
-    """[2] データ抽出ロジック"""
-    # ターゲットスタッフの行番号を探す
-    staff_rows = df[df.iloc[:, 0] == target_staff]
-    
-    # 勤務地から時程表を取得
+    """
+    [2] 抽出ロジック
+    """
+    # 勤務地をキーに時程表を取得（なければ空DF）
     target_time_schedule = time_dic.get(location, pd.DataFrame())
     
-    if target_staff == "該当者なし" or staff_rows.empty:
+    # 1. ターゲットスタッフの行を見つける
+    staff_rows = df[df.iloc[:, 0] == target_staff]
+    
+    # 2. 人名行抽出用フィルター
+    # 数値、T1/T2、曜日などが含まれる行を徹底的に除外する
+    def is_staff_row(row):
+        val = str(row[0]).strip()
+        exclude = ['T1', 'T2', 'シフトコード', '1', '2', '木', '金', '土', '日', '月', '火', '水', 'nan', '']
+        return val not in exclude and not val.isdigit()
+
+    mask = df.apply(is_staff_row, axis=1)
+    # 人名行のみ、かつ選択したスタッフ以外を抽出
+    other_df = df[mask & (df.iloc[:, 0] != target_staff)]
+    
+    if staff_rows.empty:
         return {
             "my_daily_shift": pd.DataFrame(),
-            "other_daily_shift": df[df.iloc[:, 0].str.strip() != ""], # 人名行のみ
+            "other_daily_shift": other_df,
             "time_schedule": target_time_schedule
         }
         
     idx = staff_rows.index[0]
     
-    # my_daily_shift: 名前行 + 直下の行（2行）
+    # my_daily_shift: 名前行 + 次の行（2行セット）
     my_daily_shift = df.iloc[idx : idx + 2]
-    
-    # other_daily_shift: 名前行のみを抽出
-    # 0列目が空でなく、かつ選択したスタッフ名ではない行
-    other_df = df[ (df.iloc[:, 0].str.strip() != "") & (df.iloc[:, 0] != target_staff) ]
     
     return {
         "my_daily_shift": my_daily_shift,
