@@ -7,7 +7,7 @@ from google.oauth2 import service_account
 
 # スプレッドシートID
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-# CSV保存先Google DriveフォルダID
+# CSV保存先Google DriveフォルダID 
 DRIVE_FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
 def get_services():
@@ -108,7 +108,7 @@ if uploaded_file:
                 st.write("#### my_daily_shift")
                 st.dataframe(st.session_state.final_result[location]["my_daily_shift"], hide_index=True)
                 
-                # [3] カレンダー登録
+                # [3] カレンダー登録 [cite: 2]
                 st.write("---")
                 st.write("### カレンダー連携")
                 if st.button("カレンダー用CSVを作成しDriveへ保存"):
@@ -118,4 +118,13 @@ if uploaded_file:
                                 st.session_state.drive_service,
                                 DRIVE_FOLDER_ID,
                                 y, m, location,
-                                st.session
+                                st.session_state.final_result[location]["my_daily_shift"],
+                                st.session_state.final_result[location]["time_schedule"]
+                            )
+                            st.success("1年保存用のカレンダーCSVをGoogle Driveに保存しました。")
+                            for f_name, f_id in saved_files.items():
+                                st.write(f"- `{f_name}` (File ID: {f_id})")
+                        except Exception as e:
+                            st.error(f"保存中にエラーが発生しました: {e}")
+            else:
+                stop_with_pdf_image_only("target_staffが見つかりません。確認して下さい。", "temp.pdf")
