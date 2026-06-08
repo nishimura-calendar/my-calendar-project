@@ -56,7 +56,7 @@ def analyze_pdf_structure(pdf_path, y, m):
     tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
-    raw_0_0 = str(df.iloc[0, 0]).strip()
+    raw_0_0 = str(df.iloc[:, 0]).strip()
     
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
     nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
