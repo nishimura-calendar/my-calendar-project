@@ -57,7 +57,6 @@ def analyze_pdf_structure(pdf_path, y, m):
     if not tables: return None, "PDF表抽出失敗"
     df = tables[0].df
     raw_0_0 = str(df.iloc[0, 0]).strip()
-    print(raw_0_0)
     
     calc_last_day, calc_first_w = get_calc_date_info(y, m)
     nums = [int(n) for n in re.findall(r'\d+', raw_0_0)]
