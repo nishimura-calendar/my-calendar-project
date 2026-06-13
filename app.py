@@ -1,18 +1,19 @@
 import streamlit as st
 import datetime
 import os
-import json
 from practice_0 import generate_shift_csv
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
 
-# SecretsからJSONを読み込む
+# Google Drive API 認証設定
 def get_service():
+    # Streamlit Cloudの Secrets に設定した gcp_service_account を読み込み
     creds_dict = st.secrets["gcp_service_account"]
     creds = service_account.Credentials.from_service_account_info(creds_dict)
     return build('drive', 'v3', credentials=creds)
 
+# 指定されたフォルダーID
 FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
 def save_to_drive(local_file_path, folder_id, file_name):
@@ -22,7 +23,12 @@ def save_to_drive(local_file_path, folder_id, file_name):
         'parents': [folder_id]
     }
     media = MediaFileUpload(local_file_path, mimetype='text/csv')
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    # マイドライブ内のフォルダへの保存を実行
+    file = service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id'
+    ).execute()
     return file.get('id')
 
 def main():
@@ -34,16 +40,17 @@ def main():
         staff_name = "山田太郎"
         
         if st.button("CSV生成と保存"):
-            # ローカルにCSV生成
+            # 1. CSV生成
             local_filename = generate_shift_csv(key, staff_name, {}, {}) 
             
+            # 2. ドライブ保存
             try:
-                # ドライブへアップロード
                 file_id = save_to_drive(local_filename, FOLDER_ID, local_filename)
-                st.success(f"ドライブに保存しました (ID: {file_id})")
+                st.success(f"ドライブに保存しました！ (ファイル名: {local_filename})")
             except Exception as e:
                 st.error(f"アップロード失敗: {e}")
             finally:
+                # 3. ローカルのファイルを削除
                 if os.path.exists(local_filename):
                     os.remove(local_filename)
 
