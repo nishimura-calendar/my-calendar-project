@@ -1,11 +1,14 @@
 import streamlit as st
 import datetime
+import os # 追加しました
 from practice_0 import generate_shift_csv
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+creds = None # ここには実際の認証オブジェクトが必要です
 
 # 定数
 FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 
 def main():
     st.title("シフトカレンダー作成システム")
