@@ -1,6 +1,7 @@
 import pandas as pd
 import datetime
 import re
+import csv 
 
 def format_time_value(val):
     """数値を15分刻みの時間表記 (HH:MM) に変換"""
@@ -37,5 +38,4 @@ def generate_shift_csv(key, staff_name, shift_data, time_dic):
            rows.append([f"{key}_{shift}", date, start_time, date, "", "False", "", key])
 
     return file_name # 作成したファイル名を返す
-    
-    return rows
+
