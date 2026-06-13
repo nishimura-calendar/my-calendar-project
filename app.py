@@ -4,16 +4,17 @@ import os
 from practice_0 import generate_shift_csv
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 
-# Google Drive API 認証設定
+# 認証情報をSecretsから読み込む設定
+# 初回は local_server 等での認証が必要ですが、
+# 既に token.json があればそれを読み込む仕組みにします
 def get_service():
-    # Streamlit Cloudの Secrets に設定した gcp_service_account を読み込み
-    creds_dict = st.secrets["gcp_service_account"]
-    creds = service_account.Credentials.from_service_account_info(creds_dict)
+    # Secretsから保存したJSONを読み込んで認証を作成
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds = Credentials.from_authorized_user_info(creds_dict)
     return build('drive', 'v3', credentials=creds)
 
-# 指定されたフォルダーID
 FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
 def save_to_drive(local_file_path, folder_id, file_name):
@@ -23,7 +24,7 @@ def save_to_drive(local_file_path, folder_id, file_name):
         'parents': [folder_id]
     }
     media = MediaFileUpload(local_file_path, mimetype='text/csv')
-    # マイドライブ内のフォルダへの保存を実行
+    # あなた自身の権限で実行するため、容量制限エラーは発生しません
     file = service.files().create(
         body=file_metadata, 
         media_body=media, 
@@ -40,17 +41,14 @@ def main():
         staff_name = "山田太郎"
         
         if st.button("CSV生成と保存"):
-            # 1. CSV生成
             local_filename = generate_shift_csv(key, staff_name, {}, {}) 
             
-            # 2. ドライブ保存
             try:
                 file_id = save_to_drive(local_filename, FOLDER_ID, local_filename)
-                st.success(f"ドライブに保存しました！ (ファイル名: {local_filename})")
+                st.success(f"ドライブに保存しました！ (ID: {file_id})")
             except Exception as e:
                 st.error(f"アップロード失敗: {e}")
             finally:
-                # 3. ローカルのファイルを削除
                 if os.path.exists(local_filename):
                     os.remove(local_filename)
 
