@@ -7,19 +7,6 @@ FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-def save_to_drive(local_file_path, folder_id, file_name):
-    """Google Driveへファイルをアップロードする関数"""
-    # 認証処理（serviceの生成は適宜行ってください）
-    service = build('drive', 'v3', credentials=creds)
-    
-    file_metadata = {
-        'name': file_name,
-        'parents': [folder_id]
-    }
-    media = MediaFileUpload(local_file_path, mimetype='text/csv')
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    print(f"File ID: {file.get('id')}")
-
 def main():
     st.title("シフトカレンダー作成システム")
     
@@ -42,6 +29,20 @@ def main():
             # save_to_drive(csv_rows, file_name, FOLDER_ID)
             
             st.success(f"{file_name} を生成し保存しました。")
+
+def save_to_drive(local_file_path, folder_id, file_name):
+    """Google Driveへファイルをアップロードする関数"""
+    # 認証処理（serviceの生成は適宜行ってください）
+    service = build('drive', 'v3', credentials=creds)
+    
+    file_metadata = {
+        'name': file_name,
+        'parents': [folder_id]
+    }
+    media = MediaFileUpload(local_file_path, mimetype='text/csv')
+    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    print(f"File ID: {file.get('id')}")
+
 
 if __name__ == "__main__":
     main()
