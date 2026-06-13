@@ -19,17 +19,20 @@ def main():
         
         # 2. 処理実行
         if st.button("CSV生成と保存"):
-            csv_rows = generate_shift_csv(key, staff_name, {}, {}, {})
+            # 1. ローカルにCSVを作成し、ファイル名を取得
+            local_filename = generate_shift_csv(key, staff_name, {}, {}) 
             
-            # 3. 年月_名前_Key.csv で保存
-            now = datetime.datetime.now()
-            file_name = f"{now.strftime('%Y%m')}_{staff_name}_{key}.csv"
-            
-            # Google Drive API連携 (保存処理)
-            # save_to_drive(csv_rows, file_name, FOLDER_ID)
-            
-            st.success(f"{file_name} を生成し保存しました。")
-
+            # 2. 生成されたファイルをドライブへアップロード
+            try:
+                save_to_drive(local_filename, FOLDER_ID, local_filename)
+                st.success(f"{local_filename} をドライブに保存しました！")
+            except Exception as e:
+                st.error(f"アップロード失敗: {e}")
+            finally:
+                # 3. アップロード後はローカルのゴミを掃除
+                if os.path.exists(local_filename):
+                    os.remove(local_filename)
+                    
 def save_to_drive(local_file_path, folder_id, file_name):
     """Google Driveへファイルをアップロードする関数"""
     # 認証処理（serviceの生成は適宜行ってください）
