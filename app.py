@@ -4,17 +4,17 @@ import os
 from practice_0 import generate_shift_csv
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.credentials import Credentials
+from google.oauth2.credentials import Credentials  # ← ここを追加
 
-# 認証情報をSecretsから読み込む設定
-# 初回は local_server 等での認証が必要ですが、
-# 既に token.json があればそれを読み込む仕組みにします
+# 修正部分：サービスアカウントからOAuth認証へ
 def get_service():
-    # Secretsから保存したJSONを読み込んで認証を作成
+    # Secretsから新しいキーを読み込む
     creds_dict = st.secrets["google_oauth_credentials"]
+    # 辞書から認証情報を生成
     creds = Credentials.from_authorized_user_info(creds_dict)
     return build('drive', 'v3', credentials=creds)
 
+# あとは既存の save_to_drive 関数などはそのまま使えます！
 FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
 def save_to_drive(local_file_path, folder_id, file_name):
