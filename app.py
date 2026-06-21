@@ -20,7 +20,9 @@ def load_time_schedule():
     # 自分のドライブ内の最新ファイル名を表示させてみる
     results = service.files().list(pageSize=10, fields="files(name, id)").execute()
     st.write("アクセス可能なファイル一覧:", results.get('files', []))
-    return {}def save_to_drive(local_file_path, folder_id, file_name):
+    return {}
+    
+def save_to_drive(local_file_path, folder_id, file_name):
     service = get_service('drive', 'v3')
     file_metadata = {'name': file_name, 'parents': [folder_id]}
     media = MediaFileUpload(local_file_path, mimetype='text/csv')
@@ -28,7 +30,7 @@ def load_time_schedule():
     return file.get('id')
 
 def main():
-    st.title("シフトカレンダー作成システム")
+z    st.title("シフトカレンダー作成システム")
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
     
     if uploaded_file:
