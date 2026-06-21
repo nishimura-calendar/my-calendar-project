@@ -10,11 +10,14 @@ from google.oauth2.credentials import Credentials
 FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
 def get_service():
-    """Secretsから読み込んだトークンでドライブサービスを構築"""
-    creds_dict = json.loads(st.secrets["google_oauth_credentials"]["token"])
-    creds = Credentials.from_authorized_user_info(creds_dict)
+    # Secretsから辞書全体を取得
+    creds_dict = st.secrets["google_oauth_credentials"]
+    
+    # Credentials.from_authorized_user_info は、
+    # 必要なキー(token, refresh_token等)を辞書から自動的に拾ってくれます
+    creds = Credentials.from_authorized_user_info(dict(creds_dict))
+    
     return build('drive', 'v3', credentials=creds)
-
 def save_to_drive(local_file_path, folder_id, file_name):
     service = get_service()
     file_metadata = {
