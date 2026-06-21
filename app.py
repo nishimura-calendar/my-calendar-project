@@ -16,30 +16,26 @@ def get_service(api_name, version):
     return build(api_name, version, credentials=creds)
 
 def load_time_schedule():
-    """スプレッドシートから勤務地(key)をキーにして時程表を辞書化する"""
-    service = get_service('sheets', 'v4')
-    
-    # 全シートを取得してループ処理（あるいは特定のシート名を指定）
-    spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-    sheet_name = spreadsheet['sheets'][0]['properties']['title'] # 最初のシートを対象
-    
-    # データ範囲を広めに取得
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID, range=f"{sheet_name}!A1:D50").execute()
-    values = result.get('values', [])
-    
-    # 辞書生成ロジック
-    # 想定: A列=勤務地(key), B列=シフトコード, C列=開始時間
-    time_dic = {}
-    for row in values:
-        if len(row) >= 3:
-            key = row[0]  # 勤務地
-            shift = row[1] # シフトコード
-            time = row[2]  # 時間
-            time_dic[f"{key}_{shift}"] = time
-            
-    return time_dic
-
+    """スプレッドシートから時程表を読み込む（デバッグ版）"""
+    try:
+        service = get_service('sheets', 'v4')
+        st.write("認証サービス作成成功") # 成功ログ
+        
+        # メタデータの取得を試みる
+        spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        st.write("スプレッドシートへのアクセス成功") # 成功ログ
+        
+        sheet_name = spreadsheet['sheets'][0]['properties']['title']
+        result = service.spreadsheets().values().get(
+            spreadsheetId=SPREADSHEET_ID, range=f"{sheet_name}!A1:D50").execute()
+        
+        values = result.get('values', [])
+        time_dic = {f"{row[0]}_{row[1]}": row[2] for row in values if len(row) >= 3}
+        return time_dic
+        
+    except Exception as e:
+        st.error(f"エラー発生！詳細: {e}")
+        return {}        
 def save_to_drive(local_file_path, folder_id, file_name):
     service = get_service('drive', 'v3')
     file_metadata = {'name': file_name, 'parents': [folder_id]}
