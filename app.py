@@ -7,14 +7,26 @@ import os
 # --- 第1関門の関数 ---
 
 def get_b_from_pdf(pdf_file_path):
-    """B: PDF内容から月末日を特定する"""
-    # 一時保存したパスを渡して解析
+    """B: PDF内容から月末日を特定する（より堅牢な実装）"""
     tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
     df = tables[0].df
     all_data = df.astype(str).values.flatten()
-    days = [int(v) for v in all_data if v.strip().isdigit()]
+    
+    days = []
+    for v in all_data:
+        clean_v = v.strip()
+        # 数字のみである場合、または「1.0」のような小数点形式の場合に対応
+        try:
+            # 小数点が含まれていても整数に変換する
+            num = int(float(clean_v))
+            # カレンダーの日付として妥当な範囲（1〜31）のみ抽出
+            if 1 <= num <= 31:
+                days.append(num)
+        except (ValueError, TypeError):
+            continue
+            
     return max(days) if days else 0
-
+    
 def get_a_from_filename(filename):
     """A: ファイル名から年・月を特定し、その月の最終日を取得する"""
     year_match = re.search(r'20\d{2}', filename)
