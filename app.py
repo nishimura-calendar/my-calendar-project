@@ -73,14 +73,31 @@ def main():
     uploaded_file = st.file_uploader("読み込むpdfシフトファイルを開いてください。", type="pdf")
     
     if uploaded_file is not None:
+        # ファイル名からの自動取得を試みる
+        year_a, month_a = get_year_month_from_filename(uploaded_file.name)
+        
+        # 自動取得できなかったらフォームを表示
+        if year_a is None or month_a is None:
+            st.warning("ファイル名から年月が特定できませんでした。対象年月を入力してください。")
+            col1, col2 = st.columns(2)
+            with col1:
+                year_a = st.number_input("年", value=2026, step=1)
+            with col2:
+                month_a = st.number_input("月", value=1, min_value=1, max_value=12)
+        
+        # 実行ボタン
         if st.button("実行"):
-            with st.spinner("第1関門を通過中..."):
-                success, message = first_gate_check(uploaded_file)
-                if success:
-                    st.success(message)
-                    # ここに第2関門への処理を追加予定
-                else:
-                    st.error(message)
-
+            # ここで判定を実行
+            _, last_day_a = calendar.monthrange(int(year_a), int(month_a))
+            
+            # PDF内容の解析 (B)
+            # (temp_path保存処理はここに含める)
+            last_day_b = get_b_from_pdf("temp_shift.pdf")
+            
+            if last_day_a == last_day_b:
+                st.success(f"第1関門突破: {year_a}年{month_a}月 ({last_day_a}日) として確認しました。")
+            else:
+                st.error(f"整合性エラー: 入力した{year_a}年{month_a}月は{last_day_a}日までですが、PDF内容は{last_day_b}日までです。")
+                
 if __name__ == "__main__":
     main()
