@@ -11,12 +11,17 @@ FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 SPREADSHEET_ID = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
 
 def get_service(api_name, version):
-    """認証情報を取得してGoogle APIサービスを構築"""
     creds_dict = st.secrets["google_oauth_credentials"]
-    # 辞書形式で認証情報を生成
-    creds = Credentials.from_authorized_user_info(dict(creds_dict))
+    
+    # 権限スコープを明示的に指定
+    scopes = [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/spreadsheets.readonly" # これを追加
+    ]
+    
+    creds = Credentials.from_authorized_user_info(dict(creds_dict), scopes=scopes)
     return build(api_name, version, credentials=creds)
-
+    
 def load_time_schedule():
     """スプレッドシートから時程表を読み込む"""
     try:
