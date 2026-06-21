@@ -63,6 +63,45 @@ def main():
             st.success(f"接続成功: {spreadsheet['properties']['title']}")
         except Exception as e:
             st.error(f"接続エラー: {e}")
+
+def get_b_from_pdf(pdf_file):
+    """B: PDF内容から月末日を特定する"""
+    tables = camelot.read_pdf(pdf_file, pages='1', flavor='stream')
+    df = tables[0].df
+    # 全データから数値を探し、最大値を月末日とする
+    all_data = df.astype(str).values.flatten()
+    days = [int(v) for v in all_data if v.strip().isdigit()]
+    return max(days) if days else 0
+
+def get_a_from_filename(filename):
+    """A: ファイル名から年・月を特定し、その月の最終日を取得する"""
+    year_match = re.search(r'20\d{2}', filename)
+    month_match = re.search(r'(\d{1,2})月', filename)
+    
+    if year_match and month_match:
+        year = int(year_match.group(0))
+        month = int(month_match.group(1))
+        _, last_day = calendar.monthrange(year, month)
+        return last_day
+    return None
+
+def first_gate_check(uploaded_file):
+    """第1関門：A=Bの検証"""
+    filename = uploaded_file.name
+    
+    # B: 内容から取得
+    last_day_b = get_b_from_pdf(uploaded_file)
+    
+    # A: ファイル名から取得
+    last_day_a = get_a_from_filename(filename)
+    
+    if last_day_a is None:
+        return False, "ファイル名から年・月が特定できませんでした。"
+    
+    if last_day_a != last_day_b:
+        return False, f"整合性エラー: ファイル名からは{last_day_a}日までですが、PDF内容からは{last_day_b}日までとなっています。"
+    
+    return True, f"第1関門突破: {last_day_a}日までのデータとして確認しました。"
             
 if __name__ == "__main__":
     main()
