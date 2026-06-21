@@ -16,27 +16,11 @@ def get_service(api_name, version):
     return build(api_name, version, credentials=creds)
 
 def load_time_schedule():
-    """スプレッドシートから時程表を読み込む（デバッグ版）"""
-    try:
-        service = get_service('sheets', 'v4')
-        st.write("認証サービス作成成功") # 成功ログ
-        
-        # メタデータの取得を試みる
-        spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-        st.write("スプレッドシートへのアクセス成功") # 成功ログ
-        
-        sheet_name = spreadsheet['sheets'][0]['properties']['title']
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID, range=f"{sheet_name}!A1:D50").execute()
-        
-        values = result.get('values', [])
-        time_dic = {f"{row[0]}_{row[1]}": row[2] for row in values if len(row) >= 3}
-        return time_dic
-        
-    except Exception as e:
-        st.error(f"エラー発生！詳細: {e}")
-        return {}        
-def save_to_drive(local_file_path, folder_id, file_name):
+    service = get_service('drive', 'v3') # SheetsではなくDrive APIで確認
+    # 自分のドライブ内の最新ファイル名を表示させてみる
+    results = service.files().list(pageSize=10, fields="files(name, id)").execute()
+    st.write("アクセス可能なファイル一覧:", results.get('files', []))
+    return {}def save_to_drive(local_file_path, folder_id, file_name):
     service = get_service('drive', 'v3')
     file_metadata = {'name': file_name, 'parents': [folder_id]}
     media = MediaFileUpload(local_file_path, mimetype='text/csv')
