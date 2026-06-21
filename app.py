@@ -21,20 +21,23 @@ def load_time_schedule():
     """スプレッドシートから時程表を読み込む"""
     try:
         service = get_service('sheets', 'v4')
-        # シート名は実際のシート名に合わせて調整してください（例: "Sheet1"）
-        sheet_name = "Sheet1" 
+        
+        # 1. まずスプレッドシート全体の情報を取得して、最初のシート名を取得する
+        spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+        sheet_name = spreadsheet['sheets'][0]['properties']['title'] # 最初のシート名を自動取得
+        
+        # 2. そのシート名を使ってデータを取得
         result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID, 
-            range=f"{sheet_name}!A1:C50").execute()
+            range=f"'{sheet_name}'!A1:C50").execute() # シングルクォーテーションで囲む
         
         values = result.get('values', [])
-        # A列: 勤務地, B列: シフトコード, C列: 時間
         time_dic = {f"{row[0]}_{row[1]}": row[2] for row in values if len(row) >= 3}
         return time_dic
     except Exception as e:
         st.error(f"読み込みエラー: {e}")
         return {}
-
+        
 def save_to_drive(local_file_path, folder_id, file_name):
     """CSVをGoogleドライブへアップロード"""
     service = get_service('drive', 'v3')
