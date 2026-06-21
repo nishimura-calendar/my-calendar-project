@@ -1,28 +1,59 @@
 import streamlit as st
-from practice_0 import process_pdf_shift, generate_calendar_csv
+import os
+import json
+from practice_0 import generate_shift_csv
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google.oauth2.credentials import Credentials
 
-st.title("シフトカレンダー作成システム")
+# 指定のフォルダID (シフトカレンダー.xlsxの設定値)
+FOLDER_ID = "19GBObKKJQylZXLaxfApt3iSgA1893TKa"
 
-# 1. PDFアップロード
-uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
+def get_service():
+    """Secretsから読み込んだトークンでドライブサービスを構築"""
+    creds_dict = json.loads(st.secrets["google_oauth_credentials"]["token"])
+    creds = Credentials.from_authorized_user_info(creds_dict)
+    return build('drive', 'v3', credentials=creds)
 
-if uploaded_file:
-    # PDFを一時保存してパスを生成
-    with open("temp.pdf", "wb") as f:
-        f.write(uploaded_file.getbuffer())
+def save_to_drive(local_file_path, folder_id, file_name):
+    service = get_service()
+    file_metadata = {
+        'name': file_name,
+        'parents': [folder_id]
+    }
+    media = MediaFileUpload(local_file_path, mimetype='text/csv')
+    file = service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id'
+    ).execute()
+    return file.get('id')
+
+def main():
+    st.title("シフトカレンダー作成システム")
+    uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
     
-    st.write("ファイルを確認しました。処理を開始します。")
-    
-    # 2. ボタン操作で処理開始
-    if st.button("CSV生成とGoogleドライブ保存"):
-        # ロジック呼び出し
-        result = process_pdf_shift("temp.pdf", "山田太郎")
+    if uploaded_file:
+        st.write("ファイルを確認しました。")
         
-        # CSV生成
-        csv_file = generate_calendar_csv("T1", "山田太郎", result, {})
-        
-        # 3. Googleドライブ連携
-        # drive_service = get_service() # 認証済みサービス
-        # save_to_drive(csv_file, ...)
-        
-        st.success("完了しました！")
+        if st.button("CSV生成とGoogleドライブへ保存"):
+            # 仮のデータ（本来はPDF解析結果を代入）
+            key = "T1"
+            staff_name = "山田太郎"
+            dummy_shift_data = {"2026-06-21": "A"} # テストデータ
+            dummy_time_dic = {"A": 9.0}
+            
+            # 1. CSV生成
+            local_filename = generate_shift_csv(key, staff_name, dummy_shift_data, dummy_time_dic)
+            
+            # 2. ドライブ保存
+            file_id = save_to_drive(local_filename, FOLDER_ID, local_filename)
+            
+            st.success(f"完了しました！ (File ID: {file_id})")
+            
+            # 一時ファイルの削除
+            if os.path.exists(local_filename):
+                os.remove(local_filename)
+
+if __name__ == "__main__":
+    main()
