@@ -13,11 +13,12 @@ def get_service():
     # Secretsから辞書全体を取得
     creds_dict = st.secrets["google_oauth_credentials"]
     
-    # Credentials.from_authorized_user_info は、
-    # 必要なキー(token, refresh_token等)を辞書から自動的に拾ってくれます
+    # Credentialsに必要なキーが揃っているか確認し、生成する
+    # Secretsがすでに辞書形式であればそのまま渡せます
     creds = Credentials.from_authorized_user_info(dict(creds_dict))
     
     return build('drive', 'v3', credentials=creds)
+
 def save_to_drive(local_file_path, folder_id, file_name):
     service = get_service()
     file_metadata = {
