@@ -9,32 +9,39 @@ def get_theoretical_info(year, month):
     jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
     return last_day, jp_weekdays[weekday_idx]
 
-def extract_from_pdf(pdf_path, last_day_A):
+def extract_from_pdf(pdf_path, max_day):
     """
-    31日(直下)、30日(直下)...の順に検索し、ヒットした時点で抽出する
+    構造に依存せず、PDF内の全ての数値と曜日を全スキャンし、
+    末尾からペアを探す手法に切り替えました。
     """
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            page = pdf.pages[0]
-            # テキストを抽出
-            text = page.extract_text()
-            # 行ごとに分割
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            text = pdf.pages[0].extract_text()
             
-            # 31から28まで遡って検索
-            for day in range(last_day_A, last_day_A - 4, -1):
-                day_str = str(day)
+            # 数値（28-31）と曜日を検索
+            found_dates = []
+            
+            # 全テキストの中から「数字」と「曜日」を探す
+            # 正規表現で「数字」のリストと「曜日」のリストを作る
+            import re
+            
+            # 日付（28〜31）を見つける
+            for day in range(28, 32):
+                if str(day) in text:
+                    # その日付の近く（前後一定範囲）に曜日があるか確認
+                    # 見つけた日付のインデックス周辺を検索
+                    idx = text.find(str(day))
+                    search_area = text[idx:idx+60] # 60文字程度で曜日を探す
+                    
+                    for wd in ["月", "火", "水", "木", "金", "土", "日"]:
+                        if wd in search_area:
+                            found_dates.append((day, wd))
+            
+            # 見つかった中で最も大きい日付を返す
+            if found_dates:
+                found_dates.sort(key=lambda x: x[0], reverse=True)
+                return found_dates[0]
                 
-                # 行リストを走査
-                for i in range(len(lines)):
-                    # 日付が含まれる行を発見
-                    if day_str == lines[i]: # 完全一致で判定
-                        # 次の行（直下）が存在するか確認
-                        if i + 1 < len(lines):
-                            target_wd = lines[i + 1]
-                            # それが曜日であるか確認
-                            if target_wd in ["月", "火", "水", "木", "金", "土", "日"]:
-                                return day, target_wd
         return None, None
     except Exception:
         return None, None
