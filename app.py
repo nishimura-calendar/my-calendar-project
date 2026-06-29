@@ -63,11 +63,27 @@ def main():
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             
-            # 判定
+            # 判定ロジッ
             if last_day_a == last_day_b:
                 st.success(f"第1関門突破: {year_a}年{month_a}月 ({last_day_a}日) として確認しました。")
             else:
+                # エラー理由の表示
                 st.error(f"整合性エラー: 入力・ファイル名は{last_day_a}日までですが、PDF内容は{last_day_b}日までです。")
-
+                
+                # 理由を補足してPDFを表示
+                st.write("---")
+                st.write("【エラー理由】: 想定される日数と、PDFから解析された日数に不一致があります。")
+                
+                # 該当PDFの内容を表示
+                try:
+                    tables = camelot.read_pdf(temp_path, pages='1', flavor='stream')
+                    if len(tables) > 0:
+                        st.write("原因特定のためのPDFシフト表データ:")
+                        st.dataframe(tables[0].df)
+                except Exception as e:
+                    st.write("PDFの内容を表示できませんでした。")
+                
+                # プログラムをここで停止
+                st.stop()
 if __name__ == "__main__":
     main()
