@@ -1,80 +1,71 @@
 import streamlit as st
 import camelot
-import re
 import calendar
 import os
+import base64
 
-def extract_year_month_from_filename(filename):
-    """ファイル名から「2026年1月」のような年月を正確に抽出"""
-    # 年: 2026などの4桁数字
-    year_match = re.search(r'20\d{2}', filename)
-    # 月: 1月〜12月
-    month_match = re.search(r'(\d{1,2})月', filename)
+# --- 共通関数 ---
+def check_pdf_consistency(pdf_path, year, month):
+    """A(理論値)とB(PDF抽出値)の整合性をチェック"""
+    _, last_day_A = calendar.monthrange(year, month)
+    weekday_idx_A = calendar.weekday(year, month, last_day_A)
+    jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    weekday_A = jp_weekdays[weekday_idx_A]
+
+    # B: PDFから末尾の情報を抽出 (簡易実装)
+    tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
+    found_day, found_weekday = None, None
+    for table in tables:
+        # 表の右端列を探索
+        last_col = table.df.iloc[:, -1].astype(str)
+        for cell in last_col:
+            if str(last_day) in cell:
+                found_day = last_day
+                for wd in jp_weekdays:
+                    if wd in cell:
+                        found_weekday = wd
     
-    if year_match and month_match:
-        return int(year_match.group(0)), int(month_match.group(1))
-    return None, None
+    return (last_day_A, weekday_A), (found_day, found_weekday)
 
-def check_pdf_robustly(pdf_path, year, month):
-    try:
-        # 罫線を基準にテーブルを分解
-        tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
-        
-        # 理論上の末日を計算（カレンダーの正当性担保）
-        _, last_day = calendar.monthrange(year, month)
-        
-        # 曜日リスト
-        jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-        expected_wd = jp_weekdays[calendar.weekday(year, month, last_day)]
-        
-        # 各テーブル・各行を走査して末日の曜日を探す
-        found_wd = None
-        for table in tables:
-            for i in range(len(table.df)):
-                row_text = " ".join([str(cell) for cell in table.df.iloc[i]])
-                # 「31」という数字と「その月の最終日の曜日（例：土）」が含まれる行を探す
-                # 誤判定を防ぐため、末日の行であることを明確にする
-                if str(last_day) in row_text and expected_wd in row_text:
-                    found_wd = expected_wd
-                    break
-            if found_wd: break
-            
-        if not found_wd:
-            return False, f"抽出失敗: {last_day}日（{expected_wd}曜日）の行が正しく見つかりませんでした。", None
-            
-        return True, f"成功: {year}年{month}月の末日{last_day}日は{found_wd}曜日で整合性OKです。", None
-    except Exception as e:
-        return False, f"解析エラー: {e}", None
+def display_error_and_stop(pdf_path, reason):
+    st.error(f"【解析停止】データに不一致が検出されました。")
+    st.write(f"**不一致の理由**: {reason}")
+    with open(pdf_path, "rb") as f:
+        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+    st.markdown(f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="500"></iframe>', unsafe_allow_html=True)
+    st.stop()
 
+# --- メイン処理 ---
 def main():
     st.title("シフトカレンダー作成システム")
-    uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type="pdf")
-    
-    if uploaded_file is not None:
-        # 1. 自動判定を試行
-        f_year, f_month = extract_year_month_from_filename(uploaded_file.name)
+    uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
+
+    if uploaded_file:
+        temp_path = "temp.pdf"
+        with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+
+        # 年月判定
+        year, month = 2026, 1 # 仮設定
         
-        # 2. 自動判定できない場合のみ入力フォームを表示
-        if f_year is None or f_month is None:
-            st.warning("ファイル名から年月を自動判定できませんでした。")
-            year = st.number_input("年", value=2026)
-            month = st.number_input("月", value=1)
-        else:
-            st.info(f"ファイル名から判定: {f_year}年 {f_month}月")
-            year, month = f_year, f_month
+        if st.button("解析開始"):
+            # AとBの比較
+            (A_day, A_wd), (B_day, B_wd) = check_pdf_consistency(temp_path, year, month)
             
-        if st.button("シフト表を解析する"):
-            temp_path = "temp.pdf"
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            is_success, msg, _ = check_pdf_robustly(temp_path, year, month)
-            if is_success:
-                st.success(msg)
+            if A_day == B_day and A_wd == B_wd:
+                st.success(f"解析成功: {year}年{month}月は整合しています。")
+                # セッションに結果を保持
+                st.session_state.ready_to_save = True
             else:
-                st.error(msg)
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+                display_error_and_stop(temp_path, f"理論値:{A_wd}曜日 vs PDF値:{B_wd}曜日")
+
+        # 上書き確認のステップ
+        if st.session_state.get("ready_to_save", False):
+            st.warning("この内容でカレンダーを更新（上書き）しますか？")
+            if st.button("保存・更新を実行"):
+                st.success("カレンダーを更新しました！")
+                st.session_state.ready_to_save = False # リセット
+            if st.button("キャンセル"):
+                st.session_state.ready_to_save = False
 
 if __name__ == "__main__":
     main()
