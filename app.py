@@ -10,42 +10,47 @@ def get_theoretical_info(year, month):
     return last_day, jp_weekdays[weekday_idx]
 
 def extract_from_pdf(pdf_path, max_day):
-    """
-    構造に依存せず、PDF内の全ての数値と曜日を全スキャンし、
-    末尾からペアを探す手法に切り替えました。
-    """
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            text = pdf.pages[0].extract_text()
+            page = pdf.pages[0]
+            # ページ内の文字データを座標付きで取得
+            chars = page.chars
             
-            # 数値（28-31）と曜日を検索
-            found_dates = []
+            # 「28, 29, 30, 31」という文字列が連続して出現する場所（最初の塊）を探す
+            # 座標(top)が近いものをグループ化し、最初のグループを採用する
+            groups = []
+            for char in chars:
+                if char['text'] in "28293031":
+                    # top座標(y座標)が近いものを同じグループとする
+                    found = False
+                    for g in groups:
+                        if abs(g[0]['top'] - char['top']) < 5:
+                            g.append(char)
+                            found = True
+                            break
+                    if not found:
+                        groups.append([char])
             
-            # 全テキストの中から「数字」と「曜日」を探す
-            # 正規表現で「数字」のリストと「曜日」のリストを作る
-            import re
+            # 最初のグループ（塊）を取り出す
+            if not groups: return None, None
+            first_group = sorted(groups[0], key=lambda x: x['x0'])
             
-            # 日付（28〜31）を見つける
-            for day in range(28, 32):
-                if str(day) in text:
-                    # その日付の近く（前後一定範囲）に曜日があるか確認
-                    # 見つけた日付のインデックス周辺を検索
-                    idx = text.find(str(day))
-                    search_area = text[idx:idx+60] # 60文字程度で曜日を探す
-                    
-                    for wd in ["月", "火", "水", "木", "金", "土", "日"]:
-                        if wd in search_area:
-                            found_dates.append((day, wd))
-            
-            # 見つかった中で最も大きい日付を返す
-            if found_dates:
-                found_dates.sort(key=lambda x: x[0], reverse=True)
-                return found_dates[0]
-                
+            # その塊の下にある曜日を探す
+            # 塊に含まれる数値から、対応する曜日を特定
+            for day in range(max_day, max_day - 4, -1):
+                day_str = str(day)
+                # 該当する数値の座標を探す
+                for char in first_group:
+                    if char['text'] == day_str[0]: # 数値の最初の桁で判定
+                        # この座標の「すぐ下」にある曜日を探す
+                        for c in chars:
+                            if abs(c['x0'] - char['x0']) < 10 and \
+                               c['top'] > char['bottom'] and c['top'] < char['bottom'] + 20:
+                                if c['text'] in ["月", "火", "水", "木", "金", "土", "日"]:
+                                    return day, c['text']
         return None, None
     except Exception:
-        return None, None
-        
+        return None, None        
 def main():
     st.title("シフトカレンダー作成システム")
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
