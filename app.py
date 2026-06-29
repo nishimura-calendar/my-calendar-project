@@ -2,63 +2,67 @@ import streamlit as st
 import camelot
 import re
 import calendar
+import os
 
+# 解析用関数（そのまま維持）
 def check_pdf_consistency_with_anchors(pdf_path, year, month):
     try:
-        # 表の構造を無視して全ページ読み込み
         tables = camelot.read_pdf(pdf_path, pages='1', flavor='stream')
-        # 全セルを結合して巨大な文字列を作成
         full_text = " ".join([cell for table in tables for row in table.df.values for cell in row])
-        
-        # 1. 正規表現で「数字」と「曜日」のペアを強制抽出
-        # \d{1,2} で日付、\s*で間の空白（改行含む）、[日月火水木金土]で曜日をキャプチャ
+        # 数字と曜日を抽出
         pattern = r'(\d{1,2})\s*([日月火水木金土])'
         matches = re.findall(pattern, full_text)
-        
-        # 2. 辞書化（重複排除。同じ日付が複数箇所にあってもOK）
         day_map = {int(day): wd for day, wd in matches}
         sorted_days = sorted(day_map.keys())
         
-        # 3. 理論値との比較
         _, last_day_expected = calendar.monthrange(year, month)
         
-        # 検証1: 日付が不足していないか
         if len(sorted_days) < last_day_expected:
-            return False, f"抽出失敗: {len(sorted_days)}日しか特定できませんでした。リスト: {sorted_days}", None
+            return False, f"抽出失敗: {len(sorted_days)}日しか特定できませんでした。", None
 
-        # 検証2: 最終日の曜日がカレンダーと一致するか
         last_day = sorted_days[-1]
         found_weekday = day_map[last_day]
         theory_weekday_idx = calendar.weekday(year, month, last_day)
         jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
         
         if jp_weekdays[theory_weekday_idx] != found_weekday:
-            return False, f"曜日不一致: 最終日の{last_day}日はカレンダー上「{jp_weekdays[theory_weekday_idx]}」ですが、PDFからは「{found_weekday}」が抽出されました。", day_map
+            return False, f"曜日不一致: 最終日{last_day}はカレンダー上{jp_weekdays[theory_weekday_idx]}ですが、PDFでは{found_weekday}でした。", None
         
         return True, "第1関門突破！整合性OKです。", day_map
-
     except Exception as e:
         return False, f"解析エラー: {e}", None
 
-import streamlit as st
-
-# ... check_pdf_consistency_with_anchors 関数などの定義 ...
-
 def main():
     st.title("シフトカレンダー作成システム")
+    
+    # アップロード
     uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type="pdf")
     
-    if uploaded_file:
-        st.write(f"ファイルがアップロードされました: {uploaded_file.name}")
-        # ここに判定処理を繋げます
+    # 年月の入力
+    year = st.number_input("年", value=2026)
+    month = st.number_input("月", value=1)
+    
+    if uploaded_file is not None:
+        st.write(f"ファイル名: {uploaded_file.name}")
+        
+        # 【重要】ここに実行ボタンを追加
+        if st.button("シフト表を解析する"):
+            # 一時ファイルとして保存して解析
+            temp_path = "temp.pdf"
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            
+            # 解析実行
+            is_success, msg, data = check_pdf_consistency_with_anchors(temp_path, int(year), int(month))
+            
+            if is_success:
+                st.success(msg)
+            else:
+                st.error(msg)
+            
+            # 終了後にファイルを削除
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
 if __name__ == "__main__":
     main()
-
-# --- メイン処理イメージ ---
-# 実行ボタンが押されたとき:
-# is_success, msg, data = check_pdf_consistency_with_anchors(temp_path, year, month)
-# if is_success:
-#     st.success(msg)
-# else:
-#     st.error(msg)
