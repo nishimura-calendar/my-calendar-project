@@ -10,7 +10,6 @@ def get_year_month_from_filename(filename):
     """ファイル名から年と月を抽出する"""
     year_match = re.search(r'20\d{2}', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
-    
     year = int(year_match.group(0)) if year_match else None
     month = int(month_match.group(1)) if month_match else None
     return year, month
@@ -20,16 +19,22 @@ def get_b_from_pdf(pdf_file_path):
     tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
     df = tables[0].df
     all_data = df.astype(str).values.flatten()
-    
-    days = []
-    for v in all_data:
-        try:
-            num = int(float(v.strip()))
-            if 1 <= num <= 31:
-                days.append(num)
-        except (ValueError, TypeError):
-            continue
+    days = [int(float(v.strip())) for v in all_data if v.strip().replace('.0','').isdigit() and 1 <= int(float(v.strip())) <= 31]
     return max(days) if days else 0
+
+def check_key_existence(pdf_file_path, time_dic):
+    """
+    第2関門1: PDFヘッダーにて[日付]...[Key]...[曜日] の並びを確認する
+    """
+    tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
+    header_str = "".join(tables[0].df.iloc[0].astype(str).tolist())
+    
+    for key in time_dic.keys():
+        # 正規表現: 数字(日付) + 任意の文字 + Key(完全一致) + 任意の文字 + 曜日(日〜土)
+        pattern = rf"\d+.*{re.escape(key)}.*[日月火水木金土]"
+        if re.search(pattern, header_str):
+            return True, key
+    return False, None
 
 # --- メイン処理 ---
 
@@ -37,37 +42,37 @@ def main():
     st.title("シフトカレンダー作成システム")
     uploaded_file = st.file_uploader("読み込むpdfシフトファイルを開いてください。", type="pdf")
     
+    # 仮のtime_dic (本来はGoogle Sheetsから読み込んだものを使用)
+    time_dic = {"T1": "09:00", "T2": "10:00"} 
+
     if uploaded_file is not None:
-        # 1. ファイル名から自動取得を試みる
         year_a, month_a = get_year_month_from_filename(uploaded_file.name)
         
-        # 2. 自動取得できなかったらフォームを表示
-        if year_a is None or month_a is None:
-            st.warning("ファイル名から年月が特定できませんでした。対象年月を入力してください。")
-            year_a = st.number_input("年", value=2026, step=1)
-            month_a = st.number_input("月", value=1, min_value=1, max_value=12)
-        else:
-            st.write(f"ファイルから年月を認識しました: {year_a}年{month_a}月")
+        if year_a is None:
+            year_a = st.number_input("年", value=2026)
+            month_a = st.number_input("月", value=1)
 
         if st.button("実行"):
-            # 一時ファイル保存
             temp_path = "temp_shift.pdf"
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            # 整合性チェック
+            # 第1関門
             _, last_day_a = calendar.monthrange(int(year_a), int(month_a))
-            last_day_b = get_b_from_pdf(temp_path)
+            if last_day_a != get_b_from_pdf(temp_path):
+                st.error("第1関門エラー: 日付整合性が取れません。")
+            else:
+                st.success("第1関門突破！")
+                
+                # 第2関門
+                success, key = check_key_existence(temp_path, time_dic)
+                if success:
+                    st.success(f"第2関門突破: 勤務地Key [{key}] をヘッダー内で確認しました。")
+                else:
+                    st.error("第2関門エラー: ヘッダーに勤務地Keyが見当たりません。")
             
-            # クリーンアップ
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            
-            # 判定
-            if last_day_a == last_day_b:
-                st.success(f"第1関門突破: {year_a}年{month_a}月 ({last_day_a}日) として確認しました。")
-            else:
-                st.error(f"整合性エラー: 入力・ファイル名は{last_day_a}日までですが、PDF内容は{last_day_b}日までです。")
 
 if __name__ == "__main__":
     main()
