@@ -24,16 +24,18 @@ def get_b_from_pdf(pdf_file_path):
 
 def check_key_existence(pdf_file_path, time_dic):
     """
-    第2関門1: PDFヘッダーにて[日付]...[Key]...[曜日] の並びを確認する
+    第2関門: PDF内に勤務地Key(time_dicのキー)が完全一致で含まれるか確認する
     """
     tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
-    header_str = "".join(tables[0].df.iloc[0].astype(str).tolist())
+    # 全データを連結して文字列化
+    all_text = "".join(tables[0].df.astype(str).values.flatten())
     
+    # 時程表の各Keyと完全一致するか検索
     for key in time_dic.keys():
-        # 正規表現: 数字(日付) + 任意の文字 + Key(完全一致) + 任意の文字 + 曜日(日〜土)
-        pattern = rf"\d+.*{re.escape(key)}.*[日月火水木金土]"
-        if re.search(pattern, header_str):
+        # 単純な文字列の包含確認
+        if key in all_text:
             return True, key
+            
     return False, None
 
 # --- メイン処理 ---
