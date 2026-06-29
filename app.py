@@ -10,33 +10,35 @@ def get_theoretical_info(year, month):
     return last_day, jp_weekdays[weekday_idx]
 
 def extract_from_pdf(pdf_path, last_day_A):
+    """
+    31日(直下)、30日(直下)...の順に検索し、ヒットした時点で抽出する
+    """
     try:
         with pdfplumber.open(pdf_path) as pdf:
             page = pdf.pages[0]
-            # ページ内の全ての文字を、座標情報付きで抽出
-            words = page.extract_words()
+            # テキストを抽出
+            text = page.extract_text()
+            # 行ごとに分割
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
             
-            target_date = str(last_day_A)
-            jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-            
-            # 1. まず「31」という文字を探す
-            for word in words:
-                if target_date in word['text']:
-                    # 2. 「31」の近く（座標的に上下左右が近い）にある曜日を探す
-                    # 同じページ内にある「曜日」文字を全てリストアップ
-                    for w in words:
-                        if w['text'] in jp_weekdays:
-                            # 31と曜日の距離が近いもの（座標差が小さいもの）を特定
-                            x_diff = abs(w['x0'] - word['x0'])
-                            y_diff = abs(w['top'] - word['top'])
-                            
-                            # 距離が近い（同じブロックにあると判断できる）場合、それを抽出
-                            if x_diff < 50 and y_diff < 50: 
-                                return last_day_A, w['text']
+            # 31から28まで遡って検索
+            for day in range(last_day_A, last_day_A - 4, -1):
+                day_str = str(day)
+                
+                # 行リストを走査
+                for i in range(len(lines)):
+                    # 日付が含まれる行を発見
+                    if day_str == lines[i]: # 完全一致で判定
+                        # 次の行（直下）が存在するか確認
+                        if i + 1 < len(lines):
+                            target_wd = lines[i + 1]
+                            # それが曜日であるか確認
+                            if target_wd in ["月", "火", "水", "木", "金", "土", "日"]:
+                                return day, target_wd
         return None, None
     except Exception:
         return None, None
-
+        
 def main():
     st.title("シフトカレンダー作成システム")
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
