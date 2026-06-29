@@ -15,12 +15,26 @@ def get_year_month_from_filename(filename):
     return year, month
 
 def get_b_from_pdf(pdf_file_path):
-    """B: PDF内容から月末日を特定する"""
-    tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
-    df = tables[0].df
-    all_data = df.astype(str).values.flatten()
-    days = [int(float(v.strip())) for v in all_data if v.strip().replace('.0','').isdigit() and 1 <= int(float(v.strip())) <= 31]
-    return max(days) if days else 0
+    """B: PDF内容から月末日を特定する（安全に抽出する版）"""
+    try:
+        tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
+        if not tables:
+            return 0
+        df = tables[0].df
+        all_data = df.astype(str).values.flatten()
+        
+        days = []
+        for v in all_data:
+            clean_v = v.strip().replace('.0', '')
+            # 数字のみか、かつ「01」〜「31」の範囲かを確認
+            if clean_v.isdigit():
+                num = int(clean_v)
+                if 1 <= num <= 31:
+                    days.append(num)
+        
+        return max(days) if days else 0
+    except Exception:
+        return 0
 
 def check_key_existence(pdf_file_path, time_dic):
     """
