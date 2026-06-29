@@ -40,6 +40,21 @@ def check_pdf_consistency_with_anchors(pdf_path, year, month):
     except Exception as e:
         return False, f"解析エラー: {e}", None
 
+import streamlit as st
+
+# ... check_pdf_consistency_with_anchors 関数などの定義 ...
+
+def main():
+    st.title("シフトカレンダー作成システム")
+    uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type="pdf")
+    
+    if uploaded_file:
+        st.write(f"ファイルがアップロードされました: {uploaded_file.name}")
+        # ここに判定処理を繋げます
+
+if __name__ == "__main__":
+    main()
+
 # --- メイン処理イメージ ---
 # 実行ボタンが押されたとき:
 # is_success, msg, data = check_pdf_consistency_with_anchors(temp_path, year, month)
