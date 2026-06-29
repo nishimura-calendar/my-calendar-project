@@ -4,43 +4,41 @@ import re
 import calendar
 import os
 
-def get_correct_last_day(filename, year, month):
-    """ファイル名と入力値から正しい月末日を算出する"""
-    # 1. カレンダーモジュールでその月の末日を取得
-    _, last_day = calendar.monthrange(year, month)
-    return last_day
+def extract_year_month_from_filename(filename):
+    """ファイル名から年月を自動抽出"""
+    year_match = re.search(r'20\d{2}', filename)
+    month_match = re.search(r'(\d{1,2})月', filename)
+    if year_match and month_match:
+        return int(year_match.group(0)), int(month_match.group(1))
+    return None, None
 
-def check_pdf_consistency_fixed(pdf_path, year, month):
+def check_pdf_robustly(pdf_path, year, month):
     try:
         tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
         full_text = " ".join([cell for table in tables for row in table.df.values for cell in row])
         
-        # 1. 数字と曜日のリストを個別に抽出
-        all_numbers = [int(n) for n in re.findall(r'\b([12]?[0-9]|3[01])\b', full_text)]
-        all_weekdays = re.findall(r'([日月火水木金土])', full_text)
+        # 1. 理論上の末日を特定
+        _, last_day = calendar.monthrange(year, month)
         
-        # 2. 末日を算出
-        last_day_expected = get_correct_last_day("dummy", year, month)
+        # 2. 末日と曜日の行を特定（latticeで取れた表の中から、末日が含まれる行を探す）
+        # 31と土が同じ行にあることを重視し、誤検知を防ぐため最後に一致したものを採用
+        pattern = fr'{last_day}[\s\S]*?([日月火水木金土])'
+        matches = re.findall(pattern, full_text)
         
-        # 3. 逆順で末日を探す
-        last_idx = -1
-        for i in range(len(all_numbers) - 1, -1, -1):
-            if all_numbers[i] == last_day_expected:
-                last_idx = i
-                break
+        if not matches:
+            return False, f"末日 {last_day} 日と対応する曜日が特定できませんでした。", None
         
-        if last_idx == -1:
-            return False, f"抽出失敗: {last_day_expected}日が見つかりませんでした。", None
-            
-        found_weekday = all_weekdays[-(len(all_numbers) - last_idx)]
+        # 最後のマッチを採用（表の末尾にあるものを優先）
+        found_wd = matches[-1]
+        
+        # 3. 理論値と比較
+        theory_wd_idx = calendar.weekday(year, month, last_day)
         jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-        theory_wd = jp_weekdays[calendar.weekday(year, month, last_day_expected)]
         
-        if found_weekday != theory_wd:
-            return False, f"不一致: PDFの末日{last_day_expected}日は「{found_weekday}」ですが、理論上は「{theory_wd}」です。", None
+        if found_wd != jp_weekdays[theory_wd_idx]:
+            return False, f"不一致: 抽出された{last_day}日は{found_wd}曜日ですが、理論上は{jp_weekdays[theory_wd_idx]}曜日です。", None
             
-        return True, f"突破！{year}年{month}月の末日{last_day_expected}日は{found_weekday}曜日で整合性OKです。", None
-
+        return True, f"成功: {year}年{month}月の末日{last_day}日は{found_wd}曜日で整合性OKです。", None
     except Exception as e:
         return False, f"解析エラー: {e}", None
 
@@ -48,24 +46,29 @@ def main():
     st.title("シフトカレンダー作成システム")
     uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type="pdf")
     
-    # 年月の入力
-    year = st.number_input("年", value=2026)
-    month = st.number_input("月", value=1)
-    
     if uploaded_file is not None:
+        # 1. 自動抽出を試みる
+        auto_year, auto_month = extract_year_month_from_filename(uploaded_file.name)
+        
+        # 2. 未入力（または抽出失敗）の場合のみ入力を求める
+        if auto_year is None or auto_month is None:
+            st.warning("ファイル名から年月を自動判定できませんでした。年月を入力してください。")
+            year = st.number_input("年", value=2026)
+            month = st.number_input("月", value=1)
+        else:
+            st.info(f"自動判定: {auto_year}年 {auto_month}月")
+            year, month = auto_year, auto_month
+            
         if st.button("シフト表を解析する"):
             temp_path = "temp.pdf"
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
             
-            # 解析実行
-            is_success, msg, _ = check_pdf_consistency_fixed(temp_path, int(year), int(month))
-            
+            is_success, msg, _ = check_pdf_robustly(temp_path, year, month)
             if is_success:
                 st.success(msg)
             else:
                 st.error(msg)
-            
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
