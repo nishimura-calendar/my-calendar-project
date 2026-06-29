@@ -14,27 +14,36 @@ def get_year_month_from_filename(filename):
     month = int(month_match.group(1)) if month_match else None
     return year, month
 
-def get_pdf_info_b(pdf_file_path):
+import re
+
+def get_b_from_pdf(pdf_file_path):
     """
-    B: PDFファイルから最終日付（曜日数）と最終曜日を抽出する
-    曜日文字(日月火水木金土)の個数を数え、それを末日とする
+    B: PDF内容から『日本語の曜日』のみを抽出し、その数をカウントする
     """
     try:
         tables = camelot.read_pdf(pdf_file_path, pages='1', flavor='stream')
-        if not tables: return 0, None
+        if not tables: return 0
         
+        # 全データを連結して文字列化
         all_text = "".join(tables[0].df.astype(str).values.flatten())
-        # 曜日のみを抽出
+        
+        # 正規表現で「日・月・火・水・木・金・土」という文字のみを検索してリスト化
         weekdays_found = re.findall(r'[日月火水木金土]', all_text)
         
-        last_day = len(weekdays_found)
-        last_weekday = weekdays_found[-1] if weekdays_found else None
+        # 曜日が出現した数が、その月の「のべ日数」ではなく「日付の数」になるように考慮
+        # 今回のPDFの場合、曜日が表のヘッダー等で重複している可能性があるため、
+        # ユニークな出現をカウントする必要があるかもしれません。
+        # まずは単純な個数で試します。
+        count = len(weekdays_found)
         
-        return last_day, last_weekday, tables[0].df
+        # デバッグ用：抽出されたリストを表示
+        st.write(f"検出された曜日リスト({count}個):", weekdays_found)
+        
+        return count
     except Exception as e:
-        st.error(f"PDF読込エラー: {e}")
-        return 0, None, None
-
+        st.error(f"PDF読み込みエラー: {e}")
+        return 0
+        
 # --- メイン処理 ---
 
 def main():
