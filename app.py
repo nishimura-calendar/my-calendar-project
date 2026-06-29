@@ -10,35 +10,29 @@ def get_theoretical_info(year, month):
     return last_day, jp_weekdays[weekday_idx]
 
 def extract_from_pdf(pdf_path, last_day_A):
-    """
-    構造に依存せず、PDF内の全ての数値と曜日を抽出し、
-    末尾から順にペアを探す堅牢なロジック
-    """
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            text = pdf.pages[0].extract_text()
-            # 曜日をリスト化
-            weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+            page = pdf.pages[0]
+            # ページ内の全ての文字を、座標情報付きで抽出
+            words = page.extract_words()
             
-            # テキストを行ごとに分解し、数値と曜日が含まれるか判定
-            lines = text.split('\n')
+            target_date = str(last_day_A)
+            jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
             
-            found_dates = []
-            for line in lines:
-                # 28〜31の数字が含まれる行を特定
-                for d in range(28, 32):
-                    if str(d) in line:
-                        # 曜日が含まれるか
-                        for wd in weekdays:
-                            if wd in line:
-                                found_dates.append((d, wd))
-            
-            # 見つかったペアのうち、最大の日付を優先して返す
-            if found_dates:
-                # 日付順にソートして一番大きいものを返す
-                found_dates.sort(key=lambda x: x[0], reverse=True)
-                return found_dates[0]
-                
+            # 1. まず「31」という文字を探す
+            for word in words:
+                if target_date in word['text']:
+                    # 2. 「31」の近く（座標的に上下左右が近い）にある曜日を探す
+                    # 同じページ内にある「曜日」文字を全てリストアップ
+                    for w in words:
+                        if w['text'] in jp_weekdays:
+                            # 31と曜日の距離が近いもの（座標差が小さいもの）を特定
+                            x_diff = abs(w['x0'] - word['x0'])
+                            y_diff = abs(w['top'] - word['top'])
+                            
+                            # 距離が近い（同じブロックにあると判断できる）場合、それを抽出
+                            if x_diff < 50 and y_diff < 50: 
+                                return last_day_A, w['text']
         return None, None
     except Exception:
         return None, None
