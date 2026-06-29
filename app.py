@@ -4,70 +4,63 @@ import re
 import calendar
 import os
 
-def get_year_month_from_filename(filename):
-    year_match = re.search(r'20\d{2}', filename)
-    month_match = re.search(r'(\d{1,2})月', filename)
-    year = int(year_match.group(0)) if year_match else None
-    month = int(month_match.group(1)) if month_match else None
-    return year, month
-
 def check_pdf_consistency(pdf_path, year, month):
-    """
-    第1関門：PDFのヘッダーから日付と曜日を抽出し、理論上のカレンダーと比較する
-    """
     try:
+        # streamモードで読み込み
         tables = camelot.read_pdf(pdf_path, pages='1', flavor='stream')
-        if not tables: return False, "テーブルが読み込めませんでした", None
+        if not tables:
+            return False, "PDFからテーブルが抽出できませんでした。", None
+
+        # 全てのセルからテキストを取得し、結合して単一の文字列にする
+        # 重要な前処理：バラバラになった数字（例：3 1）を結合（31）する
+        full_text = ""
+        for table in tables:
+            for row in table.df.values:
+                for cell in row:
+                    full_text += str(cell) + " "
         
-        df = tables[0].df
-        # 1. 最初の3行分を結合してヘッダー文字列を作成
-        header_text = " ".join(df.iloc[0:3].astype(str).values.flatten())
+        # 1. 離れた数字を結合する (例: "3 1" -> "31")
+        full_text = re.sub(r'(\d)\s+(\d)', r'\1\2', full_text)
         
-        # 2. 数字と曜日のペアを抽出 (例: "1 木", "31 月")
-        # ユニークな日付を確保するために辞書を使用
-        matches = re.findall(r'(\d+)\s*([日月火水木金土])', header_text)
+        # 2. 「1〜31」の数字と「曜日」のペアを抽出
+        # 間にスペースや改行がいくらあっても許容するパターン
+        pattern = r'(3[0-1]|[1-2]?[0-9])[\s\S]*?([日月火水木金土])'
+        matches = re.findall(pattern, full_text)
         
-        # 日付をキーにして辞書化 (重複回避)
+        # 辞書化して重複を排除（日付をキーにする）
         day_map = {int(day): wd for day, wd in matches}
         sorted_days = sorted(day_map.keys())
         
-        # 3. 期待されるデータとの比較
+        # 期待される月末日
         _, last_day_expected = calendar.monthrange(year, month)
         
-        # 検証：日数と最後の曜日
-        is_valid = True
-        error_msg = ""
+        # --- 検証 ---
+        if len(sorted_days) < last_day_expected:
+            return False, f"日数不一致: 期待{last_day_expected}日に対し、{len(sorted_days)}日しか特定できませんでした。", tables[0].df
+
+        # 最後の曜日チェック
+        last_day_found = sorted_days[-1]
+        last_wd_found = day_map[last_day_found]
         
-        if len(sorted_days) != last_day_expected:
-            is_valid = False
-            error_msg = f"日数不一致: 期待{last_day_expected}日に対し、{len(sorted_days)}日分しか抽出できませんでした。"
-        else:
-            # 最後の曜日チェック
-            last_day_found = sorted_days[-1]
-            last_weekday_found = day_map[last_day_found]
-            
-            # 理論上の曜日を取得 (0:月, 6:日)
-            theory_weekday_idx = calendar.weekday(year, month, last_day_found)
-            jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-            
-            if jp_weekdays[theory_weekday_idx] != last_weekday_found:
-                is_valid = False
-                error_msg = f"曜日不一致: {last_day_found}日の曜日がカレンダー上は{jp_weekdays[theory_weekday_idx]}ですが、PDFでは{last_weekday_found}となっています。"
+        # 理論上の曜日を取得
+        theory_wd_idx = calendar.weekday(year, month, last_day_found)
+        jp_weekdays = ["月", "火", "水", "木", "金", "土", "日"]
         
-        return is_valid, error_msg, df
+        if jp_weekdays[theory_wd_idx] != last_wd_found:
+            return False, f"最終曜日不一致: {last_day_found}日はカレンダー上{jp_weekdays[theory_wd_idx]}ですが、PDFでは{last_wd_found}です。", tables[0].df
+        
+        return True, "第1関門突破！整合性OKです。", tables[0].df
 
     except Exception as e:
-        return False, f"エラーが発生しました: {e}", None
+        return False, f"解析エラー: {e}", None
 
 def main():
     st.title("シフトカレンダー作成システム")
     uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type="pdf")
     
     if uploaded_file:
-        year, month = get_year_month_from_filename(uploaded_file.name)
-        if not year or not month:
-            year = st.number_input("年を入力", value=2026)
-            month = st.number_input("月を入力", value=1)
+        year = st.number_input("年", value=2026)
+        month = st.number_input("月", value=1)
         
         if st.button("実行"):
             temp_path = "temp.pdf"
@@ -77,11 +70,11 @@ def main():
             is_valid, msg, df = check_pdf_consistency(temp_path, int(year), int(month))
             
             if is_valid:
-                st.success("第1関門突破！整合性OKです。")
+                st.success(msg)
             else:
                 st.error(f"【第1関門失敗】{msg}")
-                st.write("--- 読み込んだ表のプレビュー ---")
-                st.dataframe(df) # 不一致時に表を表示
+                st.write("--- デバッグ情報：読み込んだデータ（最初の5行） ---")
+                st.dataframe(df.head(5))
             
             if os.path.exists(temp_path):
                 os.remove(temp_path)
