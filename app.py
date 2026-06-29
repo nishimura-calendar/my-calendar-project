@@ -15,28 +15,33 @@ def get_theoretical_info(year, month):
 # --- 2. PDF解析（パターン検索方式） ---
 def extract_from_pdf(pdf_path, max_day):
     """
-    B: 「数字 + 改行 + 曜日」のパターンを末尾から検索して抽出
+    B: 「数値」の行を探し、その『次の行(下段)』に曜日があれば抽出する
     """
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            # ページ全体のテキストを取得
             page = pdf.pages[0]
+            # テキストを改行で分割してリスト化
             text = page.extract_text()
+            lines = text.split('\n')
             
             # 31から28まで遡って検索
             for day in range(max_day, max_day - 4, -1):
                 day_str = str(day)
-                for wd in ["月", "火", "水", "木", "金", "土", "日"]:
-                    # パターン: 日付 + 1つ以上の改行 + 曜日
-                    # re.escapeで特殊文字を無効化、\s+で改行や空白を吸収
-                    pattern = f"{day_str}.*?\n\s*{wd}"
-                    if re.search(pattern, text, re.DOTALL):
-                        return day, wd
+                
+                # 行を上から順に走査
+                for i in range(len(lines) - 1):
+                    # 今の行に日付が含まれているか
+                    if day_str in lines[i]:
+                        # その『次の行(下段)』を取得
+                        next_line = lines[i + 1]
+                        # 次の行に曜日が含まれているか確認
+                        for wd in ["月", "火", "水", "木", "金", "土", "日"]:
+                            if wd in next_line:
+                                return day, wd
         return None, None
     except Exception as e:
-        st.error(f"解析中にエラーが発生しました: {e}")
         return None, None
-
+        
 # --- 3. UIと分岐処理 ---
 def main():
     st.title("シフトカレンダー作成システム")
