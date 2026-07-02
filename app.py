@@ -2,46 +2,35 @@ import streamlit as st
 import camelot
 import re
 import calendar
+import os
 import tempfile
 from datetime import datetime
 
-# --- 第1関門：PDFの末尾日付と曜日を抽出・照合 ---
+# --- 第1関門の関数 ---
 def check_first_gate(pdf_path, year, month):
-    # A：理論値算出
     last_day = calendar.monthrange(year, month)[1]
     last_date_obj = datetime(year, month, last_day)
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_weekday = weekdays_jp[last_date_obj.weekday()]
 
-    # B：PDFから抽出（より広範囲をスキャンするロジックに変更）
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
+    full_text = " ".join([" ".join(row) for table in tables for row in table.df.values.astype(str)])
     
-    # 全テーブルの全セルを統合する際、改行文字をスペースに置き換えて連結
-    full_text = " ".join([" ".join([str(cell).replace('\n', ' ') for cell in row]) 
-                          for table in tables for row in table.df.values])
+    # 末尾の情報を直接抽出
+    all_dates = re.findall(r'\b(28|29|30|31)\b', full_text)
+    all_weekdays = re.findall(r'[月火水木金土日]', full_text)
     
-    # 修正ポイント: 
-    # 日付と曜日の間に改行やスペースが複数入っても拾えるよう [\s\S]{0,20} に拡大
-    # これにより、表のレイアウトによる分断に対応します
-    matches = re.finditer(r'(28|29|30|31)[\s\S]{0,20}?([月火水木金土日])', full_text)
-    
-    candidates = []
-    for m in matches:
-        candidates.append((int(m.group(1)), m.group(2)))
-    
-    if not candidates:
-        # デバッグ用: 何も抽出できなかった場合に full_text を表示して原因を探ることも可能
-        return False, None, None
-        
-    actual_last_date, actual_last_weekday = max(candidates, key=lambda x: x[0])
+    actual_last_date = int(all_dates[-1]) if all_dates else None
+    actual_last_weekday = all_weekdays[-1] if all_weekdays else None
 
     if actual_last_date == last_day and actual_last_weekday == expected_weekday:
         return True, actual_last_date, actual_last_weekday
     else:
         return False, actual_last_date, actual_last_weekday
-        
-# --- 第2関門：勤務地keyの存在確認 ---
+
+# --- 第2関門の関数 ---
 def check_second_gate(pdf_path, key_inf):
+    # PDFからテキストを抽出して勤務地keyを検索
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
     full_text = " ".join([" ".join(row) for table in tables for row in table.df.values.astype(str)])
     
@@ -50,7 +39,7 @@ def check_second_gate(pdf_path, key_inf):
         return True
     return False
 
-# --- メインUI ---
+# --- Streamlit メインUI ---
 st.title("シフトカレンダー取込システム")
 
 uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type=["pdf"])
@@ -62,29 +51,24 @@ if uploaded_file is not None:
     month = st.number_input("月", value=int(match.group(2)) if match else 1)
 
     if st.button("解析実行"):
-        # 一時ファイル作成（Streamlit Cloud環境への対応）
+        # 一時ファイル作成
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(uploaded_file.getbuffer())
             tmp_path = tmp.name
 
-        # 第1関門実行
-        with st.spinner("第1関門チェック中..."):
-            success1, d, w = check_first_gate(tmp_path, year, month)
-        
+        # 第1関門
+        success1, d, w = check_first_gate(tmp_path, year, month)
         if not success1:
-            st.error(f"【停止】理論値とPDF抽出値が不一致です。")
-            st.write(f"判定: 理論上は {calendar.monthrange(year, month)[1]}日、PDFからは {d}日({w}) が抽出されました。")
+            st.error(f"【停止】理論値とPDF抽出値が不一致です: {d}日({w})")
             st.stop()
         
-        st.success(f"第1関門通過: {d}日({w})")
+        st.success("第1関門通過")
 
-        # 第2関門実行
-        target_key = "勤務地" # 手順書に基づき検索するkey
-        with st.spinner("第2関門チェック中..."):
-            success2 = check_second_gate(tmp_path, target_key)
-            
+        # 第2関門
+        target_key = "勤務地" # 検索するkey
+        success2 = check_second_gate(tmp_path, target_key)
         if not success2:
-            st.error(f"【停止】勤務地-{target_key}-が時程表に設定されていません。確認が必要です。")
+            st.error(f"【停止】勤務地-{target_key}-が時程表に設定されていません。")
             st.stop()
         
-        st.success("第2関門通過：詳細読込へ進みます。")
+        st.success("第2関門通過：解析を継続します。")
