@@ -8,26 +8,37 @@ from datetime import datetime
 
 # --- 第1関門の関数 ---
 def check_first_gate(pdf_path, year, month):
+    # 理論値(A)
     last_day = calendar.monthrange(year, month)[1]
     last_date_obj = datetime(year, month, last_day)
-    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    expected_weekday = weekdays_jp[last_date_obj.weekday()]
+    expected_weekday = ["月", "火", "水", "木", "金", "土", "日"][last_date_obj.weekday()]
 
+    # 実測値(B) - 方針に基づいたペア抽出
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
     full_text = " ".join([" ".join(row) for table in tables for row in table.df.values.astype(str)])
     
-    # 末尾の情報を直接抽出
-    all_dates = re.findall(r'\b(28|29|30|31)\b', full_text)
-    all_weekdays = re.findall(r'[月火水木金土日]', full_text)
+    # 28-31のいずれかの数値 ＋ その後4文字以内に曜日があるパターンを探す
+    # 複数見つかった場合は、数値が最大のものを採用
+    matches = re.finditer(r'(28|29|30|31).*?([月火水木金土日])', full_text)
     
-    actual_last_date = int(all_dates[-1]) if all_dates else None
-    actual_last_weekday = all_weekdays[-1] if all_weekdays else None
+    candidates = []
+    for m in matches:
+        date_val = int(m.group(1))
+        weekday_val = m.group(2)
+        candidates.append((date_val, weekday_val))
+    
+    if not candidates:
+        return False, None, None
+        
+    # 日付が最大のものを採用
+    actual_last_date, actual_last_weekday = max(candidates, key=lambda x: x[0])
 
+    # 判定
     if actual_last_date == last_day and actual_last_weekday == expected_weekday:
         return True, actual_last_date, actual_last_weekday
     else:
         return False, actual_last_date, actual_last_weekday
-
+        
 # --- 第2関門の関数 ---
 def check_second_gate(pdf_path, key_inf):
     # PDFからテキストを抽出して勤務地keyを検索
