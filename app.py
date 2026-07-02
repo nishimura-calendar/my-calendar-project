@@ -19,7 +19,7 @@ def check_first_gate(pdf_path, year, month):
     
     # 正規表現：日付(28-31)の後、4文字以内に曜日があるパターンを探す
     # 複数の候補から、日付が最大のものを末尾情報として採用
-    matches = re.finditer(r'(28|29|30|31).*?([月火水木金土日])', full_text)
+    matches = re.finditer(r'(28|29|30|31)[\s\S]{0,10}?([月火水木金土日])', full_text)
     candidates = []
     for m in matches:
         candidates.append((int(m.group(1)), m.group(2)))
