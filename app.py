@@ -13,28 +13,33 @@ def check_first_gate(pdf_path, year, month):
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_weekday = weekdays_jp[last_date_obj.weekday()]
 
-    # B：PDFから抽出（ペア検索による堅牢なロジック）
+    # B：PDFから抽出（より広範囲をスキャンするロジックに変更）
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
-    full_text = " ".join([" ".join(row) for table in tables for row in table.df.values.astype(str)])
     
-    # 正規表現：日付(28-31)の後、4文字以内に曜日があるパターンを探す
-    # 複数の候補から、日付が最大のものを末尾情報として採用
-    matches = re.finditer(r'(28|29|30|31)[\s\S]{0,10}?([月火水木金土日])', full_text)
+    # 全テーブルの全セルを統合する際、改行文字をスペースに置き換えて連結
+    full_text = " ".join([" ".join([str(cell).replace('\n', ' ') for cell in row]) 
+                          for table in tables for row in table.df.values])
+    
+    # 修正ポイント: 
+    # 日付と曜日の間に改行やスペースが複数入っても拾えるよう [\s\S]{0,20} に拡大
+    # これにより、表のレイアウトによる分断に対応します
+    matches = re.finditer(r'(28|29|30|31)[\s\S]{0,20}?([月火水木金土日])', full_text)
+    
     candidates = []
     for m in matches:
         candidates.append((int(m.group(1)), m.group(2)))
     
     if not candidates:
+        # デバッグ用: 何も抽出できなかった場合に full_text を表示して原因を探ることも可能
         return False, None, None
         
     actual_last_date, actual_last_weekday = max(candidates, key=lambda x: x[0])
 
-    # ⑤ 判定
     if actual_last_date == last_day and actual_last_weekday == expected_weekday:
         return True, actual_last_date, actual_last_weekday
     else:
         return False, actual_last_date, actual_last_weekday
-
+        
 # --- 第2関門：勤務地keyの存在確認 ---
 def check_second_gate(pdf_path, key_inf):
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
