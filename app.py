@@ -44,5 +44,39 @@ def check_first_gate(pdf_path, year, month):
     else:
         return False, actual_last_date, actual_last_weekday
 
-# --- UI実装のイメージ（Streamlit） ---
-# 必要に応じて、ファイルアップロード後の処理フローに組み込んでください
+# --- メインUI ---
+st.title("シフトカレンダー取込システム")
+
+uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type=["pdf"])
+
+if uploaded_file is not None:
+    match = re.search(r'(\d{4}).*?(\d{1,2})', uploaded_file.name)
+    year = st.number_input("年", value=int(match.group(1)) if match else 2026)
+    month = st.number_input("月", value=int(match.group(2)) if match else 1)
+
+    if st.button("解析実行"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            tmp_path = tmp.name
+
+        # 第1関門
+        with st.spinner("第1関門チェック中..."):
+            success1, d, w = check_first_gate(tmp_path, year, month)
+        
+        if not success1:
+            st.error(f"【停止】理論値とPDF抽出値が不一致です。")
+            st.write(f"判定: 理論上は {calendar.monthrange(year, month)[1]}日、PDFからは {d}日({w}) が抽出されました。")
+            st.stop()
+        
+        st.success(f"第1関門通過: {d}日({w})")
+
+        # 第2関門
+        target_key = "勤務地" 
+        with st.spinner("第2関門チェック中..."):
+            success2 = check_second_gate(tmp_path, target_key)
+            
+        if not success2:
+            st.error(f"【停止】勤務地-{target_key}-が時程表に設定されていません。確認が必要です。")
+            st.stop()
+        
+        st.success("第2関門通過：詳細読込へ進みます。")
