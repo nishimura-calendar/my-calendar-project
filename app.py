@@ -13,28 +13,31 @@ def check_first_gate(pdf_path, year, month):
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_weekday = weekdays_jp[last_date_obj.weekday()]
 
-    actual_last_date = None
-    actual_last_weekday = None
-
     with pdfplumber.open(pdf_path) as pdf:
-        # 表のセルを走査して月末日を探す
+        # ページ単位で処理
         for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                for row in table:
-                    row_text = " ".join([str(cell) for cell in row if cell])
-                    # 最終日（last_day）が含まれる行を探す
-                    if str(last_day) in row_text:
-                        actual_last_date = last_day
-                        # その行内に曜日があるかチェック
-                        for w in weekdays_jp:
-                            if w in row_text:
-                                actual_last_weekday = w
-                                break
-    
-    is_match = (actual_last_date == last_day and actual_last_weekday == expected_weekday)
-    return is_match, actual_last_date, actual_last_weekday, last_day, expected_weekday
+            # ページ内のテキストを細かく分割してリスト化
+            # extract_words を使うと座標情報付きで単語を取得できるため精度が高い
+            words = page.extract_words()
+            
+            last_day_str = str(last_day)
+            
+            # 「最終日」という単語を探す
+            for i, word in enumerate(words):
+                if word['text'] == last_day_str:
+                    # その単語の周辺（後方5単語程度）から曜日を探す
+                    search_range = words[i+1 : i+6]
+                    for w_word in search_range:
+                        if w_word['text'] in weekdays_jp:
+                            actual_last_date = last_day
+                            actual_last_weekday = w_word['text']
+                            
+                            is_match = (actual_last_weekday == expected_weekday)
+                            return is_match, actual_last_date, actual_last_weekday, last_day, expected_weekday
 
+    # 見つからなかった場合
+    return False, None, None, last_day, expected_weekday
+    
 # --- Streamlit メインUI ---
 st.title("シフトカレンダー取込システム")
 
