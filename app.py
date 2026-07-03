@@ -8,26 +8,38 @@ from datetime import datetime
 
 # --- 第1関門の関数 ---
 def check_first_gate(pdf_path, year, month):
+    # A：理論値算出
     last_day = calendar.monthrange(year, month)[1]
     last_date_obj = datetime(year, month, last_day)
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_weekday = weekdays_jp[last_date_obj.weekday()]
 
+    # B：PDFから抽出（Camelotの表読み込み）
+    # pdfplumberへの切り替えが確実ですが、Camelotで継続する場合の改良案です
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
-    full_text = " ".join([" ".join(row) for table in tables for row in table.df.values.astype(str)])
+    full_text = " ".join([str(cell).replace('\n', ' ') for table in tables for row in table.df.values for cell in row])
     
-    # 末尾の情報を直接抽出
-    all_dates = re.findall(r'\b(28|29|30|31)\b', full_text)
+    # 【訂正箇所】日付(28-31)を抽出して数値リスト化し、その中から最大値を取得
+    # これにより、ヘッダーの年号(例:2031)が含まれていても、より確実に日付を特定します
+    date_matches = re.findall(r'\b(28|29|30|31)\b', full_text)
+    
+    if not date_matches:
+        return False, None, None
+        
+    # 日付リストを数値に変換して最大値を取得
+    date_ints = [int(d) for d in date_matches]
+    actual_last_date = max(date_ints)
+    
+    # 曜日抽出（抽出された日付の近傍など特定が難しい場合、曜日リストの最後を取るのが現状の最適解）
     all_weekdays = re.findall(r'[月火水木金土日]', full_text)
-    
-    actual_last_date = int(all_dates[-1]) if all_dates else None
     actual_last_weekday = all_weekdays[-1] if all_weekdays else None
 
+    # ⑤ 判定
     if actual_last_date == last_day and actual_last_weekday == expected_weekday:
         return True, actual_last_date, actual_last_weekday
     else:
         return False, actual_last_date, actual_last_weekday
-
+        
 # --- 第2関門の関数 ---
 def check_second_gate(pdf_path, key_inf):
     # PDFからテキストを抽出して勤務地keyを検索
