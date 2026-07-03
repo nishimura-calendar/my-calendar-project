@@ -2,43 +2,55 @@ import streamlit as st
 import camelot
 import re
 import calendar
-import os
 import tempfile
+import base64
 from datetime import datetime
 
-# --- 第1関門の関数 ---
+# --- 第1関門のチェック関数（ロジック部分は前述の「最大値抽出」を採用） ---
 def check_first_gate(pdf_path, year, month):
-    # A：理論値算出
+    # 理論値(A)
     last_day = calendar.monthrange(year, month)[1]
     last_date_obj = datetime(year, month, last_day)
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_weekday = weekdays_jp[last_date_obj.weekday()]
 
-    # B：PDFから抽出（Camelotの表読み込み）
-    # pdfplumberへの切り替えが確実ですが、Camelotで継続する場合の改良案です
+    # PDF抽出(B)
     tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
     full_text = " ".join([str(cell).replace('\n', ' ') for table in tables for row in table.df.values for cell in row])
     
-    # 【訂正箇所】日付(28-31)を抽出して数値リスト化し、その中から最大値を取得
-    # これにより、ヘッダーの年号(例:2031)が含まれていても、より確実に日付を特定します
-    date_matches = re.findall(r'\b(28|29|30|31)\b', full_text)
+    # 28-31のいずれかの数値 ＋ 曜日を探す
+    matches = re.finditer(r'(28|29|30|31).{0,4}?([月火水木金土日])', full_text)
+    candidates = [(int(m.group(1)), m.group(2)) for m in matches]
     
-    if not date_matches:
-        return False, None, None
+    if not candidates:
+        return False, None, None, last_day, expected_weekday
         
-    # 日付リストを数値に変換して最大値を取得
-    date_ints = [int(d) for d in date_matches]
-    actual_last_date = max(date_ints)
+    actual_last_date, actual_last_weekday = max(candidates, key=lambda x: x[0])
     
-    # 曜日抽出（抽出された日付の近傍など特定が難しい場合、曜日リストの最後を取るのが現状の最適解）
-    all_weekdays = re.findall(r'[月火水木金土日]', full_text)
-    actual_last_weekday = all_weekdays[-1] if all_weekdays else None
+    return (actual_last_date == last_day and actual_last_weekday == expected_weekday), \
+           actual_last_date, actual_last_weekday, last_day, expected_weekday
 
-    # ⑤ 判定
-    if actual_last_date == last_day and actual_last_weekday == expected_weekday:
-        return True, actual_last_date, actual_last_weekday
+# --- メインUI ---
+uploaded_file = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
+
+if uploaded_file is not None:
+    # ① ファイル名から年月を取得を試みる
+    match = re.search(r'(\d{4}).*?(\d{1,2})', uploaded_file.name)
+    
+    if match:
+        year = st.number_input("年", value=int(match.group(1)))
+        month = st.number_input("月", value=int(match.group(2)))
     else:
-        return False, actual_last_date, actual_last_weekday
+        # 取得できない場合のみフォームを表示
+        st.warning("ファイル名から年月を自動取得できませんでした。")
+        year = st.number_input("年を入力してください", min_value=2000, max_value=2100, value=2026)
+        month = st.number_input("月を入力してください", min_value=1, max_value=12, value=1)
+
+    if st.button("解析実行"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded_file.getbuffer())
+            tmp_path = tmp.name
+
         
 # --- 第2関門の関数 ---
 def check_second_gate(pdf_path, key_inf):
@@ -68,13 +80,24 @@ if uploaded_file is not None:
             tmp.write(uploaded_file.getbuffer())
             tmp_path = tmp.name
 
-        # 第1関門
-        success1, d, w = check_first_gate(tmp_path, year, month)
-        if not success1:
-            st.error(f"【停止】理論値とPDF抽出値が不一致です: {d}日({w})")
+        success, d, w, exp_d, exp_w = check_first_gate(tmp_path, year, month)
+        
+        # ② 不一致の場合の詳細表示
+        if not success:
+            st.error("【停止】理論値とPDF抽出値が不一致です。")
+            col1, col2 = st.columns(2)
+            col1.metric("理論値(A)", f"{exp_d}日({exp_w})")
+            col2.metric("PDF抽出値(B)", f"{d}日({w})")
+            
+            # PDFファイルの表示
+            st.subheader("アップロードされたPDF内容")
+            with open(tmp_path, "rb") as f:
+                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="500" type="application/pdf"></iframe>'
+            st.markdown(pdf_display, unsafe_allow_html=True)
             st.stop()
         
-        st.success("第1関門通過")
+        st.success("第1関門通過！")
 
         # 第2関門
         target_key = "勤務地" # 検索するkey
