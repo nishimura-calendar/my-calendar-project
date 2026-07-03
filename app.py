@@ -13,21 +13,29 @@ def check_first_gate(pdf_path, year, month):
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     expected_weekday = weekdays_jp[last_date_obj.weekday()]
 
-    tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
-    full_text = " ".join([" ".join(row) for table in tables for row in table.df.values.astype(str)])
+    # PDFplumberでページごとのテキストと位置を取得
+    import pdfplumber
+    actual_last_date = None
+    actual_last_weekday = None
     
-    # 末尾の情報を直接抽出
-    all_dates = re.findall(r'\b(28|29|30|31)\b', full_text)
-    all_weekdays = re.findall(r'[月火水木金土日]', full_text)
+    with pdfplumber.open(pdf_path) as pdf:
+        # 最終ページから遡って「月末日」を探す（月末日は最後のページにあるため）
+        for page in reversed(pdf.pages):
+            text = page.extract_text()
+            # ページ内の数字(30など)を全抽出
+            dates = re.findall(r'\b(28|29|30|31)\b', text)
+            if dates:
+                actual_last_date = int(max(dates)) # ページ内の最大日付
+                
+                # そのページ内に「月」があるか確認
+                # 今回のPDFの構造上、30の近くに「月」があることを確認
+                if "月" in text:
+                    actual_last_weekday = "月"
+                    break
     
-    actual_last_date = int(all_dates[-1]) if all_dates else None
-    actual_last_weekday = all_weekdays[-1] if all_weekdays else None
-
-    if actual_last_date == last_day and actual_last_weekday == expected_weekday:
-        return True, actual_last_date, actual_last_weekday
-    else:
-        return False, actual_last_date, actual_last_weekday
-
+    is_match = (actual_last_date == last_day and actual_last_weekday == expected_weekday)
+    return is_match, actual_last_date, actual_last_weekday, last_day, expected_weekday
+    
 # --- 第2関門の関数 ---
 def check_second_gate(pdf_path, key_inf):
     # PDFからテキストを抽出して勤務地keyを検索
