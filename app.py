@@ -32,7 +32,7 @@ def load_and_convert_time_schedule(csv_path):
 # 3. メインアプリ
 def main():
     st.title("シフトカレンダー作成システム")
-    csv_file = "時程表" # GitHub上の名前に合わせる
+    csv_file = "time_schedule.csv" # GitHub上の名前に合わせる
 
     if 'data' not in st.session_state:
         st.session_state.data = None
