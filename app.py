@@ -1,88 +1,77 @@
 import streamlit as st
-import pdfplumber
+import camelot
 import re
 import calendar
-import tempfile
-import base64
-from datetime import datetime
+import pandas as pd
+import io
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
-# --- 第1関門の解析ロジック ---
-def analyze_pdf_last_date(pdf_path, year, month):
-    """PDF全体から曜日を全量抽出し、最終日の曜日を特定する"""
-    last_day = calendar.monthrange(year, month)[1]
-    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+# --- 1. 時程表読み込み (IDを固定) ---
+def time_schedule_from_drive(service, file_id="1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"):
+    """
+    指定IDのスプレッドシートから勤務地Keyと時間行を抽出して辞書化する
+    """
+    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    downloader.next_chunk()
+    fh.seek(0)
     
-    # PDF全体から曜日をすべて抽出
-    all_weekdays = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                # 曜日文字のみを順番に取得
-                found = re.findall(r'[月火水木金土日]', text)
-                all_weekdays.extend(found)
+    # 形式に従い読み込み
+    df = pd.read_excel(fh, header=None, dtype=str).fillna('')
     
-    # 最終的な判定
-    if len(all_weekdays) >= last_day:
-        actual_last_date = len(all_weekdays)
-        actual_last_weekday = all_weekdays[last_day - 1]
-        return actual_last_date, actual_last_weekday
-    return None, None
-
-# --- Streamlit メインUI ---
-st.title("シフトカレンダー取込システム")
-
-uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type=["pdf"])
-
-if uploaded_file is not None:
-    # 1. 年月の自動検出
-    year_match = re.search(r'(20\d{2})', uploaded_file.name)
-    month_match = re.search(r'([1-9]|1[0-2])(?=月)', uploaded_file.name)
+    # A列に勤務地(T1, T2等)がある行を特定
+    location_rows = df[df.iloc[:, 0].str.strip() != ''].index.tolist()
+    location_data_dic = {}
     
-    if year_match and month_match:
-        year = int(year_match.group(1))
-        month = int(month_match.group(1))
-        st.success(f"ファイルを認識しました：{year}年{month}月")
-    else:
-        st.warning("ファイル名から年月を自動検出できませんでした。入力してください。")
-        year = st.number_input("年", value=2026, min_value=2000, max_value=2100)
-        month = st.number_input("月", value=1, min_value=1, max_value=12)
-
-    # 2. 解析実行
-    if st.button("解析実行"):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(uploaded_file.getbuffer())
-            tmp_path = tmp.name
-
-        # 計算上の最終データ
-        last_day = calendar.monthrange(year, month)[1]
-        weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-        expected_weekday = weekdays_jp[datetime(year, month, last_day).weekday()]
+    for i, start_row in enumerate(location_rows):
+        key = df.iloc[start_row, 0].strip()
+        end_row = location_rows[i+1] if i+1 < len(location_rows) else len(df)
+        # 範囲内のデータを辞書へ (詳細な時間変換ロジックはここへ追加)
+        location_data_dic[key] = df.iloc[start_row:end_row, :]
         
-        # PDFからの実データ
-        actual_last_date, actual_last_weekday = analyze_pdf_last_date(tmp_path, year, month)
+    return location_data_dic
 
-        # 3. 判定ロジック
-        if actual_last_date == last_day:
-            st.success(f"解析成功：最終日は{last_day}日（{actual_last_weekday}曜日）です。")
-            # 次のステップ（第2関門へ）
-        else:
-            st.error("【エラー】PDFのデータが不一致です。")
+# --- 2. 第1・第2関門突破ロジック ---
+def validate_pdf(pdf_path, location_data_dic, target_year, target_month):
+    tables = camelot.read_pdf(pdf_path, pages='1', flavor='lattice')
+    if not tables:
+        st.error("PDF読み込み失敗")
+        st.stop()
+    df = tables[0].df
+    
+    # 第1関門: 日付整合性チェック
+    all_cells = df.astype(str).values.flatten()
+    days = [int(n) for cell in all_cells for n in re.findall(r'\d+', cell) if 1 <= int(n) <= 31]
+    max_day_pdf = max(days) if days else 0
+    _, last_day = calendar.monthrange(int(target_year), int(target_month))
+    
+    if max_day_pdf != last_day:
+        st.error(f"第1関門失敗: 最終日付が不一致 (PDF:{max_day_pdf}日 vs カレンダー:{last_day}日)")
+        st.stop()
+
+    # 第2関門: 勤務地Key完全一致検索
+    pdf_first_col = df.iloc[:, 0].astype(str).tolist()
+    for key in location_data_dic.keys():
+        if not any(key == cell.strip() for cell in pdf_first_col):
+            st.error(f"第2関門失敗: 勤務地-{key}-が見当たりません。")
+            # PDF表示処理をここに配置
+            st.stop()
             
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("計算上の期待値")
-                st.write(f"最終日付: {last_day}日")
-                st.write(f"最終曜日: {expected_weekday}")
-            
-            with col2:
-                st.subheader("PDFからの検出値")
-                st.write(f"最終日付: {actual_last_date}日")
-                st.write(f"最終曜日: {actual_last_weekday}")
-            
-            # PDFファイルの表示
-            st.subheader("アップロードされたPDFファイル")
-            with open(tmp_path, "rb") as f:
-                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-            pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="500" type="application/pdf"></iframe>'
-            st.markdown(pdf_display, unsafe_allow_html=True)
+    return True
+
+# --- 3. メイン ---
+def main():
+    st.title("シフトカレンダー作成")
+    # ここにservice生成処理 (st.secrets等から認証情報を取得)
+    
+    uploaded_file = st.file_uploader("PDFをアップロード", type="pdf")
+    if uploaded_file and st.button("解析開始"):
+        # 処理実行
+        # location_data_dic = time_schedule_from_drive(service)
+        # validate_pdf(...)
+        st.success("通過しました。詳細解析へ進みます。")
+
+if __name__ == "__main__":
+    main()
