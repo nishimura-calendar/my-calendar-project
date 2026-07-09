@@ -1,15 +1,15 @@
 import streamlit as st
-import pandas as pd
 import gspread
 from google.oauth2.credentials import Credentials
 
-st.title("最終デバッグ")
+st.title("認証テスト")
 
-# Secretsの取得
 try:
+    # 辞書として取得できているか確認
     creds_dict = st.secrets["google_oauth_credentials"]
+    st.write("Secrets取得成功")
     
-    # 認証情報を作成
+    # 最小構成でCredentialsを作成
     creds = Credentials(
         token=creds_dict["token"],
         refresh_token=creds_dict["refresh_token"],
@@ -18,18 +18,12 @@ try:
         client_secret=creds_dict["client_secret"]
     )
     
-    # ここでトークンの有効期限を確認
-    st.write(f"トークン有効期限: {creds.expiry}")
+    st.write("Credentials作成成功")
     
-    # 強制的に更新を試みる
-    from google.auth.transport.requests import Request
-    creds.refresh(Request())
-    st.write("トークンの更新成功！")
-    
-    # 接続
+    # スプレッドシート接続
     gc = gspread.authorize(creds)
     sh = gc.open_by_key("1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE")
-    st.success("スプレッドシートへの接続成功！")
+    st.success("スプレッドシート接続成功！")
 
 except Exception as e:
     st.error(f"エラー詳細: {e}")
