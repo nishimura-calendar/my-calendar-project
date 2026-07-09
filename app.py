@@ -1,19 +1,23 @@
-import streamlit as st
-import pandas as pd
+from google.oauth2.credentials import Credentials
 import gspread
-from google.oauth2.service_account import Credentials
 
-# スプレッドシート読み込み関数
 def load_time_schedule_from_sheets():
-    # Secretsから認証情報を取得
+    # Streamlit Secretsから認証情報を取得
     creds_dict = st.secrets["google_oauth_credentials"]
     
-    # 認証スコープ
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    # ユーザー認証方式に変更（client_emailが不要な方式）
+    creds = Credentials(
+        token=creds_dict["token"],
+        refresh_token=creds_dict["refresh_token"],
+        token_uri=creds_dict["token_uri"],
+        client_id=creds_dict["client_id"],
+        client_secret=creds_dict["client_secret"]
+    )
+    
+    # gspreadで認証
     gc = gspread.authorize(creds)
     
-    # 時程表のスプレッドシートID
+    # 時程表のスプレッドシートを開く
     sheet_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     sh = gc.open_by_key(sheet_id)
     
@@ -24,16 +28,3 @@ def load_time_schedule_from_sheets():
     # DataFrameに変換（1行目を見出しとする）
     df = pd.DataFrame(data[1:], columns=data[0])
     return df
-
-st.title("シフトカレンダー作成システム")
-
-if st.button("時程表を読み込む"):
-    try:
-        with st.spinner("スプレッドシートからデータを取得しています..."):
-            df = load_time_schedule_from_sheets()
-            st.success("読み込み成功！")
-            st.dataframe(df)
-            st.session_state.time_schedule = df
-    except Exception as e:
-        st.error(f"読み込みエラー: {e}")
-        st.info("※スプレッドシートの「共有」設定で、認証情報のメールアドレスに閲覧権限を与えているか確認してください。")
