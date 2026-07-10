@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
+import io
+# 【ここを追加してください】
+from googleapiclient.http import MediaIoBaseDownload 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-import io
 
-# Secretsから認証情報を取得
+# ... (get_service関数はそのまま) ...
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
@@ -23,12 +25,19 @@ def load_time_schedule():
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     
     # Drive APIでスプレッドシートをエクスポート
-    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    request = service.files().export_media(
+        fileId=file_id, 
+        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
     fh = io.BytesIO()
+    # ここでMediaIoBaseDownloadが使われます
     downloader = MediaIoBaseDownload(fh, request)
-    downloader.next_chunk()
+    done = False
+    while done is False:
+        status, done = downloader.next_chunk()
     fh.seek(0)
     
+    # ... (以降の処理はそのまま) ...    
     df = pd.read_excel(fh, header=None, engine='openpyxl')
     
     # 勤務地(key)ごとにデータを抽出するロジック
