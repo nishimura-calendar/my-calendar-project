@@ -38,21 +38,44 @@ def load_time_schedule():
     fh.seek(0)
     
     # ... (以降の処理はそのまま) ...    
-    df = pd.read_excel(fh, header=None, engine='openpyxl')
+df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     
-    # 勤務地(key)ごとにデータを抽出するロジック
     location_data = {}
-    # 簡易的なロジック：A列に値がある行を勤務地の開始とみなす
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
     for i, start_idx in enumerate(location_indices):
         key = str(df.iloc[start_idx, 0])
         end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
-        schedule = df.iloc[start_idx:end_idx]
-        location_data[key] = schedule
+        
+        # 該当範囲のデータを抽出
+        row_data = df.iloc[start_idx:end_idx]
+        
+        # 数値（時間）が含まれる列を探す
+        # A, B, C列は固定情報（勤務地、シフト、ロッカー）とみなし、D列目以降で数値を探す
+        fixed_cols = [0, 1, 2] 
+        extracted_rows = []
+        
+        for _, row in row_data.iterrows():
+            new_row = row[fixed_cols].tolist()
+            
+            # D列以降で数値を探す
+            for col_idx in range(3, len(row)):
+                val = row[col_idx]
+                try:
+                    f_val = float(val)
+                    # 小数を時刻表記（H:MM）に変換
+                    h = int(f_val)
+                    m = int(round((f_val - h) * 60))
+                    new_row.append(f"{h}:{m:02d}")
+                except (ValueError, TypeError):
+                    # 数値でない場合は空欄またはそのまま
+                    if pd.notna(val): new_row.append(val)
+            
+            extracted_rows.append(new_row)
+        
+        location_data[key] = pd.DataFrame(extracted_rows)
         
     return location_data
-
 # メイン処理
 st.title("シフト時程表ビューワー")
 
