@@ -1,6 +1,25 @@
 import streamlit as st
 import pandas as pd
+import io
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
+# 1. 認証サービス取得（エラー詳細表示用）
+def get_service():
+    try:
+        creds_dict = st.secrets["google_oauth_credentials"]
+        creds = Credentials(
+            token=creds_dict["token"],
+            refresh_token=creds_dict["refresh_token"],
+            token_uri=creds_dict["token_uri"],
+            client_id=creds_dict["client_id"],
+            client_secret=creds_dict["client_secret"]
+        )
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        st.error(f"認証情報のエラー: {e}")
+        return None
 # 時刻変換関数
 def format_time(val):
     try:
