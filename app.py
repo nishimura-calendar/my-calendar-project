@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
 import io
-# 【ここを追加してください】
-from googleapiclient.http import MediaIoBaseDownload 
+from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# ... (get_service関数はそのまま) ...
+# 認証情報の取得（Secretsを使用）
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
@@ -18,65 +17,58 @@ def get_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-# スプレッドシートを読み込み、辞書形式に変換する関数
+# 勤務地ごとの時間表記への変換関数
+def format_time(val):
+    try:
+        f_val = float(val)
+        h = int(f_val)
+        m = int(round((f_val - h) * 60))
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return val
+
 @st.cache_data
 def load_time_schedule():
     service = get_service()
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     
-    # Drive APIでスプレッドシートをエクスポート
     request = service.files().export_media(
         fileId=file_id, 
         mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
     fh = io.BytesIO()
-    # ここでMediaIoBaseDownloadが使われます
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-    while done is False:
-        status, done = downloader.next_chunk()
+    while not done:
+        _, done = downloader.next_chunk()
     fh.seek(0)
     
-    # ... (以降の処理はそのまま) ...    
-df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
+    # データを読み込み
+    df = pd.read_excel(fh, header=None, engine='openpyxl')
     
     location_data = {}
+    # A列が空でない行を「勤務地行(キー)」として抽出
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
     for i, start_idx in enumerate(location_indices):
         key = str(df.iloc[start_idx, 0])
         end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
         
-        # 該当範囲のデータを抽出
-        row_data = df.iloc[start_idx:end_idx]
+        # この範囲を一つの時程表とする
+        schedule_df = df.iloc[start_idx:end_idx].copy()
         
-        # 数値（時間）が含まれる列を探す
-        # A, B, C列は固定情報（勤務地、シフト、ロッカー）とみなし、D列目以降で数値を探す
-        fixed_cols = [0, 1, 2] 
-        extracted_rows = []
+        # 時間列（数値列）の変換
+        # 列ごとに数値変換を試み、成功すれば時刻形式にする
+        for col in schedule_df.columns:
+            # 勤務地(0), シフト(1), ロッカー(2)列はスキップ
+            if col > 2:
+                schedule_df[col] = schedule_df[col].apply(format_time)
         
-        for _, row in row_data.iterrows():
-            new_row = row[fixed_cols].tolist()
-            
-            # D列以降で数値を探す
-            for col_idx in range(3, len(row)):
-                val = row[col_idx]
-                try:
-                    f_val = float(val)
-                    # 小数を時刻表記（H:MM）に変換
-                    h = int(f_val)
-                    m = int(round((f_val - h) * 60))
-                    new_row.append(f"{h}:{m:02d}")
-                except (ValueError, TypeError):
-                    # 数値でない場合は空欄またはそのまま
-                    if pd.notna(val): new_row.append(val)
-            
-            extracted_rows.append(new_row)
-        
-        location_data[key] = pd.DataFrame(extracted_rows)
+        location_data[key] = schedule_df
         
     return location_data
-# メイン処理
+
+# --- UI部分 ---
 st.title("シフト時程表ビューワー")
 
 try:
@@ -84,18 +76,17 @@ try:
     
     st.subheader("勤務地を選択してください")
     
-    # カラムを使用してボタンを配置（横並びにする工夫）
+    # 勤務地ボタンを横に並べる
     cols = st.columns(len(data))
-    
-    for i, (key, schedule) in enumerate(data.items()):
+    for i, key in enumerate(data.keys()):
         if cols[i].button(key):
             st.session_state['selected_key'] = key
             
-    # ボタンが押された後の表示
+    # 選択された時程表の表示
     if 'selected_key' in st.session_state:
-        st.divider()
-        st.write(f"### {st.session_state['selected_key']} の時程表")
-        st.dataframe(data[st.session_state['selected_key']])
+        target_key = st.session_state['selected_key']
+        st.write(f"### {target_key} の時程表")
+        st.dataframe(data[target_key], hide_index=True)
 
 except Exception as e:
     st.error(f"データの読み込み中にエラーが発生しました: {e}")
