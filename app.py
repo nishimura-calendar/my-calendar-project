@@ -5,7 +5,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# 1. 認証サービス取得
+# 1. 認証情報の取得
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
@@ -17,7 +17,7 @@ def get_service():
     )
     return build('drive', 'v3', credentials=creds)
 
-# 2. 数値を時刻表記(H:MM)に変換する関数
+# 2. 小数から時刻表記(H:MM)への変換関数
 def format_time(val):
     try:
         f_val = float(val)
@@ -27,9 +27,30 @@ def format_time(val):
     except (ValueError, TypeError):
         return val
 
-# 3. 時程表を読み込み、辞書形式に変換する関数
+# 3. データを整形する関数（勤務地行のみ変換）
+def process_data(df):
+    location_data = {}
+    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
+    
+    for i, start_idx in enumerate(location_indices):
+        key = str(df.iloc[start_idx, 0])
+        end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
+        
+        schedule = df.iloc[start_idx:end_idx].copy()
+        
+        # 行ごとに処理（勤務地行のみ変換）
+        for row_idx in range(len(schedule)):
+            if row_idx == 0:  # 勤務地行（ヘッダー行）
+                for col_idx in range(3, len(schedule.columns)):
+                    schedule.iloc[row_idx, col_idx] = format_time(schedule.iloc[row_idx, col_idx])
+            # 他の行（シフト等）は何もしない
+        
+        location_data[key] = schedule
+    return location_data
+
+# 4. メイン処理
 @st.cache_data(ttl=600)
-def load_time_schedule():
+def load_and_process_data():
     service = get_service()
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     
@@ -44,49 +65,25 @@ def load_time_schedule():
         _, done = downloader.next_chunk()
     fh.seek(0)
     
-    # 全データを文字列として読み込む
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-    
-    location_data = {}
-    # A列が空でない行を「勤務地行」として抽出
-    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
-    
-    for i, start_idx in enumerate(location_indices):
-        key = str(df.iloc[start_idx, 0])
-        end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
-        
-        # 該当範囲のデータを抽出
-        schedule = df.iloc[start_idx:end_idx].copy()
-        
-        # D列以降（インデックス3以降）が時間行の対象
-        for col in schedule.columns:
-            if col >= 3:
-                schedule[col] = schedule[col].apply(format_time)
-        
-        location_data[key] = schedule
-        
-    return location_data
+    return process_data(df)
 
-# 4. メイン画面の構築
 st.title("シフト時程表ビューワー")
 
 try:
-    data_dict = load_time_schedule()
+    data_dict = load_and_process_data()
     
     st.subheader("勤務地を選択してください")
     
-    # ボタンを横並びに配置
     cols = st.columns(len(data_dict))
     for i, key in enumerate(data_dict.keys()):
         if cols[i].button(key):
             st.session_state['selected_key'] = key
             
-    # ボタン押下後の表示
     if 'selected_key' in st.session_state:
         target_key = st.session_state['selected_key']
         st.divider()
         st.write(f"### {target_key} の時程表")
-        # インデックスを隠してデータフレームを表示
         st.dataframe(data_dict[target_key], hide_index=True)
 
 except Exception as e:
