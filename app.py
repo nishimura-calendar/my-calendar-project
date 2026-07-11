@@ -30,24 +30,39 @@ def format_time(val):
 # 3. データを整形する関数（勤務地行のみ変換）
 def process_data(df):
     location_data = {}
+    # A列が空でない行（勤務地行）のインデックス
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
     for i, start_idx in enumerate(location_indices):
         key = str(df.iloc[start_idx, 0])
-        end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
         
-        schedule = df.iloc[start_idx:end_idx].copy()
+        # --- 切り取り終了位置の決定ロジック ---
+        # 次の勤務地がある場合はそこまで、ない場合はデータ全体の最後まで
+        potential_end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
         
-        # 行ごとに処理（勤務地行のみ変換）
-        for row_idx in range(len(schedule)):
-            if row_idx == 0:  # 勤務地行（ヘッダー行）
-                for col_idx in range(3, len(schedule.columns)):
-                    schedule.iloc[row_idx, col_idx] = format_time(schedule.iloc[row_idx, col_idx])
-            # 他の行（シフト等）は何もしない
+        # 範囲を抽出
+        schedule = df.iloc[start_idx:potential_end_idx].copy()
         
+        # --- 時間列（文字列表記の時間）が終了するまでの列範囲を特定 ---
+        # 4列目(index 3)から右にスキャンし、数値として解釈できない列が現れたらそこまでとする
+        valid_cols = []
+        for col_idx in range(3, len(schedule.columns)):
+            # 勤務地行のデータで判定
+            val = schedule.iloc[0, col_idx]
+            try:
+                float(val) # 数値に変換できれば時間列とみなす
+                valid_cols.append(col_idx)
+            except (ValueError, TypeError):
+                break # 数値でなくなったら終了
+        
+        # 勤務地行のみ、特定した時間列範囲だけを変換
+        for col_idx in valid_cols:
+            schedule.iloc[0, col_idx] = format_time(schedule.iloc[0, col_idx])
+            
         location_data[key] = schedule
+        
     return location_data
-
+    
 # 4. メイン処理
 @st.cache_data(ttl=600)
 def load_and_process_data():
