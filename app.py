@@ -5,7 +5,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# 1. 認証情報の取得
+# 1. 認証情報の取得（既存のまま）
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
@@ -27,43 +27,43 @@ def format_time(val):
     except (ValueError, TypeError):
         return val
 
-# 3. データを整形する関数（勤務地行のみ変換）
+# 3. データを整形する関数（修正部分）
 def process_data(df):
     location_data = {}
-    # A列が空でない行（勤務地行）のインデックス
+    # A列が空でない行（勤務地行）のインデックスを取得
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
-    for i, start_idx in enumerate(location_indices):
+    for start_idx in location_indices:
         key = str(df.iloc[start_idx, 0])
         
-        # --- 切り取り終了位置の決定ロジック ---
-        # 次の勤務地がある場合はそこまで、ない場合はデータ全体の最後まで
-        potential_end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
+        # 次の勤務地行を探して範囲を確定する
+        end_idx = df.index[-1] + 1
+        for next_idx in location_indices:
+            if next_idx > start_idx:
+                end_idx = next_idx
+                break
         
-        # 範囲を抽出
-        schedule = df.iloc[start_idx:potential_end_idx].copy()
+        # 該当範囲のデータを抽出
+        schedule = df.iloc[start_idx:end_idx].copy()
         
-        # --- 時間列（文字列表記の時間）が終了するまでの列範囲を特定 ---
-        # 4列目(index 3)から右にスキャンし、数値として解釈できない列が現れたらそこまでとする
-        valid_cols = []
-        for col_idx in range(3, len(schedule.columns)):
-            # 勤務地行のデータで判定
-            val = schedule.iloc[0, col_idx]
-            try:
-                float(val) # 数値に変換できれば時間列とみなす
-                valid_cols.append(col_idx)
-            except (ValueError, TypeError):
-                break # 数値でなくなったら終了
+        # D列(index 3)以降を走査し、数値から文字に変わるまで変換
+        for row_idx in range(len(schedule)):
+            for col_idx in range(3, schedule.shape[1]):
+                val = schedule.iloc[row_idx, col_idx]
+                
+                # 数値変換を試みる
+                try:
+                    float(val)
+                    schedule.iloc[row_idx, col_idx] = format_time(val)
+                except (ValueError, TypeError):
+                    # 文字が現れた時点で、この行の変換を停止
+                    break
         
-        # 勤務地行のみ、特定した時間列範囲だけを変換
-        for col_idx in valid_cols:
-            schedule.iloc[0, col_idx] = format_time(schedule.iloc[0, col_idx])
-            
         location_data[key] = schedule
-        
+            
     return location_data
-    
-# 4. メイン処理
+
+# 4. メイン処理（既存のまま）
 @st.cache_data(ttl=600)
 def load_and_process_data():
     service = get_service()
@@ -87,19 +87,15 @@ st.title("シフト時程表ビューワー")
 
 try:
     data_dict = load_and_process_data()
-    
     st.subheader("勤務地を選択してください")
     
-    cols = st.columns(len(data_dict))
-    for i, key in enumerate(data_dict.keys()):
-        if cols[i].button(key):
-            st.session_state['selected_key'] = key
+    # 勤務地（key）を選択
+    selected_key = st.selectbox("勤務地を選択", list(data_dict.keys()))
             
-    if 'selected_key' in st.session_state:
-        target_key = st.session_state['selected_key']
+    if selected_key:
         st.divider()
-        st.write(f"### {target_key} の時程表")
-        st.dataframe(data_dict[target_key], hide_index=True)
+        st.write(f"### {selected_key} の勤務詳細")
+        st.dataframe(data_dict[selected_key], hide_index=True, use_container_width=True)
 
 except Exception as e:
     st.error(f"データの読み込み中にエラーが発生しました: {e}")
