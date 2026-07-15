@@ -5,77 +5,93 @@ import camelot
 import re
 import calendar
 from datetime import datetime
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
-# --- [1] 時程表読込 (表示はしない) ---
-def get_time_schedule():
-    # 既存のロジックでデータを取得・辞書登録
-    # ... (既存の認証やデータ取得処理) ...
-    # return location_data
-    pass
+# --- 既存の関数 ---
+def get_service():
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds = Credentials(**creds_dict)
+    return build('drive', 'v3', credentials=creds)
 
-# --- [2] PDFシフト表読み込みロジック ---
+def format_time(val):
+    try:
+        f_val = float(val)
+        h = int(f_val)
+        m = int(round((f_val - h) * 60))
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return val
 
-# 年月抽出用（ファイル名から）
-def extract_year_month(filename):
-    # 4桁の数字=年、月の前の数字=月
-    match = re.search(r'(\d{4}).*?(\d{1,2})月', filename)
-    if match:
-        return int(match.group(1)), int(match.group(2))
-    return None, None
+def process_data(df):
+    location_data = {}
+    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
+    for i, start_idx in enumerate(location_indices):
+        key = str(df.iloc[start_idx, 0])
+        location_data[key] = df.iloc[start_idx:start_idx+10] # 例
+    return location_data
 
-# A：PDFから最終日付と曜日を抽出
+@st.cache_data(ttl=600)
+def load_and_process_data():
+    service = get_service()
+    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    downloader.next_chunk()
+    fh.seek(0)
+    df = pd.read_excel(fh, header=None, dtype=str)
+    return process_data(df)
+
+# --- 新規追加：第1関門チェック用関数 ---
 def get_pdf_last_date_info(df):
     for i in range(len(df)):
         row_text = " ".join(df.iloc[i].astype(str))
-        # 数字と曜日が含まれる行をヘッダーとみなす
         if re.search(r'\d+', row_text) and re.search(r'[月火水木金土日]', row_text):
-            # 行から数字と曜日を抽出
-            # ... (ヘッダー抽出ロジック) ...
-            return last_date, last_day
+            dates = [int(n) for n in re.findall(r'\d+', row_text) if 1 <= int(n) <= 31]
+            if dates:
+                last_date = max(dates)
+                # 該当行から曜日を探す簡易ロジック
+                day_match = re.search(r'([月火水木金土日])', row_text)
+                return last_date, (day_match.group(1) if day_match else "不明")
     return None, None
-
-# B：年月からその月の末日と末日の曜日を算出
-def get_expected_last_date_info(year, month):
-    last_day_num = calendar.monthrange(year, month)[1]
-    last_date_obj = datetime(year, month, last_day_num)
-    days = ["月", "火", "水", "木", "金", "土", "日"]
-    last_day_str = days[last_date_obj.weekday()]
-    return last_day_num, last_day_str
 
 # --- メイン処理 ---
 st.title("シフトカレンダー登録")
+data_dict = load_and_process_data()
 
-uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type="pdf")
+uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_file:
-    # 1. Camelotで読み込み
+    # 1. PDF読み込み
     tables = camelot.read_pdf(uploaded_file, pages='all')
-    df = tables[0].df # 必要に応じて結合
+    df = tables[0].df
     
-    # 2. 第1関門
-    # ① 0列目からkeyを検索
-    # ... (key検索ロジック) ...
+    # 2. 第1関門① キー検索
+    valid_keys = list(data_dict.keys())
+    key_found = next((k for k in valid_keys if df.iloc[:, 0].astype(str).str.contains(k).any()), None)
+    
     if not key_found:
-        st.error(f"「{key}」が見当たりません。シフト表ではないようです。ファイルを確認してください。")
-        st.write(df)
-        st.stop()
-    
-    # ② PDFからAを抽出
-    A_date, A_day = get_pdf_last_date_info(df)
-    
-    # ③ ファイル名から年月を取得
-    year, month = extract_year_month(uploaded_file.name)
-    
-    # ④ Bを算出
-    B_date, B_day = get_expected_last_date_info(year, month)
-    
-    # ⑤・⑥ 比較と判定
-    if A_date != B_date or A_day != B_day:
-        st.error("エラー：ファイル名とPDF内の日付情報が一致しません。")
-        st.write(f"【PDF内（A）】最終日付: {A_date}日、最終曜日: {A_day}曜日")
-        st.write(f"【ファイル名（B）】最終日付: {B_date}日、最終曜日: {B_day}曜日")
-        st.write("--- 対象のPDFの内容 ---")
+        st.error(f"「{valid_keys}」が見当たりません。シフト表ではないようです。")
         st.write(df)
         st.stop()
         
-    st.success("ファイルチェックOKです。次のステップへ進みます。")
+    # 3. 日付チェック
+    A_date, A_day = get_pdf_last_date_info(df)
+    match = re.search(r'(\d{4}).*?(\d{1,2})月', uploaded_file.name)
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+        last_day_num = calendar.monthrange(year, month)[1]
+        
+        # 簡易的な曜日判定（手順B）
+        days = ["月", "火", "水", "木", "金", "土", "日"]
+        B_day = days[datetime(year, month, last_day_num).weekday()]
+        
+        if A_date != last_day_num:
+            st.error("日付不一致")
+            st.write(f"【PDF】{A_date}日、{A_day}曜日 vs 【ファイル名】{last_day_num}日、{B_day}曜日")
+            st.write(df)
+            st.stop()
+            
+    st.success("チェックOK")
