@@ -8,7 +8,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# --- 1. 関数定義セクション ---
+# --- 1. 認証と関数定義 ---
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
@@ -59,15 +59,48 @@ def load_time_schedule_data():
         location_data[key] = schedule
     return location_data
 
-# --- 2. メイン処理セクション ---
+def normalize_str(s):
+    return unicodedata.normalize('NFKC', str(s)).replace(" ", "").replace(" ", "")
+
+# --- 2. メイン処理 ---
 st.title("シフトカレンダー管理システム")
 
 # [1] 時程表読み込み
 try:
     time_schedules = load_time_schedule_data()
-    st.sidebar.success("時程表の読み込み完了")
 except Exception as e:
     st.error(f"時程表の読み込みでエラーが発生しました: {e}")
     st.stop()
 
-# [2] PDFアップロード以降の処理...
+# [2] PDFアップロード
+st.subheader("[2] シフト表ファイルアップロード")
+uploaded_file = st.file_uploader("PDFシフト表をアップロードしてください", type=["pdf"])
+
+if uploaded_file is not None:
+    # PDF保存
+    with open("temp.pdf", "wb") as f: f.write(uploaded_file.getbuffer())
+    
+    # [第1関門] 年月チェック（簡易ロジック）
+    match = re.search(r'(\d+)年(\d+)月', uploaded_file.name)
+    if not match:
+        st.warning("ファイル名から年月を特定できませんでした。")
+        year_month = st.text_input("年月を入力してください (例: 2026年1月)")
+        if not year_month: st.stop()
+    
+    # [第2関門] keyの存在確認
+    tables = camelot.read_pdf("temp.pdf", pages='1')
+    pdf_col_0 = [normalize_str(val) for val in tables[0].df.iloc[:, 0]]
+    
+    found_key = False
+    for key in time_schedules.keys():
+        n_key = normalize_str(key)
+        if any(n_key in cell for cell in pdf_col_0):
+            found_key = True
+            break
+            
+    if not found_key:
+        st.error("シフト表ではないようです。確認して下さい。")
+        st.pdf(uploaded_file)
+        st.stop()
+    else:
+        st.success("有効なシフト表として確認されました。")
