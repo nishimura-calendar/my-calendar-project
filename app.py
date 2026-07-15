@@ -1,88 +1,105 @@
 import streamlit as st
-import camelot
 import pandas as pd
-import re
-import calendar
+import io
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
-# [1] 時程表読み込み（関数化）
-@st.cache_data
-def load_time_schedule():
-    # 実際にはここにCSV読み込み処理が入ります
-    return {"T1": "データ...", "T2": "データ..."}
+# 1. 認証情報の取得
+def get_service():
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds = Credentials(
+        token=creds_dict["token"],
+        refresh_token=creds_dict["refresh_token"],
+        token_uri=creds_dict["token_uri"],
+        client_id=creds_dict["client_id"],
+        client_secret=creds_dict["client_secret"]
+    )
+    return build('drive', 'v3', credentials=creds)
 
-# ユーティリティ: 文字列の正規化（全角半角・空白除去）
-def normalize_str(s):
-    if not isinstance(s, str): s = str(s)
-    s = s.replace(' ', '').replace(' ', '')
-    return s.lower()
+# 2. 小数から時刻表記(H:MM)への変換関数
+def format_time(val):
+    try:
+        f_val = float(val)
+        h = int(f_val)
+        m = int(round((f_val - h) * 60))
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return val
 
-# [2] PDF読み込みと関門処理
-st.title("シフト表読み込み")
-
-uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
-
-if uploaded_file:
-    # (1) Camelotで読込
-    tables = camelot.read_pdf(uploaded_file, pages='1', flavor='lattice')
-    df = tables[0].df
+# 3. データを整形する関数（勤務地行のみ変換）
+def process_data(df):
+    location_data = {}
+    # A列が空でない行（勤務地行）のインデックス
+    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
-    # [1] で登録したkeyを取得
-    time_schedule = load_time_schedule()
-    keys = list(time_schedule.keys())
-    
-    # (2) 第1関門: key検索
-    found_key = None
-    key_idx = -1
-    for i, row in df.iterrows():
-        cell_val = normalize_str(row[0])
-        for k in keys:
-            if normalize_str(k) in cell_val:
-                found_key = k
-                key_idx = i
-                break
-        if found_key: break
-            
-    if not found_key:
-        st.error(f"「{keys}」が見当りません。シフト表ではないようです。ファイルを確認して下さい。")
-        st.dataframe(df)
-        st.stop()
-    
-    # (3) 第2関門
-    # ② Key行より上の行を検索範囲とする
-    search_df = df.iloc[:key_idx + 1]
-    
-    # 検索範囲を結合して文字列化
-    full_text = " ".join(search_df.stack().astype(str))
-    
-    # A: 最大日付と最終曜日を抽出
-    dates = [int(n) for n in re.findall(r'\d+', full_text) if 1 <= int(n) <= 31]
-    A_date = max(dates) if dates else 0
-    
-    days = re.findall(r'[月火水木金土日]', full_text)
-    A_day = days[-1] if days else ""
-    
-    # ③ ファイル名から年月取得
-    file_name = uploaded_file.name
-    year_match = re.search(r'20\d{2}', file_name)
-    month_match = re.search(r'(\d+)月', file_name)
-    
-    if year_match and month_match:
-        year, month = int(year_match.group()), int(month_match.group(1))
-    else:
-        # 取得できない場合は入力
-        year = st.number_input("年を入力", value=2026)
-        month = st.number_input("月を入力", value=1)
+    for i, start_idx in enumerate(location_indices):
+        key = str(df.iloc[start_idx, 0])
         
-    # ④ B: 取得した年月から最終日付と曜日を取得
-    last_day_num = calendar.monthrange(year, month)[1]
-    last_day_weekday = calendar.weekday(year, month, last_day_num)
-    weekday_map = ["月", "火", "水", "木", "金", "土", "日"]
-    B_day = weekday_map[last_day_weekday]
+        # --- 切り取り終了位置の決定ロジック ---
+        # 次の勤務地がある場合はそこまで、ない場合はデータ全体の最後まで
+        potential_end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
+        
+        # 範囲を抽出
+        schedule = df.iloc[start_idx:potential_end_idx].copy()
+        
+        # --- 時間列（文字列表記の時間）が終了するまでの列範囲を特定 ---
+        # 4列目(index 3)から右にスキャンし、数値として解釈できない列が現れたらそこまでとする
+        valid_cols = []
+        for col_idx in range(3, len(schedule.columns)):
+            # 勤務地行のデータで判定
+            val = schedule.iloc[0, col_idx]
+            try:
+                float(val) # 数値に変換できれば時間列とみなす
+                valid_cols.append(col_idx)
+            except (ValueError, TypeError):
+                break # 数値でなくなったら終了
+        
+        # 勤務地行のみ、特定した時間列範囲だけを変換
+        for col_idx in valid_cols:
+            schedule.iloc[0, col_idx] = format_time(schedule.iloc[0, col_idx])
+            
+        location_data[key] = schedule
+        
+    return location_data
     
-    # ⑤⑥⑦ 判定
-    if A_date == last_day_num and A_day == B_day:
-        st.success("第②関門通過しました。")
-    else:
-        st.error(f"判定エラー: A({A_date}日 {A_day}) ≠ B({last_day_num}日 {B_day})")
-        st.dataframe(df)
-        st.stop()
+# 4. メイン処理
+@st.cache_data(ttl=600)
+def load_and_process_data():
+    service = get_service()
+    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    
+    request = service.files().export_media(
+        fileId=file_id, 
+        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    
+    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
+    return process_data(df)
+
+st.title("シフト時程表ビューワー")
+
+try:
+    data_dict = load_and_process_data()
+    
+    st.subheader("勤務地を選択してください")
+    
+    cols = st.columns(len(data_dict))
+    for i, key in enumerate(data_dict.keys()):
+        if cols[i].button(key):
+            st.session_state['selected_key'] = key
+            
+    if 'selected_key' in st.session_state:
+        target_key = st.session_state['selected_key']
+        st.divider()
+        st.write(f"### {target_key} の時程表")
+        st.dataframe(data_dict[target_key], hide_index=True)
+
+except Exception as e:
+    st.error(f"データの読み込み中にエラーが発生しました: {e}")
