@@ -18,29 +18,39 @@ def format_time(val):
 # 2. データを整形する関数 (打ち合わせ通りのロジック)
 def process_data(df):
     location_data = {}
-    # A列が値を持つ行を勤務地行とする
+    
+    # 勤務地行のインデックスを取得
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
     for i, start_idx in enumerate(location_indices):
+        # キー（勤務地）の取得
         key = str(df.iloc[start_idx, 0])
-        # 範囲確定：次の勤務地行の手前まで
+        
+        # 範囲確定：現在の勤務地行から、次の勤務地行の直前まで
         end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
+        
+        # 切り取り対象の範囲をコピー
         schedule = df.iloc[start_idx:end_idx].copy()
         
-        # 勤務地行のD列(index 3)以降を走査し、数値から文字列に変わるまで処理
+        # --- 列方向の処理（勤務地行のみ変換） ---
+        # 勤務地行（index 0）のD列(index 3)以降を走査
+        # 数値なら変換、文字ならその列以降を切り取り
         for col_idx in range(3, schedule.shape[1]):
             val = schedule.iloc[0, col_idx]
             try:
+                # 数値かどうかの判定
                 f_val = float(val)
+                # 数値であれば時刻変換（勤務地行のみ）
                 schedule.iloc[0, col_idx] = format_time(f_val)
             except (ValueError, TypeError):
-                # 文字列が現れた時点で切り取る
+                # 文字列が現れた時点で、その列以降をすべて削除
                 schedule = schedule.iloc[:, :col_idx]
                 break
         
         location_data[key] = schedule
+        
     return location_data
-
+    
 # 3. 認証・読み込み処理
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
