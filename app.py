@@ -1,93 +1,88 @@
 import streamlit as st
-import pandas as pd
-import io
 import camelot
+import pandas as pd
 import re
 import calendar
-from datetime import datetime
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
 
-# --- [1] 時程表読込ロジック ---
-def get_service():
-    # secretsが正しく設定されているか確認してください
-    creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(**creds_dict)
-    return build('drive', 'v3', credentials=creds)
+# [1] 時程表読み込み（関数化）
+@st.cache_data
+def load_time_schedule():
+    # 実際にはここにCSV読み込み処理が入ります
+    return {"T1": "データ...", "T2": "データ..."}
 
-def format_time(val):
-    try:
-        f_val = float(val)
-        h = int(f_val)
-        m = int(round((f_val - h) * 60))
-        return f"{h}:{m:02d}"
-    except (ValueError, TypeError):
-        return val
+# ユーティリティ: 文字列の正規化（全角半角・空白除去）
+def normalize_str(s):
+    if not isinstance(s, str): s = str(s)
+    s = s.replace(' ', '').replace(' ', '')
+    return s.lower()
 
-def process_data(df):
-    location_data = {}
-    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
-    for start_idx in location_indices:
-        key = str(df.iloc[start_idx, 0])
-        location_data[key] = df.iloc[start_idx:start_idx+10] 
-    return location_data
+# [2] PDF読み込みと関門処理
+st.title("シフト表読み込み")
 
-@st.cache_data(ttl=600)
-def load_and_process_data():
-    service = get_service()
-    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-    return process_data(df)
-
-# --- [2] PDFチェック関数 ---
-def run_first_gate(uploaded_file, data_dict):
-    tables = camelot.read_pdf(uploaded_file, pages='all')
-    df = tables[0].df
-    
-    valid_keys = list(data_dict.keys())
-    # ① 0列目を検索
-    key_found = next((k for k in valid_keys if df.iloc[:, 0].astype(str).str.contains(k).any()), None)
-    
-    if not key_found:
-        st.error(f"「{key_found}」が見当りません。シフト表ではないようです。")
-        st.write(df)
-        st.stop()
-        
-    # ② 最終日付・曜日の抽出
-    idx = df[df.iloc[:, 0].astype(str).str.contains(key_found)].index[0]
-    row_data = " ".join(df.iloc[idx].astype(str))
-    dates = [int(n) for n in re.findall(r'\d+', row_data) if 1 <= int(n) <= 31]
-    A_date = max(dates) if dates else 0
-    days = re.findall(r'[月火水木金土日]', row_data)
-    A_day = days[-1] if days else "不明"
-    
-    # ③ 年月取得
-    match = re.search(r'(\d{4}).*?(\d{1,2})月', uploaded_file.name)
-    year, month = (int(match.group(1)), int(match.group(2))) if match else (2026, 1)
-    
-    # ④ 判定用データ生成
-    last_day_num = calendar.monthrange(year, month)[1]
-    B_day = ["月", "火", "水", "木", "金", "土", "日"][datetime(year, month, last_day_num).weekday()]
-    
-    # ⑤⑥ 判定
-    if A_date == last_day_num and A_day == B_day:
-        st.success("ファイルチェックOK")
-    else:
-        st.error("エラー：ファイル名とシフト表の日付が一致しません")
-        st.stop()
-
-# --- メイン ---
-st.title("シフトカレンダー登録")
-data_dict = load_and_process_data() # ここでエラーが出る場合は上の関数定義を確認
 uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_file:
-    run_first_gate(uploaded_file, data_dict)
+    # (1) Camelotで読込
+    tables = camelot.read_pdf(uploaded_file, pages='1', flavor='lattice')
+    df = tables[0].df
+    
+    # [1] で登録したkeyを取得
+    time_schedule = load_time_schedule()
+    keys = list(time_schedule.keys())
+    
+    # (2) 第1関門: key検索
+    found_key = None
+    key_idx = -1
+    for i, row in df.iterrows():
+        cell_val = normalize_str(row[0])
+        for k in keys:
+            if normalize_str(k) in cell_val:
+                found_key = k
+                key_idx = i
+                break
+        if found_key: break
+            
+    if not found_key:
+        st.error(f"「{keys}」が見当りません。シフト表ではないようです。ファイルを確認して下さい。")
+        st.dataframe(df)
+        st.stop()
+    
+    # (3) 第2関門
+    # ② Key行より上の行を検索範囲とする
+    search_df = df.iloc[:key_idx + 1]
+    
+    # 検索範囲を結合して文字列化
+    full_text = " ".join(search_df.stack().astype(str))
+    
+    # A: 最大日付と最終曜日を抽出
+    dates = [int(n) for n in re.findall(r'\d+', full_text) if 1 <= int(n) <= 31]
+    A_date = max(dates) if dates else 0
+    
+    days = re.findall(r'[月火水木金土日]', full_text)
+    A_day = days[-1] if days else ""
+    
+    # ③ ファイル名から年月取得
+    file_name = uploaded_file.name
+    year_match = re.search(r'20\d{2}', file_name)
+    month_match = re.search(r'(\d+)月', file_name)
+    
+    if year_match and month_match:
+        year, month = int(year_match.group()), int(month_match.group(1))
+    else:
+        # 取得できない場合は入力
+        year = st.number_input("年を入力", value=2026)
+        month = st.number_input("月を入力", value=1)
+        
+    # ④ B: 取得した年月から最終日付と曜日を取得
+    last_day_num = calendar.monthrange(year, month)[1]
+    last_day_weekday = calendar.weekday(year, month, last_day_num)
+    weekday_map = ["月", "火", "水", "木", "金", "土", "日"]
+    B_day = weekday_map[last_day_weekday]
+    
+    # ⑤⑥⑦ 判定
+    if A_date == last_day_num and A_day == B_day:
+        st.success("第②関門通過しました。")
+    else:
+        st.error(f"判定エラー: A({A_date}日 {A_day}) ≠ B({last_day_num}日 {B_day})")
+        st.dataframe(df)
+        st.stop()
