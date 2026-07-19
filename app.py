@@ -1,22 +1,74 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import io
-from googleapicolient.discovery import build
-from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
+# 1. 認証情報の取得
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(**creds_dict)
+    creds = Credentials(
+        token=creds_dict["token"],
+        refresh_token=creds_dict["refresh_token"],
+        token_uri=creds_dict["token_uri"],
+        client_id=creds_dict["client_id"],
+        client_secret=creds_dict["client_secret"]
+    )
     return build('drive', 'v3', credentials=creds)
 
-@st.cache_data
-def load_and_process_data_from_drive():
+# 2. 小数から時刻表記(H:MM)への変換関数
+def format_time(val):
+    try:
+        f_val = float(val)
+        h = int(f_val)
+        m = int(round((f_val - h) * 60))
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return val
+
+# 3. データを整形する関数（勤務地行のみ変換）
+def process_data(df):
+    location_data = {}
+    # A列が空でない行（勤務地行）のインデックス
+    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
+    
+    for i, start_idx in enumerate(location_indices):
+        key = str(df.iloc[start_idx, 0])
+        
+        # --- 切り取り終了位置の決定ロジック ---
+        # 次の勤務地がある場合はそこまで、ない場合はデータ全体の最後まで
+        potential_end_idx = location_indices[i+1] if i+1 < len(location_indices) else len(df)
+        
+        # 範囲を抽出
+        schedule = df.iloc[start_idx:potential_end_idx].copy()
+        
+        # --- 時間列（文字列表記の時間）が終了するまでの列範囲を特定 ---
+        # 4列目(index 3)から右にスキャンし、数値として解釈できない列が現れたらそこまでとする
+        valid_cols = []
+        for col_idx in range(3, len(schedule.columns)):
+            # 勤務地行のデータで判定
+            val = schedule.iloc[0, col_idx]
+            try:
+                float(val) # 数値に変換できれば時間列とみなす
+                valid_cols.append(col_idx)
+            except (ValueError, TypeError):
+                break # 数値でなくなったら終了
+        
+        # 勤務地行のみ、特定した時間列範囲だけを変換
+        for col_idx in valid_cols:
+            schedule.iloc[0, col_idx] = format_time(schedule.iloc[0, col_idx])
+            
+        location_data[key] = schedule
+        
+    return location_data
+    
+# 4. メイン処理
+@st.cache_data(ttl=600)
+def load_and_process_data():
     service = get_service()
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     
-    # スプレッドシートをExcel形式としてエクスポート
     request = service.files().export_media(
         fileId=file_id, 
         mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -28,45 +80,26 @@ def load_and_process_data_from_drive():
         _, done = downloader.next_chunk()
     fh.seek(0)
     
-    # Excelとして読み込み
-    df = pd.read_excel(fh, engine='openpyxl')
-    
-    # --- 辞書化ロジック ---
-    location_dict = {}
-    current_location = None
-    
-    for _, row in df.iterrows():
-        # A列(勤務地)の判定
-        if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() != "nan":
-            current_location = str(row.iloc[0]).strip()
-            location_dict[current_location] = []
-        
-        if current_location:
-            shift_info = {
-                'シフトコード': row.iloc[1],
-                'ロッカー': row.iloc[2],
-                'time_data': {}
-            }
-            # D列(インデックス3)以降の数値抽出
-            for i in range(3, len(row)):
-                val = row.iloc[i]
-                if isinstance(val, (int, float)) and not np.isnan(val):
-                    shift_info['time_data'][df.columns[i]] = val
-                elif isinstance(val, str):
-                    break
-            location_dict[current_location].append(shift_info)
-    return location_dict
+    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
+    return process_data(df)
 
-# メイン処理
-st.title("勤務地別時程表検索")
+st.title("シフト時程表ビューワー")
 
 try:
-    shift_dict = load_and_process_data_from_drive()
-    selected_location = st.selectbox("勤務地を選択してください", list(shift_dict.keys()))
+    data_dict = load_and_process_data()
     
-    if st.button("時程を表示"):
-        # 選択された勤務地の全シフトデータを表示
-        df_display = pd.DataFrame(shift_dict[selected_location])
-        st.dataframe(df_display)
+    st.subheader("勤務地を選択してください")
+    
+    cols = st.columns(len(data_dict))
+    for i, key in enumerate(data_dict.keys()):
+        if cols[i].button(key):
+            st.session_state['selected_key'] = key
+            
+    if 'selected_key' in st.session_state:
+        target_key = st.session_state['selected_key']
+        st.divider()
+        st.write(f"### {target_key} の時程表")
+        st.dataframe(data_dict[target_key], hide_index=True)
+
 except Exception as e:
-    st.error(f"データの取得・処理中にエラーが発生しました: {e}")
+    st.error(f"データの読み込み中にエラーが発生しました: {e}")
