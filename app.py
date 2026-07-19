@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
-from googleapiclient.discovery import build
+from googleapicolient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 
-# Googleドライブ認証用関数（Streamlit secretsに設定が必要）
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(**creds_dict)
@@ -17,8 +16,11 @@ def load_and_process_data_from_drive():
     service = get_service()
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     
-    # ファイルのダウンロード
-    request = service.files().get_media(fileId=file_id)
+    # スプレッドシートをExcel形式としてエクスポート
+    request = service.files().export_media(
+        fileId=file_id, 
+        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -45,7 +47,7 @@ def load_and_process_data_from_drive():
                 'ロッカー': row.iloc[2],
                 'time_data': {}
             }
-            # D列以降の数値抽出
+            # D列(インデックス3)以降の数値抽出
             for i in range(3, len(row)):
                 val = row.iloc[i]
                 if isinstance(val, (int, float)) and not np.isnan(val):
@@ -63,7 +65,8 @@ try:
     selected_location = st.selectbox("勤務地を選択してください", list(shift_dict.keys()))
     
     if st.button("時程を表示"):
+        # 選択された勤務地の全シフトデータを表示
         df_display = pd.DataFrame(shift_dict[selected_location])
         st.dataframe(df_display)
 except Exception as e:
-    st.error(f"ドライブからの読み込みエラー: {e}")
+    st.error(f"データの取得・処理中にエラーが発生しました: {e}")
