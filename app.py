@@ -45,9 +45,13 @@ def load_time_schedule():
         st.error(f"時程表読込失敗: {e}")
         st.stop()
 
-# --- [3] PDF解析：ヘッダー行探索による末日特定 ---
+# --- [3] PDF解析と詳細な整合性チェック ---
+def get_day_name(year, month, day):
+    day_names = ["月", "火", "水", "木", "金", "土", "日"]
+    return day_names[calendar.weekday(year, month, day)]
+
 def process_pdf_shift(file_path, file_name, time_schedule):
-    # 1. PDF読み込み：全テーブルを結合
+    # 1. PDF読み込み
     try:
         tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
         df = pd.concat([t.df for t in tables], ignore_index=True)
@@ -55,18 +59,13 @@ def process_pdf_shift(file_path, file_name, time_schedule):
         st.error(f"PDF読み込みエラー: {e}")
         st.stop()
 
-    # 2. ★日付ヘッダー行の探索（もっとも日付数字を多く含む行を探す）
+    # 2. 日付ヘッダー行の探索
     best_row_idx = None
     max_date_count = 0
-    
     for idx, row in df.iterrows():
-        # 行内の全セルを連結して数字を抽出
         text_row = " ".join([str(val) for val in row])
         nums = re.findall(r'\d+', text_row)
-        # 1〜31の範囲内の数値のみを日付としてカウント
         dates = [int(n) for n in nums if 1 <= int(n) <= 31]
-        
-        # 日付が5つ以上含まれる行をヘッダーの候補とする
         if len(dates) > max_date_count:
             max_date_count = len(dates)
             best_row_idx = idx
@@ -75,19 +74,37 @@ def process_pdf_shift(file_path, file_name, time_schedule):
         st.error("シフト表の日付ヘッダーが見つかりませんでした。")
         st.stop()
 
-    # 3. 見つかったヘッダー行から最大値(末日)を取得
-    text_best = " ".join([str(val) for val in df.iloc[best_row_idx]])
-    all_dates = [int(n) for n in re.findall(r'\d+', text_best) if 1 <= int(n) <= 31]
-    A_last_day = max(all_dates) if all_dates else 0
-    
-    # 4. ファイル名から年月を取得して整合性チェック
+    # 3. 整合性チェックのためのデータ算出
     match = re.search(r'(\d{4})年?(\d{1,2})月', file_name)
     year = int(match.group(1)) if match else datetime.now().year
     month = int(match.group(2)) if match else datetime.now().month
+
+    # A: ファイル内容から抽出
+    text_best = " ".join([str(val) for val in df.iloc[best_row_idx]])
+    all_dates = [int(n) for n in re.findall(r'\d+', text_best) if 1 <= int(n) <= 31]
+    A_last_day = max(all_dates) if all_dates else 0
+    A_last_weekday = get_day_name(year, month, A_last_day) if A_last_day > 0 else "不明"
+
+    # B: ファイル名から算出
     _, B_last_day = calendar.monthrange(year, month)
-    
+    B_last_weekday = get_day_name(year, month, B_last_day)
+
+    # 4. 比較とエラー表示
     if A_last_day != B_last_day:
-        st.error(f"データ不一致: PDF最終日({A_last_day}日)が{month}月の末日({B_last_day}日)と一致しません。")
+        error_msg = (
+            f"### ⚠️ データ不一致が発生しました\n\n"
+            f"**【A: PDFファイル内容から抽出】**\n"
+            f"- 最終日: {A_last_day}日\n"
+            f"- 曜日: {A_last_weekday}\n\n"
+            f"**【B: ファイル名から算出】**\n"
+            f"- 最終日: {B_last_day}日\n"
+            f"- 曜日: {B_last_weekday}\n\n"
+            f"PDFのレイアウトが正しく読み取れていない可能性があります。ファイルを確認してください。"
+        )
+        st.error(error_msg)
+        # PDFファイル表示（ダウンロード用）
+        st.subheader("アップロードされたPDF:")
+        st.download_button("PDFをダウンロードして確認", file_path, file_name=file_name)
         st.stop()
     
     st.success(f"確認完了: {year}年{month}月 (最終日:{A_last_day}日)")
@@ -99,5 +116,9 @@ time_schedule = load_time_schedule()
 uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_file:
-    if process_pdf_shift(uploaded_file, uploaded_file.name, time_schedule):
+    # テンポラリファイルとして保存して処理
+    with open("temp_pdf.pdf", "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    if process_pdf_shift("temp_pdf.pdf", uploaded_file.name, time_schedule):
         st.write("正常に読み込まれました。詳細読込処理へ進みます。")
