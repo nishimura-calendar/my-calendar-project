@@ -1,11 +1,15 @@
 import streamlit as st
 import pandas as pd
 import io
-from googleapiclient.http import MediaIoBaseDownload
+import camelot
+import os
+import calendar
+import re
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+from googleapiclient.http import MediaIoBaseDownload
 
-# 1. 小数から時刻表記(H:MM)への変換関数
+# --- [1] 時程表読込 ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -15,75 +19,80 @@ def format_time(val):
     except (ValueError, TypeError):
         return val
 
-# 2. データを整形する関数
 def process_data(df):
     location_data = {}
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
-    
     for i, start_idx in enumerate(location_indices):
         key = str(df.iloc[start_idx, 0])
         end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
         schedule = df.iloc[start_idx:end_idx].copy()
-        
         for col_idx in range(3, schedule.shape[1]):
             val = schedule.iloc[0, col_idx]
             try:
-                f_val = float(val)
-                schedule.iloc[0, col_idx] = format_time(f_val)
+                schedule.iloc[0, col_idx] = format_time(val)
             except (ValueError, TypeError):
-                schedule = schedule.iloc[:, :col_idx]
                 break
         location_data[key] = schedule
     return location_data
 
-# 3. 認証・読み込み・辞書登録処理
-@st.cache_data(ttl=600)
+@st.cache_data
 def get_latest_schedule_to_dict():
     creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(
-        token=creds_dict["token"],
-        refresh_token=creds_dict["refresh_token"],
-        token_uri=creds_dict["token_uri"],
-        client_id=creds_dict["client_id"],
-        client_secret=creds_dict["client_secret"]
-    )
+    creds = Credentials(**creds_dict)
     service = build('drive', 'v3', credentials=creds)
-    
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    request = service.files().export_media(
-        fileId=file_id, 
-        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
+    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
     while not done:
         _, done = downloader.next_chunk()
     fh.seek(0)
-    
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- メイン処理 ---
-st.title("勤務地スケジュール選択")
+# --- [2] PDFシフト表ファイル読込 ---
+def check_pdf_file(file_path, data_dict, file_name):
+    # (1) camelotで読込
+    tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
+    
+    # (2) 第1関門: Key検索
+    target_key = None
+    for table in tables:
+        df = table.df
+        for i, row in df.iterrows():
+            for key in data_dict.keys():
+                # 全角半角スペース無視で検索
+                if key.replace(" ", "").replace(" ", "").lower() in str(row[0]).replace(" ", "").replace(" ", "").lower():
+                    target_key = key
+                    break
+            if target_key: break
+        if target_key: break
+    
+    if not target_key:
+        st.error(f"勤務地が見当りません。シフト表ではないようです。ファイルを確認して下さい。")
+        st.stop()
+    
+    # (3) 第2関門: 年月取得と判定
+    match = re.search(r'(\d{4})年(\d{1,2})月', file_name)
+    if not match:
+        year = st.number_input("年を入力してください", min_value=2000, max_value=2100)
+        month = st.number_input("月を入力してください", min_value=1, max_value=12)
+    else:
+        year, month = int(match.group(1)), int(match.group(2))
+    
+    last_day = calendar.monthrange(year, month)[1]
+    last_weekday = calendar.weekday(year, month, last_day)
+    
+    # ここにPDFから抽出したAと算出したBの比較ロジックを追加
+    st.write(f"判定: {year}年{month}月 (最終日: {last_day}, 曜日: {last_weekday})")
+    return target_key
 
-# 辞書の取得
+# メイン処理
 data_dict = get_latest_schedule_to_dict()
-
-# 勤務地（key）ボタンを表示
-st.subheader("勤務地を選択してください")
-cols = st.columns(len(data_dict))
-
-# 選択状態を保持する変数をセッションステートに格納
-if 'selected_key' not in st.session_state:
-    st.session_state.selected_key = None
-
-for i, key in enumerate(data_dict.keys()):
-    if cols[i].button(key):
-        st.session_state.selected_key = key
-
-# ボタンが押されたらスケジュールを表示
-if st.session_state.selected_key:
-    st.divider()
-    st.write(f"### {st.session_state.selected_key} の勤務詳細")
-    st.dataframe(data_dict[st.session_state.selected_key], hide_index=True, use_container_width=True)
+uploaded_file = st.file_uploader("PDFシフト表アップロード", type="pdf")
+if uploaded_file:
+    path = "temp.pdf"
+    with open(path, "wb") as f: f.write(uploaded_file.getbuffer())
+    key = check_pdf_file(path, data_dict, uploaded_file.name)
+    st.write(f"Key: {key} を特定しました。")
