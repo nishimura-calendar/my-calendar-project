@@ -9,7 +9,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- [1] 時程表読込 ---
+# --- [1] 時程表読み込み関連 ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -51,9 +51,9 @@ def get_latest_schedule_to_dict():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] PDFシフト表ファイル読込 ---
+# --- [2] PDFシフト表ファイル読込・判定 ---
 def check_pdf_file(file_path, data_dict, file_name):
-    # (1) camelotで読込
+    # (1) Camelotで読込
     tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
     
     # (2) 第1関門: Key検索
@@ -62,7 +62,6 @@ def check_pdf_file(file_path, data_dict, file_name):
         df = table.df
         for i, row in df.iterrows():
             for key in data_dict.keys():
-                # 全角半角スペース無視で検索
                 if key.replace(" ", "").replace(" ", "").lower() in str(row[0]).replace(" ", "").replace(" ", "").lower():
                     target_key = key
                     break
@@ -70,27 +69,28 @@ def check_pdf_file(file_path, data_dict, file_name):
         if target_key: break
     
     if not target_key:
-        st.error(f"勤務地が見当りません。シフト表ではないようです。ファイルを確認して下さい。")
+        st.error("勤務地が見当りません。シフト表ではないようです。")
         st.stop()
     
     # (3) 第2関門: 年月取得と判定
-    match = re.search(r'(\d{4})年(\d{1,2})月', file_name)
-    if not match:
-        year = st.number_input("年を入力してください", min_value=2000, max_value=2100)
-        month = st.number_input("月を入力してください", min_value=1, max_value=12)
-    else:
+    match = re.search(r'(\d{4}).*?(\d{1,2})月', file_name)
+    if match:
         year, month = int(match.group(1)), int(match.group(2))
+    else:
+        year = st.number_input("年を入力してください", min_value=2020, max_value=2030, value=2026)
+        month = st.number_input("月を入力してください", min_value=1, max_value=12, value=1)
     
     last_day = calendar.monthrange(year, month)[1]
     last_weekday = calendar.weekday(year, month, last_day)
     
-    # ここにPDFから抽出したAと算出したBの比較ロジックを追加
     st.write(f"判定: {year}年{month}月 (最終日: {last_day}, 曜日: {last_weekday})")
     return target_key
 
-# メイン処理
+# --- メイン処理 ---
 data_dict = get_latest_schedule_to_dict()
-uploaded_file = st.file_uploader("PDFシフト表アップロード", type="pdf")
+st.title("PDFシフト表アップロード")
+uploaded_file = st.file_uploader("PDFシフト表ファイルをアップロードしてください", type="pdf")
+
 if uploaded_file:
     path = "temp.pdf"
     with open(path, "wb") as f: f.write(uploaded_file.getbuffer())
