@@ -1,123 +1,58 @@
 import streamlit as st
 import pandas as pd
-import camelot
-import re
-import calendar
-import io
-import os
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
+import numpy as np
 
-# --- [1]．時程表読込用の関数群 ---
-def get_service():
-    creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(**creds_dict)
-    return build('drive', 'v3', credentials=creds)
-
-@st.cache_data(ttl=600)
-def load_and_process_data():
-    service = get_service()
-    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    request = service.files().export_media(
-        fileId=file_id, 
-        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-    return process_data(df)
-
-def process_data(df):
-    location_data = {}
-    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
-    for i, start_idx in enumerate(location_indices):
-        key = str(df.iloc[start_idx, 0]).strip()
-        end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
-        location_data[key] = df.iloc[start_idx:end_idx].copy()
-    return location_data
-
-# --- [2]．pdfシフト表ファイル読込 ---
-def process_pdf_shift(uploaded_file, data_dict):
-    temp_path = "temp_shift.pdf"
-    with open(temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+# 1. 辞書作成用関数
+@st.cache_data
+def create_location_shift_dict(file_path):
+    df = pd.read_excel(file_path)
+    location_dict = {}
+    current_location = None
     
-    tables = camelot.read_pdf(temp_path, flavor='lattice', pages='all')
-    df = tables[0].df
-    
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
+    for _, row in df.iterrows():
+        # A列に値がある場合、それを新しい勤務地キーとして登録
+        if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() != "nan":
+            current_location = str(row.iloc[0]).strip()
+            location_dict[current_location] = []
+        
+        # 現在の勤務地グループにデータを追加
+        if current_location:
+            shift_info = {
+                'シフトコード': row.iloc[1],
+                'ロッカー': row.iloc[2],
+                'time_data': {}
+            }
+            # D列(インデックス3)以降を走査し、数値のみを時間データとして抽出
+            for i in range(3, len(row)):
+                val = row.iloc[i]
+                if isinstance(val, (int, float)) and not np.isnan(val):
+                    shift_info['time_data'][df.columns[i]] = val
+                elif isinstance(val, str): # 文字列が出たら終了
+                    break
+            location_dict[current_location].append(shift_info)
+    return location_dict
 
-    # Key検索
-    found_key = None
-    key_row_idx = -1
-    for idx, row in df.iterrows():
-        cell_val = str(row[0])
-        clean_cell = re.sub(r'[\s ]', '', cell_val)
-        for key in data_dict.keys():
-            if re.sub(r'[\s ]', '', key) in clean_cell:
-                found_key = key
-                key_row_idx = idx
-                break
-        if found_key: break
+# 2. UI構築
+st.title("勤務地別時程表検索")
 
-    if not found_key:
-        st.error("指定された勤務地が見当たりません。")
-        st.stop()
-
-    # --- [修正] ファイル名から年月を自動抽出 (より柔軟な正規表現) ---
-    file_name = uploaded_file.name
-    # 4桁の数字(年) と "数字" + "月" を抽出
-    date_match = re.search(r'(\d{4}).*?(\d{1,2})[\s]*月', file_name)
-    if not date_match:
-        # 逆順のパターンも考慮
-        date_match = re.search(r'(\d{1,2})[\s]*月.*?(\d{4})', file_name)
-    
-    if date_match:
-        # 年が4桁の方、月が1-2桁の方を動的に特定
-        vals = [int(date_match.group(1)), int(date_match.group(2))]
-        year = max(vals)
-        month = min(vals)
-    else:
-        st.error(f"ファイル名から年月を特定できませんでした: {file_name}")
-        st.stop()
-
-    # --- 最終日付抽出 ---
-    def find_max_date(target_df):
-        max_d = 0
-        for col in range(target_df.shape[1]):
-            for val in target_df.iloc[:, col]:
-                matches = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', str(val))
-                for m in matches:
-                    if int(m) > max_d:
-                        max_d = int(m)
-        return max_d
-
-    max_date_a = find_max_date(df)
-    _, last_day_b = calendar.monthrange(year, month)
-
-    # 判定と表示
-    if max_date_a == last_day_b:
-        st.success("第2関門通過。")
-        return found_key, df, key_row_idx
-    else:
-        st.error("日付不一致です。")
-        st.write(f"- 抽出年: {year}年, 抽出月: {month}月")
-        st.write(f"- 検出された最終日付: {max_date_a}日")
-        st.write(f"- 期待される最終日付: {last_day_b}日")
-        st.stop()
-
-# --- メイン実行部 ---
-st.title("シフトカレンダー取込")
+file_path = '時程表.xlsx' # 対象ファイル
 try:
-    data_dict = load_and_process_data()
-    uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
-    if uploaded_file:
-        found_key, df_pdf, key_row = process_pdf_shift(uploaded_file, data_dict)
+    shift_dict = create_location_shift_dict(file_path)
+    
+    # 勤務地選択
+    locations = list(shift_dict.keys())
+    selected_location = st.selectbox("勤務地を選択してください", locations)
+    
+    # ボタン押下で表示
+    if st.button("時程を表示"):
+        st.subheader(f"勤務地: {selected_location} の時程")
+        
+        # 該当するデータを表示
+        data = shift_dict[selected_location]
+        df_display = pd.DataFrame(data)
+        
+        # time_dataの中身を展開して見やすく表示
+        st.dataframe(df_display)
+        
 except Exception as e:
-    st.error(f"エラーが発生しました: {e}")
+    st.error(f"データの読み込み中にエラーが発生しました: {e}")
