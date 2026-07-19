@@ -43,7 +43,6 @@ def process_data(df):
 
 # --- [2]．pdfシフト表ファイル読込 ---
 def process_pdf_shift(uploaded_file, data_dict):
-    # (1) 一時ファイルとして保存して読み込み
     temp_path = "temp_shift.pdf"
     with open(temp_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
@@ -51,11 +50,10 @@ def process_pdf_shift(uploaded_file, data_dict):
     tables = camelot.read_pdf(temp_path, flavor='lattice', pages='all')
     df = tables[0].df
     
-    # 解析後は削除
     if os.path.exists(temp_path):
         os.remove(temp_path)
 
-    # (2) 第1関門：Key検索
+    # Key検索
     found_key = None
     key_row_idx = -1
     for idx, row in df.iterrows():
@@ -69,48 +67,42 @@ def process_pdf_shift(uploaded_file, data_dict):
         if found_key: break
 
     if not found_key:
-        st.error("指定された勤務地が見当たりません。シフト表ではないようです。")
-        st.dataframe(df)
+        st.error("指定された勤務地が見当たりません。")
         st.stop()
 
-    # (3) 第2関門：年月と日付の整合性
-    # ② Key行より上の行から最大日付(A)を抽出
-    max_date_a = 0
-    target_area = df.iloc[:key_row_idx, :]
-    for col in range(target_area.shape[1]):
-        for val in target_area.iloc[:, col]:
-            try:
-                n = float(val)
-                if 1 <= n <= 31 and n > max_date_a:
-                    max_date_a = int(n)
-            except (ValueError, TypeError):
-                continue
-
-    # ③ ファイル名から年月を取得
+    # --- 修正箇所：年月取得と最終日付判定 ---
     file_name = uploaded_file.name
+    # 4桁の年と、それに続く1-2桁の月を抽出（例：2026年1月）
     date_match = re.search(r'(\d{4}).*?(\d{1,2})', file_name)
     
-    if not date_match:
+    if date_match:
+        year, month = int(date_match.group(1)), int(date_match.group(2))
+        st.info(f"ファイル名から {year}年{month}月 を認識しました。")
+    else:
+        st.warning("ファイル名から年月が認識できませんでした。")
         year = st.number_input("年を入力してください", 2026)
         month = st.number_input("月を入力してください", 1)
-    else:
-        year, month = int(date_match.group(1)), int(date_match.group(2))
 
-    # ⑤ B：取得した年月から最終日付を取得
+    # 最終日付の抽出（全データ対象に正規表現を使用）
+    max_date_a = 0
+    for col in range(df.shape[1]):
+        for val in df.iloc[:, col]:
+            matches = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', str(val))
+            for m in matches:
+                if int(m) > max_date_a:
+                    max_date_a = int(m)
+
     _, last_day_b = calendar.monthrange(year, month)
     
-    # ⑥⑦⑧ 判定
     if max_date_a == last_day_b:
-        st.success("第2関門通過")
+        st.success(f"第2関門通過: {year}年{month}月は {max_date_a}日まで確認できました。")
         return found_key, df, key_row_idx
     else:
-        st.error(f"日付不一致: PDF({max_date_a}日) != {year}年{month}月({last_day_b}日)")
-        st.dataframe(df)
+        st.error(f"日付不一致: PDF内の最大日付({max_date_a}日) != {year}年{month}月({last_day_b}日)")
         st.stop()
 
 # --- メイン実行部 ---
 st.title("シフトカレンダー取込")
-
 try:
     data_dict = load_and_process_data()
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
