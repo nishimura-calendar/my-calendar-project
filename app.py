@@ -70,16 +70,24 @@ def process_pdf_shift(uploaded_file, data_dict):
         st.error("指定された勤務地が見当たりません。")
         st.stop()
 
-    # --- ファイル名から年月を自動抽出 ---
+    # --- [修正] ファイル名から年月を自動抽出 (より柔軟な正規表現) ---
     file_name = uploaded_file.name
-    date_match = re.search(r'(\d{4}).*?(\d{1,2})月', file_name)
+    # 4桁の数字(年) と "数字" + "月" を抽出
+    date_match = re.search(r'(\d{4}).*?(\d{1,2})[\s]*月', file_name)
+    if not date_match:
+        # 逆順のパターンも考慮
+        date_match = re.search(r'(\d{1,2})[\s]*月.*?(\d{4})', file_name)
+    
     if date_match:
-        year, month = int(date_match.group(1)), int(date_match.group(2))
+        # 年が4桁の方、月が1-2桁の方を動的に特定
+        vals = [int(date_match.group(1)), int(date_match.group(2))]
+        year = max(vals)
+        month = min(vals)
     else:
-        st.error("ファイル名から年月を特定できませんでした。")
+        st.error(f"ファイル名から年月を特定できませんでした: {file_name}")
         st.stop()
 
-    # --- 最終日付抽出（全体探索） ---
+    # --- 最終日付抽出 ---
     def find_max_date(target_df):
         max_d = 0
         for col in range(target_df.shape[1]):
@@ -99,6 +107,7 @@ def process_pdf_shift(uploaded_file, data_dict):
         return found_key, df, key_row_idx
     else:
         st.error("日付不一致です。")
+        st.write(f"- 抽出年: {year}年, 抽出月: {month}月")
         st.write(f"- 検出された最終日付: {max_date_a}日")
         st.write(f"- 期待される最終日付: {last_day_b}日")
         st.stop()
@@ -110,6 +119,5 @@ try:
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
     if uploaded_file:
         found_key, df_pdf, key_row = process_pdf_shift(uploaded_file, data_dict)
-        # 次のステップへ
 except Exception as e:
     st.error(f"エラーが発生しました: {e}")
