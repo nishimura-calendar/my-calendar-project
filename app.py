@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 import camelot
-import os
 import calendar
 import re
 from googleapiclient.discovery import build
@@ -37,6 +36,7 @@ def process_data(df):
 
 @st.cache_data
 def get_latest_schedule_to_dict():
+    # Google API認証とデータ取得
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(**creds_dict)
     service = build('drive', 'v3', credentials=creds)
@@ -52,6 +52,14 @@ def get_latest_schedule_to_dict():
     return process_data(df)
 
 # --- [2] PDFシフト表ファイル読込・判定 ---
+def extract_year_month(file_name):
+    # ファイル名から年(4桁)と月(数字+"月")を抽出
+    year_match = re.search(r'(\d{4})', file_name)
+    month_match = re.search(r'(\d{1,2})月', file_name)
+    year = int(year_match.group(1)) if year_match else None
+    month = int(month_match.group(1)) if month_match else None
+    return year, month
+
 def check_pdf_file(file_path, data_dict, file_name):
     # (1) Camelotで読込
     tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
@@ -72,23 +80,25 @@ def check_pdf_file(file_path, data_dict, file_name):
         st.error("勤務地が見当りません。シフト表ではないようです。")
         st.stop()
     
-    # (3) 第2関門: 年月取得と判定
-    match = re.search(r'(\d{4}).*?(\d{1,2})月', file_name)
-    if match:
-        year, month = int(match.group(1)), int(match.group(2))
+    # (3) 第2関門: 年月取得（入力フォームの条件分岐）
+    year, month = extract_year_month(file_name)
+    
+    if year and month:
+        st.success(f"ファイルから年月を特定しました: {year}年{month}月")
     else:
+        st.warning("ファイル名から年月を自動取得できませんでした。")
         year = st.number_input("年を入力してください", min_value=2020, max_value=2030, value=2026)
         month = st.number_input("月を入力してください", min_value=1, max_value=12, value=1)
     
     last_day = calendar.monthrange(year, month)[1]
     last_weekday = calendar.weekday(year, month, last_day)
     
-    st.write(f"判定: {year}年{month}月 (最終日: {last_day}, 曜日: {last_weekday})")
+    st.write(f"判定結果: {year}年{month}月 (最終日: {last_day}, 最終曜日: {last_weekday})")
     return target_key
 
 # --- メイン処理 ---
-data_dict = get_latest_schedule_to_dict()
 st.title("PDFシフト表アップロード")
+data_dict = get_latest_schedule_to_dict()
 uploaded_file = st.file_uploader("PDFシフト表ファイルをアップロードしてください", type="pdf")
 
 if uploaded_file:
