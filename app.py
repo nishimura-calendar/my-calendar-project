@@ -80,7 +80,14 @@ def process_pdf_shift(file_path, file_name, time_schedule):
     # (3) 第2関門: 日付整合性判定
     # キー行の直後から5行分を日付探索範囲とする
     search_range = df.iloc[key_row_idx+1 : key_row_idx+6]
-    all_dates = [int(val) for val in search_range.values.flatten() if str(val).isdigit()]
+    
+    # 修正：純粋な数字のみを安全に抽出
+    all_dates = []
+    for val in search_range.values.flatten():
+        s_val = str(val).strip()
+        if s_val.isdigit():
+            all_dates.append(int(s_val))
+            
     A_last_day = max(all_dates) if all_dates else 0
     
     # ファイル名から年月を取得
