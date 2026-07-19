@@ -1,58 +1,69 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import io
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+from googleapiclient.http import MediaIoBaseDownload
 
-# 1. 辞書作成用関数
+# Googleドライブ認証用関数（Streamlit secretsに設定が必要）
+def get_service():
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds = Credentials(**creds_dict)
+    return build('drive', 'v3', credentials=creds)
+
 @st.cache_data
-def create_location_shift_dict(file_path):
-    df = pd.read_excel(file_path)
+def load_and_process_data_from_drive():
+    service = get_service()
+    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    
+    # ファイルのダウンロード
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    
+    # Excelとして読み込み
+    df = pd.read_excel(fh, engine='openpyxl')
+    
+    # --- 辞書化ロジック ---
     location_dict = {}
     current_location = None
     
     for _, row in df.iterrows():
-        # A列に値がある場合、それを新しい勤務地キーとして登録
+        # A列(勤務地)の判定
         if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip() != "nan":
             current_location = str(row.iloc[0]).strip()
             location_dict[current_location] = []
         
-        # 現在の勤務地グループにデータを追加
         if current_location:
             shift_info = {
                 'シフトコード': row.iloc[1],
                 'ロッカー': row.iloc[2],
                 'time_data': {}
             }
-            # D列(インデックス3)以降を走査し、数値のみを時間データとして抽出
+            # D列以降の数値抽出
             for i in range(3, len(row)):
                 val = row.iloc[i]
                 if isinstance(val, (int, float)) and not np.isnan(val):
                     shift_info['time_data'][df.columns[i]] = val
-                elif isinstance(val, str): # 文字列が出たら終了
+                elif isinstance(val, str):
                     break
             location_dict[current_location].append(shift_info)
     return location_dict
 
-# 2. UI構築
+# メイン処理
 st.title("勤務地別時程表検索")
 
-file_path = '時程表.xlsx' # 対象ファイル
 try:
-    shift_dict = create_location_shift_dict(file_path)
+    shift_dict = load_and_process_data_from_drive()
+    selected_location = st.selectbox("勤務地を選択してください", list(shift_dict.keys()))
     
-    # 勤務地選択
-    locations = list(shift_dict.keys())
-    selected_location = st.selectbox("勤務地を選択してください", locations)
-    
-    # ボタン押下で表示
     if st.button("時程を表示"):
-        st.subheader(f"勤務地: {selected_location} の時程")
-        
-        # 該当するデータを表示
-        data = shift_dict[selected_location]
-        df_display = pd.DataFrame(data)
-        
-        # time_dataの中身を展開して見やすく表示
+        df_display = pd.DataFrame(shift_dict[selected_location])
         st.dataframe(df_display)
-        
 except Exception as e:
-    st.error(f"データの読み込み中にエラーが発生しました: {e}")
+    st.error(f"ドライブからの読み込みエラー: {e}")
