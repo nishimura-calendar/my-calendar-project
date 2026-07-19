@@ -1,61 +1,92 @@
 import streamlit as st
 import pandas as pd
-import camelot
-import re
-import unicodedata
+import io
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+from googleapiclient.http import MediaIoBaseDownload
 
-# [1] 勤務地をKeyとして保持（辞書登録）
-# 画面表示はせず、メモリ上の参照用として使用
-KEY_MAPPING = {
-    "関空免税店警備隊": "T1",
-    "第2ターミナル": "T2" 
-}
-
-def normalize_text(text):
-    return unicodedata.normalize('NFKC', str(text)).replace(" ", "").replace(" ", "")
-
-# [2]〈1〉PDF解析と最大日付抽出
-def extract_shift_date(pdf_file, search_key):
-    # PDFを一時保存して解析
-    with open("temp.pdf", "wb") as f:
-        f.write(pdf_file.getbuffer())
-    
-    tables = camelot.read_pdf("temp.pdf", pages='all', flavor='stream')
-    target_key = normalize_text(search_key)
-    
-    for table in tables:
-        df = table.df
-        for i, row in df.iterrows():
-            if target_key in normalize_text(row[0]):
-                # [2]〈2〉探索範囲の適正化
-                # Key行の直後から名前行の手前（最大4行）に限定
-                max_date = 0
-                search_limit = min(i + 4, len(df))
-                
-                for row_idx in range(i + 1, search_limit):
-                    for cell in df.iloc[row_idx, :]:
-                        # 数値抽出（1-28に限定し31などの誤検知を防止）
-                        matches = re.findall(r'\b([1-9]|[1-2][0-9])\b', str(cell))
-                        for m in matches:
-                            max_date = max(max_date, int(m))
-                return max_date
-    return None
-
-# [2]〈3〉時程表との突合・不一致検出
-def validate_schedule(pdf_max_date, scheduled_df):
-    # 時程表（df）の最終列の日付とPDFから抽出したmax_dateを突合
-    # 不一致の場合は警告フラグを返す
+# 1. 小数から時刻表記への変換関数
+def format_time(val):
     try:
-        # 時程表の最終列（日付列）を取得
-        table_max_date = int(scheduled_df.columns[-1]) 
-        if pdf_max_date != table_max_date:
-            return False, f"日付不一致: PDF={pdf_max_date}, 時程表={table_max_date}"
-        return True, "OK"
-    except:
-        return False, "時程表の日付解析エラー"
+        f_val = float(val)
+        h = int(f_val)
+        m = int(round((f_val - h) * 60))
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return val
 
-# --- ストリームリット実行部 ---
-if __name__ == "__main__":
-    # 時程表データは事前にロードされている前提 (data_dict)
-    # 選択された勤務地に基づき上記関数を呼び出す
-    pass
+# 2. データを整形し辞書登録する関数
+def process_data(df):
+    location_data = {}
+    # A列が値を持つ行を勤務地行とする
+    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
+    
+    for i, start_idx in enumerate(location_indices):
+        key = str(df.iloc[start_idx, 0])
+        # 範囲確定：次の勤務地行の手前まで
+        end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
+        schedule = df.iloc[start_idx:end_idx].copy()
+        
+        # 勤務地行のD列(index 3)以降を走査し数値から文字列へ変換
+        for col_idx in range(3, schedule.shape[1]):
+            val = schedule.iloc[0, col_idx]
+            try:
+                f_val = float(val)
+                schedule.iloc[0, col_idx] = format_time(f_val)
+            except (ValueError, TypeError):
+                schedule = schedule.iloc[:, :col_idx]
+                break
+        
+        location_data[key] = schedule
+    return location_data # これが指示書として登録された辞書データです
+
+# 3. 認証・読み込み処理
+@st.cache_data(ttl=600)
+def load_and_process_data():
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds = Credentials(
+        token=creds_dict["token"],
+        refresh_token=creds_dict["refresh_token"],
+        token_uri=creds_dict["token_uri"],
+        client_id=creds_dict["client_id"],
+        client_secret=creds_dict["client_secret"]
+    )
+    service = build('drive', 'v3', credentials=creds)
+    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    
+    request = service.files().export_media(
+        fileId=file_id, 
+        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
+    
+    # 辞書登録処理を呼び出し、保持します
+    return process_data(df)
+
+# 4. メインUI
+st.title("シフト時程表ビューワー")
+
+try:
+    data_dict = load_and_process_data()
+    st.subheader("勤務地を選択してください")
+    
+    # 以前のUI（ボタン）に戻す
+    cols = st.columns(len(data_dict))
+    selected_key = None
+    for i, key in enumerate(data_dict.keys()):
+        if cols[i].button(key):
+            selected_key = key
+            
+    if selected_key:
+        st.divider()
+        st.write(f"### {selected_key} の勤務詳細")
+        st.dataframe(data_dict[selected_key], hide_index=True, use_container_width=True)
+
+except Exception as e:
+    st.error(f"データの読み込み中にエラーが発生しました: {e}")
