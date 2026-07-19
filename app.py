@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import io
+from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
 
-# 1. 小数から時刻表記への変換関数
+# 1. 小数から時刻表記(H:MM)への変換関数
 def format_time(val):
     try:
         f_val = float(val)
@@ -15,19 +15,16 @@ def format_time(val):
     except (ValueError, TypeError):
         return val
 
-# 2. データを整形し辞書登録する関数
+# 2. データを整形する関数
 def process_data(df):
     location_data = {}
-    # A列が値を持つ行を勤務地行とする
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     
     for i, start_idx in enumerate(location_indices):
         key = str(df.iloc[start_idx, 0])
-        # 範囲確定：次の勤務地行の手前まで
         end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
         schedule = df.iloc[start_idx:end_idx].copy()
         
-        # 勤務地行のD列(index 3)以降を走査し数値から文字列へ変換
         for col_idx in range(3, schedule.shape[1]):
             val = schedule.iloc[0, col_idx]
             try:
@@ -36,13 +33,12 @@ def process_data(df):
             except (ValueError, TypeError):
                 schedule = schedule.iloc[:, :col_idx]
                 break
-        
         location_data[key] = schedule
-    return location_data # これが指示書として登録された辞書データです
+    return location_data
 
-# 3. 認証・読み込み処理
+# 3. 認証・読み込み・辞書登録処理
 @st.cache_data(ttl=600)
-def load_and_process_data():
+def get_latest_schedule_to_dict():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
         token=creds_dict["token"],
@@ -52,8 +48,8 @@ def load_and_process_data():
         client_secret=creds_dict["client_secret"]
     )
     service = build('drive', 'v3', credentials=creds)
-    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     
+    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     request = service.files().export_media(
         fileId=file_id, 
         mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -64,29 +60,30 @@ def load_and_process_data():
     while not done:
         _, done = downloader.next_chunk()
     fh.seek(0)
-    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     
-    # 辞書登録処理を呼び出し、保持します
+    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# 4. メインUI
-st.title("シフト時程表ビューワー")
+# --- メイン処理 ---
+st.title("勤務地スケジュール選択")
 
-try:
-    data_dict = load_and_process_data()
-    st.subheader("勤務地を選択してください")
-    
-    # 以前のUI（ボタン）に戻す
-    cols = st.columns(len(data_dict))
-    selected_key = None
-    for i, key in enumerate(data_dict.keys()):
-        if cols[i].button(key):
-            selected_key = key
-            
-    if selected_key:
-        st.divider()
-        st.write(f"### {selected_key} の勤務詳細")
-        st.dataframe(data_dict[selected_key], hide_index=True, use_container_width=True)
+# 辞書の取得
+data_dict = get_latest_schedule_to_dict()
 
-except Exception as e:
-    st.error(f"データの読み込み中にエラーが発生しました: {e}")
+# 勤務地（key）ボタンを表示
+st.subheader("勤務地を選択してください")
+cols = st.columns(len(data_dict))
+
+# 選択状態を保持する変数をセッションステートに格納
+if 'selected_key' not in st.session_state:
+    st.session_state.selected_key = None
+
+for i, key in enumerate(data_dict.keys()):
+    if cols[i].button(key):
+        st.session_state.selected_key = key
+
+# ボタンが押されたらスケジュールを表示
+if st.session_state.selected_key:
+    st.divider()
+    st.write(f"### {st.session_state.selected_key} の勤務詳細")
+    st.dataframe(data_dict[st.session_state.selected_key], hide_index=True, use_container_width=True)
