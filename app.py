@@ -70,7 +70,7 @@ def process_pdf_shift(uploaded_file, data_dict):
         st.error("指定された勤務地が見当たりません。")
         st.stop()
 
-    # --- 年月取得 ---
+    # 年月取得
     file_name = uploaded_file.name
     date_match = re.search(r'(\d{4}).*?(\d{1,2})月', file_name)
     year = int(date_match.group(1)) if date_match else st.number_input("年を入力", 2026)
@@ -86,17 +86,23 @@ def process_pdf_shift(uploaded_file, data_dict):
                 if int(m) > max_date_a:
                     max_date_a = int(m)
 
+    # 曜日取得用関数
+    def get_day_name(y, m, d):
+        return ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, d)]
+
     # カレンダー上の最終日を取得
     _, last_day_b = calendar.monthrange(year, month)
+    last_weekday_b = get_day_name(year, month, last_day_b)
 
     # --- 判定と表示 ---
     if max_date_a == last_day_b:
         st.success("第2関門通過。")
+        st.write(f"判定最終日: {max_date_a}日 ({get_day_name(year, month, max_date_a)}曜日)")
         return found_key, df, key_row_idx
     else:
         st.error("日付不一致です。")
-        st.write(f"- PDFから抽出した最終日付: {max_date_a}日")
-        st.write(f"- カレンダー上の最終日付: {last_day_b}日")
+        st.write(f"- PDF上部から抽出した最終日付: {max_date_a}日")
+        st.write(f"- カレンダー上の最終日付: {last_day_b}日 ({last_weekday_b}曜日)")
         st.stop()
 
 # --- メイン実行部 ---
@@ -106,6 +112,6 @@ try:
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
     if uploaded_file:
         found_key, df_pdf, key_row = process_pdf_shift(uploaded_file, data_dict)
-        # 次のステップの実装へ続く...
+        # 次のステップへ
 except Exception as e:
     st.error(f"エラーが発生しました: {e}")
