@@ -45,9 +45,9 @@ def load_time_schedule():
         st.error(f"時程表読込失敗: {e}")
         st.stop()
 
-# --- [3] PDF解析：最初のキー行を解析するロジック ---
+# --- [3] PDF解析：ヘッダー行探索による末日特定 ---
 def process_pdf_shift(file_path, file_name, time_schedule):
-    # 1. PDF読み込み：全テーブルを結合して単一のDataFrameにする
+    # 1. PDF読み込み：全テーブルを結合
     try:
         tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
         df = pd.concat([t.df for t in tables], ignore_index=True)
@@ -55,36 +55,29 @@ def process_pdf_shift(file_path, file_name, time_schedule):
         st.error(f"PDF読み込みエラー: {e}")
         st.stop()
 
-    # 2. キー行の特定
-    key_idx = None
-    target_keys = list(time_schedule.keys())
+    # 2. ★日付ヘッダー行の探索（もっとも日付数字を多く含む行を探す）
+    best_row_idx = None
+    max_date_count = 0
     
     for idx, row in df.iterrows():
-        # 行内の全セルを連結して検索
-        row_str = "".join([str(cell) for cell in row]).replace(" ", "").replace(" ", "")
-        if any(k in row_str for k in target_keys):
-            key_idx = idx
-            break
+        # 行内の全セルを連結して数字を抽出
+        text_row = " ".join([str(val) for val in row])
+        nums = re.findall(r'\d+', text_row)
+        # 1〜31の範囲内の数値のみを日付としてカウント
+        dates = [int(n) for n in nums if 1 <= int(n) <= 31]
+        
+        # 日付が5つ以上含まれる行をヘッダーの候補とする
+        if len(dates) > max_date_count:
+            max_date_count = len(dates)
+            best_row_idx = idx
             
-    if key_idx is None:
-        st.error("シフト表の識別キー(T1等)が見つかりませんでした。")
+    if best_row_idx is None:
+        st.error("シフト表の日付ヘッダーが見つかりませんでした。")
         st.stop()
 
-    # 3. ★最初のキー行（および直後）のみから日付を抽出
-    # インデックスを絞り、その範囲内の数値のみを探索
-    target_rows = df.iloc[key_idx : key_idx + 2] 
-    
-    all_dates = []
-    for val in target_rows.values.flatten():
-        if pd.isna(val): continue
-        # 数字の塊を抽出
-        nums = re.findall(r'\d+', str(val))
-        for num in nums:
-            n = int(num)
-            # 1〜31の範囲内のみを日付として採用
-            if 1 <= n <= 31:
-                all_dates.append(n)
-            
+    # 3. 見つかったヘッダー行から最大値(末日)を取得
+    text_best = " ".join([str(val) for val in df.iloc[best_row_idx]])
+    all_dates = [int(n) for n in re.findall(r'\d+', text_best) if 1 <= int(n) <= 31]
     A_last_day = max(all_dates) if all_dates else 0
     
     # 4. ファイル名から年月を取得して整合性チェック
@@ -107,4 +100,4 @@ uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="p
 
 if uploaded_file:
     if process_pdf_shift(uploaded_file, uploaded_file.name, time_schedule):
-        st.write("整合性確認完了。次の詳細読込処理へ進みます。")
+        st.write("正常に読み込まれました。詳細読込処理へ進みます。")
