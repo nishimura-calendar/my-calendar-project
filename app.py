@@ -70,16 +70,16 @@ def process_pdf_shift(uploaded_file, data_dict):
         st.error("指定された勤務地が見当たりません。")
         st.stop()
 
-    # --- 修正箇所：年月取得と最終日付判定 ---
+    # --- 修正：ファイル名からの年月取得 ---
+    # 年：4桁の数字、月："月"の前の数字 を抽出
     file_name = uploaded_file.name
-    # 4桁の年と、それに続く1-2桁の月を抽出（例：2026年1月）
-    date_match = re.search(r'(\d{4}).*?(\d{1,2})', file_name)
+    date_match = re.search(r'(\d{4}).*?(\d{1,2})月', file_name)
     
     if date_match:
         year, month = int(date_match.group(1)), int(date_match.group(2))
-        st.info(f"ファイル名から {year}年{month}月 を認識しました。")
+        st.write(f"判定: {year}年{month}月")
     else:
-        st.warning("ファイル名から年月が認識できませんでした。")
+        # 読み込めた場合のみフォームを非表示にするため、取得できない場合のみ入力させる
         year = st.number_input("年を入力してください", 2026)
         month = st.number_input("月を入力してください", 1)
 
@@ -94,8 +94,9 @@ def process_pdf_shift(uploaded_file, data_dict):
 
     _, last_day_b = calendar.monthrange(year, month)
     
+    # 修正：A=Bなら"第2関門通過"
     if max_date_a == last_day_b:
-        st.success(f"第2関門通過: {year}年{month}月は {max_date_a}日まで確認できました。")
+        st.success("第2関門通過")
         return found_key, df, key_row_idx
     else:
         st.error(f"日付不一致: PDF内の最大日付({max_date_a}日) != {year}年{month}月({last_day_b}日)")
@@ -108,6 +109,6 @@ try:
     uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
     if uploaded_file:
         found_key, df_pdf, key_row = process_pdf_shift(uploaded_file, data_dict)
-        # 次のステップの実装へ続く...
+        # 次のステップへ
 except Exception as e:
     st.error(f"エラーが発生しました: {e}")
