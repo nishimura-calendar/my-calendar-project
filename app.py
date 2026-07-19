@@ -1,93 +1,94 @@
-import streamlit as st
 import pandas as pd
-import io
-from googleapiclient.http import MediaIoBaseDownload
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
+import camelot
+import re
+import os
+import sys
+import platform
+import subprocess
+import unicodedata
 
-# 1. 小数から時刻表記(H:MM)への変換関数
-def format_time(val):
+# 1. 設定と準備
+# KeyとPDFの紐付け辞書（[1]のロジック）
+key_dict = {
+    "関空免税店警備隊": "T1",
+    # 必要に応じて追加
+}
+
+def normalize_text(text):
+    return unicodedata.normalize('NFKC', str(text)).replace(" ", "").replace(" ", "")
+
+def open_pdf_for_viewing(pdf_path):
+    if platform.system() == 'Windows': os.startfile(pdf_path)
+    elif platform.system() == 'Darwin': subprocess.call(['open', pdf_path])
+    else: subprocess.call(['xdg-open', pdf_path])
+
+# [1]. 時程表の読み込み（メモリ保持）
+def load_schedule_table(file_path):
+    # Googleスプレッドシート等を読み込む想定
+    # 実際の環境に合わせてpd.read_excel等のパスを指定
     try:
-        f_val = float(val)
-        h = int(f_val)
-        m = int(round((f_val - h) * 60))
-        return f"{h}:{m:02d}"
-    except (ValueError, TypeError):
-        return val
+        df = pd.read_excel(file_path, sheet_name='time_schdule')
+        return df
+    except Exception as e:
+        print(f"時程表の読み込みに失敗しました: {e}")
+        sys.exit()
 
-# 2. データを整形する関数 (打ち合わせ通りのロジック)
-def process_data(df):
-    location_data = {}
-    # A列が値を持つ行を勤務地行とする
-    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
+# [2]. PDF解析と最大日付抽出
+def extract_shift_info(pdf_path, search_key, df_schedule):
+    tables = camelot.read_pdf(pdf_path, pages='all', flavor='stream')
+    target_key = normalize_text(search_key)
     
-    for i, start_idx in enumerate(location_indices):
-        key = str(df.iloc[start_idx, 0])
-        # 範囲確定：次の勤務地行の手前まで
-        end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
-        schedule = df.iloc[start_idx:end_idx].copy()
-        
-        # 勤務地行のD列(index 3)以降を走査し、数値から文字列に変わるまで処理
-        for col_idx in range(3, schedule.shape[1]):
-            val = schedule.iloc[0, col_idx]
-            try:
-                f_val = float(val)
-                schedule.iloc[0, col_idx] = format_time(f_val)
-            except (ValueError, TypeError):
-                # 文字列が現れた時点で切り取る
-                schedule = schedule.iloc[:, :col_idx]
+    key_row_idx = -1
+    target_table = None
+    
+    # Key行の特定
+    for table in tables:
+        df = table.df
+        for i, row in df.iterrows():
+            if target_key in normalize_text(row[0]):
+                key_row_idx = i
+                target_table = df
                 break
-        
-        location_data[key] = schedule
-    return location_data
-
-# 3. 認証・読み込み処理
-def get_service():
-    creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(
-        token=creds_dict["token"],
-        refresh_token=creds_dict["refresh_token"],
-        token_uri=creds_dict["token_uri"],
-        client_id=creds_dict["client_id"],
-        client_secret=creds_dict["client_secret"]
-    )
-    return build('drive', 'v3', credentials=creds)
-
-@st.cache_data(ttl=600)
-def load_and_process_data():
-    service = get_service()
-    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    request = service.files().export_media(
-        fileId=file_id, 
-        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    fh.seek(0)
-    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-    return process_data(df)
-
-# 4. メインUI
-st.title("シフト時程表ビューワー")
-
-try:
-    data_dict = load_and_process_data()
-    st.subheader("勤務地を選択してください")
-    
-    # 以前のUI（ボタン）に戻す
-    cols = st.columns(len(data_dict))
-    selected_key = None
-    for i, key in enumerate(data_dict.keys()):
-        if cols[i].button(key):
-            selected_key = key
+        if key_row_idx != -1: break
             
-    if selected_key:
-        st.divider()
-        st.write(f"### {selected_key} の勤務詳細")
-        st.dataframe(data_dict[selected_key], hide_index=True, use_container_width=True)
+    if key_row_idx == -1:
+        print(f"Key '{search_key}' が見つかりません。")
+        open_pdf_for_viewing(pdf_path)
+        sys.exit()
 
-except Exception as e:
-    st.error(f"データの読み込み中にエラーが発生しました: {e}")
+    # 名前行（Key行の次行以降）を探索し、その間の範囲で最大日付を探す
+    max_date = 0
+    date_found = False
+    
+    # Key行から名前行出現までの範囲（5行程度と想定）を探索
+    for i in range(key_row_idx, min(key_row_idx + 5, len(target_table))):
+        for cell in target_table.iloc[i, :]:
+            cell_str = str(cell)
+            # 改行区切りの日付(数値)抽出
+            parts = cell_str.split('\n')
+            for part in parts:
+                matches = re.findall(r'\b([1-9]|[1-2][0-9]|3[0-1])\b', part)
+                for m in matches:
+                    val = int(m)
+                    if val > max_date:
+                        max_date = val
+                        date_found = True
+                        
+    if not date_found:
+        print("日付データが見つかりませんでした。")
+        open_pdf_for_viewing(pdf_path)
+        sys.exit()
+        
+    return max_date
+
+# --- メイン処理 ---
+if __name__ == "__main__":
+    # 時程表読み込み
+    schedule_df = load_schedule_table('シフトカレンダー.xlsx')
+    
+    # 紐付け処理
+    pdf_file = "免税店シフト表 1月度 第1ターミナル 2026.pdf"
+    for key in key_dict.keys():
+        print(f"解析中: {key}...")
+        last_day = extract_shift_info(pdf_file, key, schedule_df)
+        print(f"抽出完了: {key} の最終日付は {last_day} 日です。")
