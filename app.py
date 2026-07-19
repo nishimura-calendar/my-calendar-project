@@ -70,40 +70,33 @@ def process_pdf_shift(uploaded_file, data_dict):
         st.error("指定された勤務地が見当たりません。")
         st.stop()
 
-    # --- 年月取得と入力フォーム制御 ---
+    # --- 年月取得 ---
     file_name = uploaded_file.name
     date_match = re.search(r'(\d{4}).*?(\d{1,2})月', file_name)
-    
-    if date_match:
-        year, month = int(date_match.group(1)), int(date_match.group(2))
-    else:
-        year = st.number_input("年を入力してください", 2026)
-        month = st.number_input("月を入力してください", 1)
+    year = int(date_match.group(1)) if date_match else st.number_input("年を入力", 2026)
+    month = int(date_match.group(2)) if date_match else st.number_input("月を入力", 1)
 
-    # 最終日付の抽出（全データ対象に正規表現を使用）
+    # --- Keyより上の行から最終日付を抽出 ---
+    subset_df = df.iloc[:key_row_idx, :]
     max_date_a = 0
-    for col in range(df.shape[1]):
-        for val in df.iloc[:, col]:
+    for col in range(subset_df.shape[1]):
+        for val in subset_df.iloc[:, col]:
             matches = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', str(val))
             for m in matches:
                 if int(m) > max_date_a:
                     max_date_a = int(m)
 
-    # カレンダー上の最終日と曜日を取得
+    # カレンダー上の最終日を取得
     _, last_day_b = calendar.monthrange(year, month)
-    
-    def get_day_name(y, m, d):
-        return ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, d)]
 
-    # 判定と詳細表示
+    # --- 判定と表示 ---
     if max_date_a == last_day_b:
-        st.success("第2関門通過")
+        st.success("第2関門通過。")
         return found_key, df, key_row_idx
     else:
         st.error("日付不一致です。")
-        st.write(f"PDFファイル：{uploaded_file.name}")
-        st.write(f"- **PDFから抽出した最終日付**: {max_date_a}日 ({get_day_name(year, month, max_date_a)}曜日)")
-        st.write(f"- **ファイル名から算出の最終日付**: {last_day_b}日 ({get_day_name(year, month, last_day_b)}曜日)")
+        st.write(f"- PDFから抽出した最終日付: {max_date_a}日")
+        st.write(f"- カレンダー上の最終日付: {last_day_b}日")
         st.stop()
 
 # --- メイン実行部 ---
