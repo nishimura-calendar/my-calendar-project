@@ -73,33 +73,36 @@ def process_pdf_shift(file_path, file_name, time_schedule):
         st.error("シフト表の日付ヘッダーが見つかりませんでした。")
         st.stop()
 
-    # 整合性チェック用の値算出
+    # 1. PDFから取得した年月の特定（PDFファイル名、または内容から推測）
     match = re.search(r'(\d{4})年?(\d{1,2})月', file_name)
     year = int(match.group(1)) if match else datetime.now().year
     month = int(match.group(2)) if match else datetime.now().month
 
+    # 2. PDF内部から抽出した最大日付と曜日
     text_best = " ".join([str(val) for val in df.iloc[best_row_idx]])
     all_dates = [int(n) for n in re.findall(r'\d+', text_best) if 1 <= int(n) <= 31]
     A_last_day = max(all_dates) if all_dates else 0
     A_last_weekday = get_day_name(year, month, A_last_day) if A_last_day > 0 else "不明"
 
+    # 3. カレンダーから算出した本来の最終日と曜日
     _, B_last_day = calendar.monthrange(year, month)
     B_last_weekday = get_day_name(year, month, B_last_day)
 
-    # 不一致時のみ警告を表示
+    # 4. 整合性チェック（不一致時のみエラー表示）
     if A_last_day != B_last_day or A_last_weekday != B_last_weekday:
         error_msg = (
             f"### ⚠️ データ不一致が発生しました\n\n"
-            f"**【A: PDFファイル内容から抽出】**\n- 最終日: {A_last_day}日 / 曜日: {A_last_weekday}\n\n"
-            f"**【B: ファイル名から算出】**\n- 最終日: {B_last_day}日 / 曜日: {B_last_weekday}\n\n"
-            f"PDFのレイアウトが正しく読み取れていない可能性があります。"
+            f"**【PDFファイル内容から抽出】**\n"
+            f"- 最終日: {A_last_day}日 / 曜日: {A_last_weekday}\n\n"
+            f"**【本来のカレンダー算出】**\n"
+            f"- 最終日: {B_last_day}日 / 曜日: {B_last_weekday}\n\n"
+            f"レイアウトが正しく読み取れていない可能性があります。ファイルを確認してください。"
         )
         st.error(error_msg)
         with open(file_path, "rb") as f:
             st.download_button("PDFをダウンロードして確認", f, file_name=file_name)
         st.stop()
     
-    st.success(f"確認完了: {year}年{month}月 (最終日:{A_last_day}日)")
     return True
 
 # --- [4] メイン処理 ---
@@ -111,4 +114,5 @@ if uploaded_file:
     with open("temp_pdf.pdf", "wb") as f:
         f.write(uploaded_file.getbuffer())
     if process_pdf_shift("temp_pdf.pdf", uploaded_file.name, time_schedule):
-        st.write("正常に読み込まれました。詳細読込処理へ進みます。")
+        # 成功時は何も表示せず、次の工程へ進む
+        st.write("詳細読込処理を開始します。")
