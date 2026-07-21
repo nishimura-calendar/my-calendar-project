@@ -6,10 +6,10 @@ import re
 import calendar
 from datetime import datetime
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 from google.oauth2.credentials import Credentials
-import googleapiclient.http
 
-# スプレッドシートID
+# 設定
 SPREADSHEET_ID = '1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE'
 
 def get_service():
@@ -19,75 +19,83 @@ def get_service():
     return build('drive', 'v3', credentials=creds)
 
 def load_time_schedule():
-    """[1] 時程表読込の要件を実装"""
+    """[1] 時程表の読み込みと辞書登録"""
     service = get_service()
     request = service.files().export_media(fileId=SPREADSHEET_ID, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     fh = io.BytesIO()
-    downloader = googleapiclient.http.MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, request)
     downloader.next_chunk()
     fh.seek(0)
     
-    # <1> A列:勤務値, B列:シフトコード, C列:ロッカー の構造を想定
-    df = pd.read_excel(fh, sheet_name="Table 1")
+    df = pd.read_excel(fh, sheet_name="Table 1", header=None)
     
     time_schedules = {}
     current_key = None
     
-    # <2> 勤務地をkeyとして登録し、D列以降（文字列が現れるまで）を処理
+    # 勤務地をkeyとして登録
     for _, row in df.iterrows():
-        if pd.notna(row[0]) and str(row[0]).strip():
-            current_key = str(row[0]).strip()
+        val = row.iloc[0]
+        if pd.notna(val) and str(val).strip():
+            current_key = str(val).strip()
             time_schedules[current_key] = []
         
+        # 勤務値行以降の処理（ロジック適用）
         if current_key:
-            schedule_data = []
-            for col in range(3, len(row)): # D列(index 3)から開始
-                val = row[col]
-                if pd.isna(val) or isinstance(val, str):
+            data_row = []
+            for col_idx in range(3, len(row)):
+                cell = row.iloc[col_idx]
+                if pd.isna(cell) or isinstance(cell, str):
                     break
-                schedule_data.append(val)
-            time_schedules[current_key].append(schedule_data)
+                data_row.append(cell)
+            time_schedules[current_key].append(data_row)
             
     return time_schedules
 
 def get_pdf_metadata(file_path, file_name):
-    """ロジック遵守: key行以下・名前行より上の行から最大日付と曜日を抽出"""
+    """[2] <1> PDF解析・ブロック抽出・日付判定"""
     tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
-    df = pd.concat([t.df for t in tables], ignore_index=True)
+    full_df = pd.concat([t.df for t in tables], ignore_index=True)
     
-    all_dates = []
-    # 簡易的に全行を走査し、日付列と思われる数字を抽出
-    for _, row in df.iterrows():
-        text_row = " ".join([str(val) for val in row])
-        nums = [int(n) for n in re.findall(r'\d+', text_row) if 1 <= int(n) <= 31]
-        all_dates.extend(nums)
+    # 名前リストの定義（ブロック終了条件）
+    names = ["田坂", "水野", "前田", "武輪"] 
     
-    max_date = max(all_dates) if all_dates else 0
+    max_date = 0
+    in_block = False
+    block_data = []
     
-    # 年月取得
+    for _, row in full_df.iterrows():
+        row_str = " ".join([str(v) for v in row])
+        
+        # key行開始判定
+        if re.search(r'T[12]', row_str):
+            in_block = True
+            continue
+            
+        # 名前行到達でブロック終了判定
+        if in_block and any(n in row_str for n in names):
+            in_block = False
+            continue
+            
+        # 対象範囲内の行のみ抽出
+        if in_block:
+            block_data.append(row_str)
+            
+    # 最大日付の抽出
+    all_nums = [int(n) for line in block_data for n in re.findall(r'\d+', line) if 1 <= int(n) <= 31]
+    max_date = max(all_nums) if all_nums else 0
+    
+    # 最終曜日の算出
     match = re.search(r'(\d{4})年?(\d{1,2})月', file_name)
     year = int(match.group(1)) if match else datetime.now().year
     month = int(match.group(2)) if match else datetime.now().month
-    
-    # 最終曜日算出
     last_weekday = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(year, month, max_date)]
+    
     return max_date, last_weekday
 
-# メイン処理の入り口例
-def main():
-    st.title("シフト整合性チェックシステム")
-    uploaded_file = st.file_uploader("PDFシフト表をアップロード", type="pdf")
-    
-    if uploaded_file:
-        with open("temp.pdf", "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        max_date, last_weekday = get_pdf_metadata("temp.pdf", uploaded_file.name)
-        st.write(f"抽出結果 - 最大日付: {max_date}日, 最終曜日: {last_weekday}曜日")
-        
-        # 時程表データ読み込み
-        schedule = load_time_schedule()
-        # ここで整合性チェックロジックを続ける
-
+# 実行
 if __name__ == "__main__":
-    main()
+    # 1. 辞書登録
+    schedule_dict = load_time_schedule()
+    
+    # 2. PDF解析 (ファイルアップロードがある前提)
+    # max_date, last_weekday = get_pdf_metadata(path, name)
