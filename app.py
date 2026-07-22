@@ -7,7 +7,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# --- [1] 辞書登録ロジック (既存維持) ---
+# --- [1] 時程表の辞書登録ロジック (変更不可・保持) ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -35,11 +35,12 @@ def process_data(df):
         location_data[key] = schedule
     return location_data
 
-# --- [2] <1> (1)(2)(3) 統合PDF解析 ---
+# --- [2] PDF解析ロジック (ヘッダー関門・最大値抽出) ---
 def parse_shift_pdf(pdf_file, valid_keys):
     """
-    Keyを第1関門としてPDFブロックを解析し、最大日付・曜日を抽出する
+    Keyを第1関門としてブロック解析し、最大日付・曜日を抽出する[cite: 5, 6]
     """
+    # PDF読み込み[cite: 5, 6]
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
     full_df = pd.concat([t.df for t in tables], ignore_index=True)
     
@@ -51,24 +52,72 @@ def parse_shift_pdf(pdf_file, valid_keys):
     for _, row in full_df.iterrows():
         row_str = " ".join([str(v) for v in row]).replace('\n', ' ').strip()
         
-        # (1) & (2) Key検知と第1関門（ヘッダー行チェック）
+        # (1)(2) Key検知と第1関門（ヘッダー行チェック）
         found_key = next((k for k in valid_keys if k in row_str), None)
         if found_key:
             current_key = found_key
             continue
             
-        # (3) 最終日付・曜日の最大値抽出
+        # (3) Keyブロック内の最終日付・曜日抽出
         if current_key:
             dates = [int(d) for d in date_pattern.findall(row_str)]
             weekdays = weekday_pattern.findall(row_str)
+            
             if dates:
                 max_d_in_row = max(dates)
+                # 曜日が行内にあれば取得[cite: 6]
                 day_in_row = weekdays[0] if weekdays else None
+                
+                # 最大値比較ロジック：大きい方を最終日付として保持[cite: 5, 6]
                 if max_d_in_row > results[current_key]['max_date']:
                     results[current_key]['max_date'] = max_d_in_row
                     results[current_key]['last_day'] = day_in_row
     return results
 
-# メイン処理の統合イメージ
-# data_dict = process_data(df) # 時程表からKeyと詳細な辞書が完成
-# pdf_results = parse_shift_pdf(uploaded_pdf, data_dict.keys()) # これで[1][2]完了
+# --- [3] Google連携・メインUI ---
+def get_service():
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds = Credentials(
+        token=creds_dict["token"],
+        refresh_token=creds_dict["refresh_token"],
+        token_uri=creds_dict["token_uri"],
+        client_id=creds_dict["client_id"],
+        client_secret=creds_dict["client_secret"]
+    )
+    return build('drive', 'v3', credentials=creds)
+
+@st.cache_data(ttl=600)
+def load_and_process_data():
+    service = get_service()
+    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+    request = service.files().export_media(file_id=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
+    return process_data(df)
+
+# メイン処理
+st.title("シフト解析システム")
+
+try:
+    data_dict = load_and_process_data()
+    valid_keys = list(data_dict.keys())
+    
+    uploaded_pdf = st.file_uploader("シフト表PDFをアップロード", type="pdf")
+    
+    if uploaded_pdf:
+        with st.spinner('解析中...'):
+            results = parse_shift_pdf(uploaded_pdf, valid_keys)
+            
+            st.write("### 解析結果")
+            for key, info in results.items():
+                if info['max_date'] > 0:
+                    st.success(f"【{key}】: 最終日付 {info['max_date']}日 ({info['last_day']}曜日)")
+                else:
+                    st.info(f"【{key}】: データなし")
+except Exception as e:
+    st.error(f"システムエラー: {e}")
