@@ -3,6 +3,7 @@ import pandas as pd
 import camelot
 import re
 import io
+import unicodedata 
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -35,45 +36,58 @@ def process_data(df):
         location_data[key] = schedule
     return location_data
 
-# --- [2] PDF解析ロジック ---
+# 【正規化用ヘルパー関数】
+def normalize_text(text):
+    # 1. 全角→半角などの正規化 (NFKC)
+    # 2. 空白・改行の削除
+    # 3. 大文字統一（念のため）
+    normalized = unicodedata.normalize('NFKC', text)
+    return re.sub(r'\s+', '', normalized).upper()
+
 def parse_shift_pdf(pdf_file, valid_keys):
-    # PDFをテーブル構造として読み込む
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    
     results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
     
+    # 【対策】処理済みのキーを保持（重複誤認の防止）
+    already_processed_keys = set()
+    
+    # 辞書のキーも事前に正規化しておく
+    normalized_keys = {normalize_text(k): k for k in valid_keys}
+
     for table in tables:
         df = table.df
         current_key = None
         
-        # 行をループして解析
         for i in range(len(df)):
             row_values = df.iloc[i].astype(str).tolist()
             row_str = " ".join(row_values)
+            norm_row = normalize_text(row_str) # 【重要】検索対象を正規化
             
-            # キー（T1等）の判定
-            found_key = next((k for k in valid_keys if k in row_str), None)
+            # 【重要】正規化されたキーで検索し、未処理のものだけ採用
+            found_key = None
+            for norm_k, original_k in normalized_keys.items():
+                if norm_k in norm_row and original_k not in already_processed_keys:
+                    found_key = original_k
+                    break
+            
             if found_key:
                 current_key = found_key
+                already_processed_keys.add(found_key)
                 continue
             
+            # キーが特定されている間のみデータ探索
             if current_key:
-                # 行の中に「31」があるか確認
                 if '31' in row_values:
                     col_idx = row_values.index('31')
-                    
-                    # 31が見つかった場合、その周辺（同じブロック内の後続行）から曜日を探す
-                    # 31日の真下や周辺に曜日（月火水木金土日）が含まれるセルを探す
+                    # 31日の周辺5行程度を探す
                     for j in range(i + 1, min(i + 6, len(df))):
                         potential_day_row = df.iloc[j].astype(str).tolist()
-                        
-                        # 列インデックスが範囲内か確認し、曜日が含まれるか判定
                         if len(potential_day_row) > col_idx:
                             day_val = potential_day_row[col_idx]
-                            # 曜日文字（士含む）が含まれている場合
-                            if re.search(r'[月火水木金土日士]', day_val):
+                            match = re.search(r'[月火水木金土日士]', day_val)
+                            if match:
                                 results[current_key]['max_date'] = 31
-                                results[current_key]['last_day'] = day_val.replace('士', '土')
+                                results[current_key]['last_day'] = match.group().replace('士', '土')
                                 break
     return results 
     
