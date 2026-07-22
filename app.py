@@ -2,60 +2,73 @@ import streamlit as st
 import pandas as pd
 import camelot
 import re
-import calendar
-from datetime import datetime
+import io
+from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
-def get_pdf_metadata(file_path, file_name):
-    # PDF全体のテーブルを読み込み
-    tables = camelot.read_pdf(file_path, pages='all', flavor='stream')
+# --- [1] 辞書登録ロジック (既存維持) ---
+def format_time(val):
+    try:
+        f_val = float(val)
+        h = int(f_val)
+        m = int(round((f_val - h) * 60))
+        return f"{h}:{m:02d}"
+    except (ValueError, TypeError):
+        return val
+
+def process_data(df):
+    location_data = {}
+    location_indices = df[df.iloc[:, 0].notna()].index.tolist()
+    for i, start_idx in enumerate(location_indices):
+        key = str(df.iloc[start_idx, 0])
+        end_idx = location_indices[i+1] if i+1 < len(location_indices) else df.index[-1] + 1
+        schedule = df.iloc[start_idx:end_idx].copy()
+        for col_idx in range(3, schedule.shape[1]):
+            val = schedule.iloc[0, col_idx]
+            try:
+                f_val = float(val)
+                schedule.iloc[0, col_idx] = format_time(f_val)
+            except (ValueError, TypeError):
+                schedule = schedule.iloc[:, :col_idx]
+                break
+        location_data[key] = schedule
+    return location_data
+
+# --- [2] <1> (1)(2)(3) 統合PDF解析 ---
+def parse_shift_pdf(pdf_file, valid_keys):
+    """
+    Keyを第1関門としてPDFブロックを解析し、最大日付・曜日を抽出する
+    """
+    tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
     full_df = pd.concat([t.df for t in tables], ignore_index=True)
     
-    all_dates = []
-    
-    # 検索用パターン
-    # T1/T2などのキー、日付(1-31)、曜日(月火水木金土日)をそれぞれ抽出
-    key_pattern = re.compile(r'T[12]')
+    results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
     date_pattern = re.compile(r'\b([12]?\d|3[01])\b')
     weekday_pattern = re.compile(r'[月火水木金土日]')
-    
-    # 全行を走査し、キーが検知されたらその後続行をブロックとして扱う
-    is_in_block = False
+    current_key = None
     
     for _, row in full_df.iterrows():
         row_str = " ".join([str(v) for v in row]).replace('\n', ' ').strip()
         
-        # 1. キー行(T1/T2)の検知
-        if key_pattern.search(row_str):
-            is_in_block = True
+        # (1) & (2) Key検知と第1関門（ヘッダー行チェック）
+        found_key = next((k for k in valid_keys if k in row_str), None)
+        if found_key:
+            current_key = found_key
             continue
             
-        # 2. ブロック内での処理
-        if is_in_block:
-            # 日付情報が含まれているか確認
-            found_dates = date_pattern.findall(row_str)
-            # 曜日情報が含まれているか確認
-            found_weekday = weekday_pattern.search(row_str)
-            
-            # 日付があればリストに追加
-            if found_dates:
-                all_dates.extend([int(d) for d in found_dates])
-                
-            # 曜日情報がなく、かつ日付情報もない場合はブロック終了とみなす
-            if not found_dates and not found_weekday:
-                is_in_block = False
-    
-    # 3. 最大日付の算出
-    max_date = max(all_dates) if all_dates else 0
-    
-    # 4. 最終曜日の算出（最大日付に対応する曜日をカレンダーから取得）
-    match = re.search(r'(\d{4})年?(\d{1,2})月', file_name)
-    year = int(match.group(1)) if match else datetime.now().year
-    month = int(match.group(2)) if match else datetime.now().month
-    
-    try:
-        weekday_idx = calendar.weekday(year, month, max_date)
-        last_weekday = ["月", "火", "水", "木", "金", "土", "日"][weekday_idx]
-    except:
-        last_weekday = "不明"
-        
-    return max_date, last_weekday
+        # (3) 最終日付・曜日の最大値抽出
+        if current_key:
+            dates = [int(d) for d in date_pattern.findall(row_str)]
+            weekdays = weekday_pattern.findall(row_str)
+            if dates:
+                max_d_in_row = max(dates)
+                day_in_row = weekdays[0] if weekdays else None
+                if max_d_in_row > results[current_key]['max_date']:
+                    results[current_key]['max_date'] = max_d_in_row
+                    results[current_key]['last_day'] = day_in_row
+    return results
+
+# メイン処理の統合イメージ
+# data_dict = process_data(df) # 時程表からKeyと詳細な辞書が完成
+# pdf_results = parse_shift_pdf(uploaded_pdf, data_dict.keys()) # これで[1][2]完了
