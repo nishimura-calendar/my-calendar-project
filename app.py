@@ -8,7 +8,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# --- [1] 時程表の辞書登録ロジック (変更不可) ---
+# --- [1] 時程表の辞書登録ロジック ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -36,17 +36,13 @@ def process_data(df):
         location_data[key] = schedule
     return location_data
 
-# 【正規化用ヘルパー関数】
 def normalize_text(text):
-    # 1. 全角→半角などの正規化 (NFKC)
-    # 2. 空白・改行の削除
-    # 3. 大文字統一（念のため）
     normalized = unicodedata.normalize('NFKC', text)
     return re.sub(r'\s+', '', normalized).upper()
 
+# --- [2] PDF解析ロジック ---
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    # 修正: 'dates' 辞書を持つ構造に変更
     results = {key: {'dates': {}} for key in valid_keys}
     normalized_keys = {normalize_text(k): k for k in valid_keys}
 
@@ -58,14 +54,17 @@ def parse_shift_pdf(pdf_file, valid_keys):
             row_values = df.iloc[i].astype(str).tolist()
             norm_row = normalize_text(" ".join(row_values))
             
+            # キーの検索
             found_key = next((orig for norm_k, orig in normalized_keys.items() if norm_k == norm_row), None)
             if found_key:
                 current_key = found_key
                 continue
             
+            # キー以下の行を走査し、「日付の塊」を探す
             if current_key:
                 nums_in_row = [re.findall(r'\b([1-9]|1[0-9]|2[0-9]|3[01])\b', val) for val in row_values]
-                if sum(len(n) for n in nums_in_row) >= 3:
+                # 数字が含まれる列が一定数以上あれば「日付行」とみなす
+                if sum(len(n) for n in nums_in_row) >= 3: 
                     if i + 1 < len(df):
                         data_row = df.iloc[i + 1].astype(str).tolist()
                         for col_idx, nums in enumerate(nums_in_row):
@@ -76,23 +75,7 @@ def parse_shift_pdf(pdf_file, valid_keys):
                                 results[current_key]['dates'][date_val] = clean_data
     return results
 
-# --- メインUI部分の修正（エラー回避） ---
-if uploaded_pdf:
-    with st.spinner('解析中...'):
-        results = parse_shift_pdf(uploaded_pdf, valid_keys)
-        st.write("### 解析結果")
-        for key, info in results.items():
-            if info['dates']:
-                # 28-31日を抽出して表示
-                st.write(f"#### 【{key}】")
-                cols = st.columns(4)
-                for idx, d in enumerate([28, 29, 30, 31]):
-                    val = info['dates'].get(d, "なし")
-                    cols[idx].metric(f"{d}日", val)
-            else:
-                st.info(f"【{key}】: データなし")
-                
-# --- [3] Google連携・メインUI ---
+# --- [3] Google連携・データロード ---
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
@@ -108,7 +91,6 @@ def get_service():
 def load_and_process_data():
     service = get_service()
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    # 【修正箇所】 file_id -> fileId に変更
     request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
@@ -119,6 +101,7 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
+# --- [4] メインUI ---
 st.title("シフト解析システム")
 
 try:
@@ -131,8 +114,12 @@ try:
             results = parse_shift_pdf(uploaded_pdf, valid_keys)
             st.write("### 解析結果")
             for key, info in results.items():
-                if info['max_date'] > 0:
-                    st.success(f"【{key}】: 最終日付 {info['max_date']}日 ({info['last_day']}曜日)")
+                if info['dates']:
+                    st.write(f"#### 【{key}】")
+                    cols = st.columns(4)
+                    for idx, d in enumerate([28, 29, 30, 31]):
+                        val = info['dates'].get(d, "なし")
+                        cols[idx].metric(f"{d}日", val)
                 else:
                     st.info(f"【{key}】: データなし")
 except Exception as e:
