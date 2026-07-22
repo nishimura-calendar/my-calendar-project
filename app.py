@@ -43,10 +43,8 @@ def process_data(df):
 # --- [2] PDF解析ロジック（最初のブロックのみ抽出） ---
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
+    results = {key: {'max_date': 0, 'last_day_name': "不明"} for key in valid_keys}
     normalized_keys = {normalize_text(k): k for k in valid_keys}
-
-    # 処理済みキーを追跡して、最初に見つかったブロックだけ処理する
     processed_keys = set()
 
     for table in tables:
@@ -57,32 +55,40 @@ def parse_shift_pdf(pdf_file, valid_keys):
             row_values = df.iloc[i].astype(str).tolist()
             norm_row = normalize_text(" ".join(row_values))
             
-            # キーの検索
+            # キーが見つかったらその後の行を解析
             found_key = next((orig for norm_k, orig in normalized_keys.items() if norm_k == norm_row), None)
             if found_key:
                 current_key = found_key
                 continue
             
-            # キーが見つかっている状態で、日付ヘッダー（数字が複数並ぶ行）を検知
             if current_key and current_key not in processed_keys:
+                # 数字のみを抽出して「日付行」を特定
                 nums_in_row = [re.findall(r'\b([1-9]|1[0-9]|2[0-9]|3[01])\b', val) for val in row_values]
                 
-                if sum(len(n) for n in nums_in_row) >= 5: # 日付行とみなす
-                    if i + 1 < len(df):
-                        data_row = df.iloc[i + 1].astype(str).tolist()
-                        for col_idx, nums in enumerate(nums_in_row):
-                            for num_str in nums:
-                                date_val = int(num_str)
-                                # 最大値(最終日付)を更新
-                                if date_val >= results[current_key]['max_date']:
-                                    results[current_key]['max_date'] = date_val
-                                    val = data_row[col_idx]
-                                    results[current_key]['last_day'] = re.sub(r'[\|\s]+', '', val)
-                        
-                        # 最初のブロックが見つかったらこのキーは完了
-                        processed_keys.add(current_key)
+                # 31のような大きな数字が含まれる行をヘッダーとして処理
+                if sum(len(n) for n in nums_in_row) >= 5:
+                    # この行にある最大の日付を取得
+                    all_nums = [int(n) for sublist in nums_in_row for n in sublist]
+                    max_d = max(all_nums)
+                    
+                    # 曜日行（日付行の次の行）から、最終日付と同じ列にある値を取得
+                    # 日付行の各列で、最大日付があるインデックスを探す
+                    target_col_idx = -1
+                    for col_idx, nums in enumerate(nums_in_row):
+                        if str(max_d) in nums:
+                            target_col_idx = col_idx
+                            break
+                    
+                    if target_col_idx != -1 and i + 1 < len(df):
+                        day_row = df.iloc[i+1].astype(str).tolist()
+                        results[current_key]['max_date'] = max_d
+                        # 曜日情報を抽出（余計な記号を除去）
+                        raw_day = day_row[target_col_idx]
+                        results[current_key]['last_day_name'] = re.sub(r'[\|\s]+', '', raw_day)
+                    
+                    processed_keys.add(current_key)
     return results
-
+    
 # --- [3] Google連携・メインUI ---
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
