@@ -1,69 +1,73 @@
 import streamlit as st
-import camelot
+from pypdf import PdfReader
 import re
-import pandas as pd
 
-# [1] 時程表読込 (ダミー関数: 実際は辞書を読み込んでくる)
+# [1] 時程表読込 (マスタデータ取得のシミュレーション)
 def get_valid_keys():
-    # 実際の実装では、ここでスプレッドシートから読み込んだ辞書のKeyを返す
-    return ["T1", "T2"]
+    """
+    スプレッドシートやマスタファイルからKeyの一覧を取得する関数
+    ※現在はデモ用にT1を返します
+    """
+    return ["T1"]
 
-# [2] PDFシフト表ファイル読込（Streamlit対応版）
-def process_pdf_shift(pdf_file, valid_keys):
-    # ファイル保存（camelot用）
-    with open("temp.pdf", "wb") as f:
-        f.write(pdf_file.getbuffer())
-
-    # (1) camelotを使用して読込
-    tables = camelot.read_pdf("temp.pdf", pages='1', flavor='stream')
-    full_text_lines = []
-    for table in tables:
-        full_text_lines.extend(table.df.astype(str).values.tolist())
-
+# [2] PDFシフト表ファイル読込
+def process_shift_data(pdf_file, valid_keys):
+    # (1) PDF読込: pypdfを使用しテキストを全抽出
+    reader = PdfReader(pdf_file)
+    full_text = "\n".join([page.extract_text() for page in reader.pages])
+    
     # (2) 第1関門: Key検索
     found_key = None
-    key_line_index = -1
-    
-    for i, line in enumerate(full_text_lines):
-        line_str = "".join(line)
-        for key in valid_keys:
-            if re.sub(r'[\s ]', '', key) in re.sub(r'[\s ]', '', line_str):
-                found_key = key
-                key_line_index = i
-                break
-        if found_key: break
-    
+    for key in valid_keys:
+        if re.search(rf"\b{re.escape(key)}\b", full_text):
+            found_key = key
+            break
+            
     if not found_key:
-        st.error(f"“key”が見当りません。シフト表ではないようです。ファイルを確認して下さい。")
-        st.stop() # プログラム停止
-
-    # (3) 第2関門: 日付と曜日の紐付け
-    # インデックスのズレを考慮 (Key行+1=日付, Key行+2=曜日)
-    if key_line_index + 2 >= len(full_text_lines):
-        st.error("PDFの構造が不正です。日付・曜日行が見つかりません。")
+        st.error("エラー: シフト表のKeyが見つかりませんでした。ファイルを確認してください。")
         st.stop()
-
-    date_line = full_text_lines[key_line_index + 1]
-    day_line = full_text_lines[key_line_index + 2]
     
-    # 日付リスト・曜日リスト抽出
-    dates = [int(s) for s in re.findall(r'\d+', " ".join(date_line)) if s.isdigit()]
-    days = [s for s in re.findall(r'[日月火水木金土]', " ".join(day_line))]
+    # (3) 第2関門: 日付と曜日の紐付け
+    # 行単位で分割し、日付と曜日のパターンを探す
+    lines = full_text.split('\n')
+    date_line = None
+    day_line = None
     
-    if not dates or not days:
-        st.error("日付または曜日ブロックが抽出できませんでした。")
+    for line in lines:
+        # 日付行の判定: 数字が15個以上並んでいる行を探す
+        if len(re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', line)) >= 15:
+            date_line = line
+        # 曜日行の判定: 曜日文字が15個以上並んでいる行を探す
+        if len(re.findall(r'[日月火水木金土]', line)) >= 15:
+            day_line = line
+            
+    if not date_line or not day_line:
+        st.error("エラー: 日付行または曜日行が正しく抽出できませんでした。")
         st.stop()
         
-    return {"key": found_key, "last_date": dates[-1], "last_day": days[-1]}
+    # リスト化
+    dates = [int(d) for d in re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', date_line)]
+    days = re.findall(r'[日月火水木金土]', day_line)
+    
+    # 最終日付と曜日の特定
+    if not dates or not days:
+        st.error("エラー: データ抽出に失敗しました。")
+        st.stop()
+        
+    last_date = dates[-1]
+    last_day = days[-1]
+    
+    return {"key": found_key, "last_date": last_date, "last_day": last_day}
 
-# StreamlitメインUI
+# --- Streamlit UI ---
 st.title("シフト表自動読込プログラム")
-
 uploaded_file = st.file_uploader("PDFシフト表ファイルをアップロード", type="pdf")
+
 if uploaded_file:
     keys = get_valid_keys()
-    result = process_pdf_shift(uploaded_file, keys)
+    result = process_shift_data(uploaded_file, keys)
     
     if result:
-        st.success(f"成功: {result['key']} を検出しました。")
-        st.write(f"最終日付: {result['last_date']}, 最終曜日: {result['last_day']}")
+        st.success(f"成功: Key[{result['key']}] を検出しました。")
+        st.write(f"最終日付: {result['last_date']}日")
+        st.write(f"最終曜日: {result['last_day']}曜日")
