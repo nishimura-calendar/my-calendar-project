@@ -4,48 +4,48 @@ import re
 import tempfile
 import os
 
-def extract_shift_header(uploaded_file, target_key="T1"):
+def extract_date_from_t1_block(uploaded_file, target_key="T1"):
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     tfile.write(uploaded_file.read())
     tfile.close()
     
     try:
-        # Camelotでテーブルとして読み込み
-        tables = camelot.read_pdf(tfile.name, flavor='lattice', pages='all')
+        # Camelotでテキストを抽出
+        tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
+        full_text = "\n".join([table.df.to_string() for table in tables])
         
-        for table in tables:
-            df = table.df
-            # テーブルの全セルからKeyを探す
-            for i, row in df.iterrows():
-                if target_key in row.values:
-                    # Keyが見つかった行の「日付行」と「曜日行」を抽出
-                    # レイアウト上、Key行のすぐ下の行に日付、その下に曜日があると仮定
-                    if i + 2 < len(df):
-                        date_row = df.iloc[i + 1] # 上段（日付）
-                        day_row = df.iloc[i + 2]  # 下段（曜日）
-                        
-                        # 日付行から数値のみ抽出（1〜31）
-                        dates = [int(cell) for cell in date_row if str(cell).isdigit() and 1 <= int(cell) <= 31]
-                        
-                        if dates:
-                            # 抽出できた日付の最大値（＝最終日）と、それに対応する曜日を返す
-                            # ここでは単純化のため、リストの最後の日付と曜日をペアで返す
-                            last_date = max(dates)
-                            # 曜日は日付と同じ列のインデックスを取得
-                            return last_date, day_row[len(date_row)-1]
-        return None, None
+        # 1. 最初のT1が出現する箇所を特定
+        t1_index = full_text.find(target_key)
+        if t1_index == -1:
+            return None, None, "T1が見つかりません。"
+            
+        # 2. T1以降のブロックを切り出し
+        block = full_text[t1_index:]
+        
+        # 3. ブロック内の数字（日付）と曜日を検索
+        # 正規表現：日付と曜日の並び（例: 31\n土）を考慮
+        # 構造的に日付が先に来て、その後に曜日がくるケースを最後から探す
+        matches = list(re.finditer(r'\b(3[01]|[12]?[0-9])\s+([日月火水木金土])', block))
+        
+        if not matches:
+            return None, None, "日付と曜日のペアが見つかりません。"
+            
+        # 4. 最後に見つかったペアを「最終日付・曜日」として取得
+        last_match = matches[-1]
+        return last_match.group(1), last_match.group(2), None
+
     finally:
         if os.path.exists(tfile.name):
             os.remove(tfile.name)
 
-# --- UI構築 ---
-st.title("最終日・曜日抽出プログラム")
+# UI
+st.title("最終日・曜日抽出 (T1ブロック解析)")
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
 
 if uploaded_pdf:
-    last_date, last_day = extract_shift_header(uploaded_pdf)
-    if last_date:
-        st.success(f"最終日付: {last_date}日")
-        st.write(f"最終曜日: {last_day}曜日")
+    last_date, last_day, error = extract_date_from_t1_block(uploaded_pdf)
+    if error:
+        st.error(error)
     else:
-        st.error("日付と曜日の行を特定できませんでした。")
+        st.write(f"最終日付: {last_date}日")
+        st.write(f"最終曜日: {last_day}曜日")
