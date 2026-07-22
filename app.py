@@ -1,40 +1,25 @@
-import streamlit as st
-import camelot
-import os
+import re
 
-# [2] PDFシフト表ファイル読込
-def process_pdf_shift_camelot(uploaded_pdf):
-    # ファイルを一時的に保存 (Camelotはファイルパスを必要とするため)
-    with open("temp_shift.pdf", "wb") as f:
-        f.write(uploaded_pdf.getbuffer())
+def extract_final_date_day(full_text):
+    # 1. T1の出現位置を探す（ここからがヘッダー領域）
+    t1_match = re.search(r'T1', full_text)
+    if not t1_match:
+        return None, None
     
-    # (1) Camelotを使用して読込
-    # flavor='lattice'は罫線がある表に適しています
-    try:
-        tables = camelot.read_pdf("temp_shift.pdf", flavor='lattice', pages='all')
-        
-        # 読み込んだテーブルデータを確認
-        if len(tables) > 0:
-            st.success(f"{len(tables)} 個のテーブルを検出しました。")
-            # 最初のテーブルをDataFrameとして表示
-            df = tables[0].df
-            st.write(df)
-            return tables
-        else:
-            st.error("テーブルが検出されませんでした。")
-            return None
-            
-    except Exception as e:
-        st.error(f"Camelotでの読み込みエラー: {e}")
-        return None
-    finally:
-        if os.path.exists("temp_shift.pdf"):
-            os.remove("temp_shift.pdf")
+    # T1以降のテキストを切り出し
+    header_area = full_text[t1_match.end():]
+    
+    # 2. その領域内にある日付と曜日を全て抽出
+    dates = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', header_area)
+    days = re.findall(r'[日月火水木金土]', header_area)
+    
+    # 3. 最終日付と最終曜日のペアを取得
+    # ヘッダー領域であれば、リストの最後が月末の31日になるはずです
+    if dates and days:
+        return dates[-1], days[-1]
+    return None, None
 
-# Streamlit UI
-st.title("シフト表自動読込プログラム")
-uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
-
-if uploaded_pdf:
-    tables = process_pdf_shift_camelot(uploaded_pdf)
-    # この後、[2]〈1〉(2) 第1関門へ続く
+# 実行
+final_date, final_day = extract_final_date_day(full_text)
+print(f"最終日付: {final_date}日")
+print(f"最終曜日: {final_day}曜日")
