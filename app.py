@@ -46,12 +46,8 @@ def normalize_text(text):
 
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
+    # 結果の初期化（max_dateを0で初期化）
     results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
-    
-    # 【対策】処理済みのキーを保持（重複誤認の防止）
-    already_processed_keys = set()
-    
-    # 辞書のキーも事前に正規化しておく
     normalized_keys = {normalize_text(k): k for k in valid_keys}
 
     for table in tables:
@@ -60,36 +56,41 @@ def parse_shift_pdf(pdf_file, valid_keys):
         
         for i in range(len(df)):
             row_values = df.iloc[i].astype(str).tolist()
-            row_str = " ".join(row_values)
-            norm_row = normalize_text(row_str) # 【重要】検索対象を正規化
+            norm_row = normalize_text(" ".join(row_values))
             
-            # 【重要】正規化されたキーで検索し、未処理のものだけ採用
-            found_key = None
-            for norm_k, original_k in normalized_keys.items():
-                if norm_k in norm_row and original_k not in already_processed_keys:
-                    found_key = original_k
-                    break
-            
+            # ① ヘッダー検索（現在の行がキーと完全一致するか）
+            found_key = next((orig for norm_k, orig in normalized_keys.items() if norm_k == norm_row), None)
             if found_key:
                 current_key = found_key
-                already_processed_keys.add(found_key)
                 continue
             
-            # キーが特定されている間のみデータ探索
+            # ② 日付と曜日の探索
             if current_key:
-                if '31' in row_values:
-                    col_idx = row_values.index('31')
-                    # 31日の周辺5行程度を探す
-                    for j in range(i + 1, min(i + 6, len(df))):
-                        potential_day_row = df.iloc[j].astype(str).tolist()
-                        if len(potential_day_row) > col_idx:
-                            day_val = potential_day_row[col_idx]
-                            match = re.search(r'[月火水木金土日士]', day_val)
-                            if match:
-                                results[current_key]['max_date'] = 31
-                                results[current_key]['last_day'] = match.group().replace('士', '土')
-                                break
-    return results 
+                # 行内の数字を探す
+                for col_idx, val in enumerate(row_values):
+                    # 「1〜31」の数字のみ抽出
+                    nums = re.findall(r'\b([12]?[0-9]|3[01])\b', val)
+                    if nums:
+                        current_num = int(nums[0])
+                        
+                        # 数字があった場合、その直後の行（または同行）に曜日がないか探索
+                        # (同じ行または次の行に曜日があるケースを想定)
+                        target_rows = [i, i+1] 
+                        found_day = None
+                        for r in target_rows:
+                            if r < len(df):
+                                cell_val = str(df.iloc[r, col_idx])
+                                match = re.search(r'[月火水木金土日]', cell_val)
+                                if match:
+                                    found_day = match.group()
+                                    break
+                        
+                        # 最大値比較ロジック
+                        if current_num >= results[current_key]['max_date']:
+                            results[current_key]['max_date'] = current_num
+                            if found_day:
+                                results[current_key]['last_day'] = found_day
+    return results
     
 # --- [3] Google連携・メインUI ---
 def get_service():
