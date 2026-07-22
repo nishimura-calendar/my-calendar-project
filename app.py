@@ -37,41 +37,48 @@ def process_data(df):
 
 # --- [2] PDF解析ロジック ---
 def parse_shift_pdf(pdf_file, valid_keys):
-    # PDFをテーブルとして読み込み
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    full_df = pd.concat([t.df for t in tables], ignore_index=True)
+    
+    # 全テーブルの全セルを「1つの平坦なリスト」に変換して、文字の流れを作る
+    all_cells = []
+    for table in tables:
+        # DataFrameをフラットなリストにする
+        all_cells.extend(table.df.values.flatten().tolist())
     
     results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
     current_key = None
     
-    # 全行を走査
-    for idx in range(len(full_df) - 1):
-        row = full_df.iloc[idx]
-        row_str = " ".join([str(v) for v in row])
+    # 曜日パターン
+    weekday_pattern = re.compile(r'[月火水木金土日士]')
+    
+    for i, cell_val in enumerate(all_cells):
+        cell_str = str(cell_val)
         
-        # 1. Keyを判定（ブロックを確定）
-        found_key = next((k for k in valid_keys if k in row_str), None)
+        # 1. キーの更新（T1などの判定）
+        found_key = next((k for k in valid_keys if k in cell_str), None)
         if found_key:
             current_key = found_key
             continue
             
-        # 2. Keyブロック内において「31」が含まれるセルを検索
         if current_key:
-            for col_idx in range(len(row)):
-                cell_value = str(row[col_idx])
+            # 2. 「31」という文字が含まれているか確認
+            if '31' in cell_str:
+                results[current_key]['max_date'] = 31
                 
-                # 「31」という数値がセルにある場合
-                if '31' in cell_value:
-                    results[current_key]['max_date'] = 31
+                # 「31」が含まれる文字列の中で、さらに改行やその後の文字に曜日がないか探索
+                # 31より「後ろ」の文字列を連結して曜日を探す（最大5セル先までチェック）
+                search_text = cell_str
+                for j in range(1, 4):
+                    if i + j < len(all_cells):
+                        search_text += " " + str(all_cells[i + j])
+                
+                # 31より「後ろ」にある最初の曜日文字を取得
+                # 31の直前にある文字は無視するようパターンを工夫
+                match = weekday_pattern.search(search_text.split('31')[-1])
+                if match:
+                    results[current_key]['last_day'] = match.group().replace('士', '土')
                     
-                    # 【修正ロジック】真下の行の同じ列の値をそのまま抽出
-                    day_val = str(full_df.iloc[idx + 1, col_idx]).strip()
-                    
-                    # 抽出した値をそのまま曜日としてセット（補正が必要ならここで実行）
-                    if day_val:
-                        # 誤認識「士」のみ「土」へ置換
-                        results[current_key]['last_day'] = day_val.replace('士', '土')
-    return results
+    return results  
     
 # --- [3] Google連携・メインUI ---
 def get_service():
