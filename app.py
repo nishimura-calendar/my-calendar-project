@@ -1,38 +1,23 @@
 import streamlit as st
 import pandas as pd
 import camelot
-import re
 import io
-import unicodedata
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- [1] 関数定義 (必ずファイル上部に記述) ---
-
-def normalize_text(text):
-    normalized = unicodedata.normalize('NFKC', text)
-    return re.sub(r'\s+', '', normalized).upper()
-
-def format_time(val):
-    try:
-        f_val = float(val)
-        h = int(f_val)
-        m = int(round((f_val - h) * 60))
-        return f"{h}:{m:02d}"
-    except (ValueError, TypeError):
-        return val
+# --- [1] 関数定義 ---
 
 def process_data(df):
     location_data = {}
+    # キー（T1等）を取得するロジックは維持
     location_indices = df[df.iloc[:, 0].notna()].index.tolist()
     for i, start_idx in enumerate(location_indices):
         key = str(df.iloc[start_idx, 0])
-        location_data[key] = True # キーの存在確認用
+        location_data[key] = True 
     return location_data
 
 def load_and_process_data():
-    # Google API接続設定
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(
         token=creds_dict["token"],
@@ -56,7 +41,6 @@ def load_and_process_data():
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
     results = {key: {'max_date': 0, 'day_of_week': "不明"} for key in valid_keys}
-    normalized_keys = {normalize_text(k): k for k in valid_keys}
     processed_keys = set()
 
     for table in tables:
@@ -64,31 +48,36 @@ def parse_shift_pdf(pdf_file, valid_keys):
         current_key = None
         for i in range(len(df)):
             row_values = df.iloc[i].astype(str).tolist()
-            norm_row = normalize_text(" ".join(row_values))
-            found_key = next((orig for norm_k, orig in normalized_keys.items() if norm_k == norm_row), None)
-            if found_key:
-                current_key = found_key
+            # 行の先頭がキーと一致するか確認
+            if row_values[0] in valid_keys:
+                current_key = row_values[0]
                 continue
+            
+            # T1等のキーが見つかっており、まだデータ未抽出の場合
             if current_key and current_key not in processed_keys:
-                nums_in_row = [re.findall(r'\b([1-9]|1[0-9]|2[0-9]|3[01])\b', val) for val in row_values]
-                if sum(len(n) for n in nums_in_row) >= 5:
-                    all_nums = [int(n) for sublist in nums_in_row for n in sublist]
-                    if not all_nums: continue
-                    max_d = max(all_nums)
-                    target_col_idx = -1
-                    for col_idx, nums in enumerate(nums_in_row):
-                        if str(max_d) in nums:
-                            target_col_idx = col_idx
-                            break
-                    if target_col_idx != -1 and i + 1 < len(df):
+                # 数値変換を試みて、数値が含まれるか判定
+                nums = []
+                for val in row_values:
+                    try:
+                        nums.append(int(val))
+                    except:
+                        nums.append(-1)
+                
+                # 数値が5つ以上あれば日付行とみなす
+                if len([n for n in nums if n > 0]) >= 5:
+                    max_d = max(nums)
+                    col_idx = nums.index(max_d)
+                    
+                    # 曜日行（直下の行）から取得
+                    if i + 1 < len(df):
                         day_row = df.iloc[i+1].astype(str).tolist()
                         results[current_key]['max_date'] = max_d
-                        raw_day = day_row[target_col_idx]
-                        results[current_key]['day_of_week'] = re.sub(r'[\|\s]+', '', raw_day)
+                        results[current_key]['day_of_week'] = day_row[col_idx].replace('|', '').strip()
+                    
                     processed_keys.add(current_key)
     return results
 
-# --- [2] メイン処理 ---
+# --- [2] メインUI ---
 st.title("シフト解析システム")
 
 if 'valid_keys' not in st.session_state:
