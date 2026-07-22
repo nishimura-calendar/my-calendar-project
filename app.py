@@ -1,44 +1,82 @@
-import re
+import streamlit as st
 import camelot
+import re
+import os
+import tempfile
+import pandas as pd
+import datetime
+import calendar
 
-def extract_last_date_and_day(pdf_path, target_key="T1"):
-    # (1) Camelotを使用して読込
-    tables = camelot.read_pdf(pdf_path, flavor='lattice', pages='all')
+# [1] 時程表読み込み (マスタデータ)
+def load_master_data():
+    # 実際には共有スプレッドシートのIDを指定して読み込む箇所
+    # ここではローカルのシフトカレンダー.xlsxを読み込む想定
+    if os.path.exists('シフトカレンダー.xlsx'):
+        return pd.read_excel('シフトカレンダー.xlsx', sheet_name='time_schdule')
+    return None
+
+# [2]〈1〉(1)〜(3) PDFシフト表読込・解析
+def process_pdf_shift(uploaded_file):
+    # 一時ファイルの作成
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    tfile.write(uploaded_file.read())
+    tfile.close()
     
-    full_text = ""
-    for table in tables:
-        full_text += table.df.to_string()
+    try:
+        # Camelotで読み込み
+        tables = camelot.read_pdf(tfile.name, flavor='lattice', pages='all')
+        full_text = ""
+        for table in tables:
+            full_text += table.df.to_string()
+            
+        # (2) 第1関門: Key検索 (T1)
+        key_list = ["T1", "T2"]
+        found_key = next((k for k in key_list if re.search(rf"\b{re.escape(k)}\b", full_text)), None)
         
-    # (2) 第1関門: Key検索
-    # 手順書に基づき、Keyの出現位置を特定
-    key_match = re.search(rf"\b{re.escape(target_key)}\b", full_text)
-    
-    if not key_match:
-        return None, None, "Keyが見当たりません。"
-    
-    # Key以降の領域に探索範囲を限定
-    header_area = full_text[key_match.end():]
-    
-    # (3) 第2関門: 最終日付と曜日の抽出
-    # 領域内のすべての日付と曜日をリスト化
-    all_dates = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', header_area)
-    all_days = re.findall(r'[日月火水木金土]', header_area)
-    
-    if not all_dates or not all_days:
-        return None, None, "日付・曜日のペアが見つかりませんでした。"
+        if not found_key:
+            return None, None, None, "Keyが見当たりません。シフト表ではないようです。"
         
-    # リストの最後尾が「その表の最終日」になるはず
-    last_date = all_dates[-1]
-    last_day = all_days[-1]
-    
-    return last_date, last_day, None
+        # (3) 第2関門: 年月特定と整合性チェック
+        # PDF名から年月取得
+        match = re.search(r'(\d{4})年(\d{1,2})月', uploaded_file.name)
+        year, month = (int(match.group(1)), int(match.group(2))) if match else (2026, 1)
+        
+        # 期待値計算
+        _, last_day_num = calendar.monthrange(year, month)
+        last_date_dt = datetime.date(year, month, last_day_num)
+        expected_day = ["月", "火", "水", "木", "金", "土", "日"][last_date_dt.weekday()]
+        
+        # 実測値取得
+        header_area = full_text[re.search(rf"\b{re.escape(found_key)}\b", full_text).end():]
+        all_dates = re.findall(r'\b([1-9]|[12][0-9]|3[01])\b', header_area)
+        all_days = re.findall(r'[日月火水木金土]', header_area)
+        
+        actual_date = int(all_dates[-1]) if all_dates else 0
+        actual_day = all_days[-1] if all_days else ""
+        
+        # 整合性チェック
+        if actual_date != last_day_num or actual_day != expected_day:
+            return found_key, actual_date, actual_day, f"エラー: PDFの日付がカレンダーと一致しません (期待値: {last_day_num}日 {expected_day}曜)"
+            
+        return found_key, actual_date, actual_day, None
+        
+    finally:
+        if os.path.exists(tfile.name):
+            os.remove(tfile.name)
 
-# 実行例
-pdf_file = "免税店シフト表 1月度 第1ターミナル 2026.pdf"
-last_date, last_day, error = extract_last_date_and_day(pdf_file)
+# --- UI構築 ---
+st.title("シフト表自動読込プログラム")
 
-if error:
-    print(error)
-else:
-    print(f"最終日付: {last_date}日")
-    print(f"最終曜日: {last_day}曜日")
+# アップロードボタン
+uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
+
+if uploaded_pdf:
+    with st.spinner('解析中...'):
+        key, l_date, l_day, error = process_pdf_shift(uploaded_pdf)
+        
+        if error:
+            st.error(error)
+        else:
+            st.success(f"解析成功: {key}")
+            st.write(f"最終日付: {l_date}日 / 最終曜日: {l_day}曜日")
+            st.balloons()
