@@ -37,40 +37,44 @@ def process_data(df):
 
 # --- [2] PDF解析ロジック ---
 def parse_shift_pdf(pdf_file, valid_keys):
-    # PDFをテーブルとして読み込みますが、セル構造は無視して中身のテキストだけを抽出します
+    # PDFをテーブル構造として読み込む
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
     
-    # 1. 全テーブルの全テキストを一つのリストにフラット化
-    all_text = []
-    for table in tables:
-        for row in table.df.values:
-            for cell in row:
-                all_text.append(str(cell))
-    
-    # 2. 全体を一つの長い文字列（またはスペース区切りのテキスト）に変換
-    # これにより、罫線ノイズやセル間のズレを無視した「文字の流れ」ができます
-    full_text_stream = " ".join(all_text)
-    
     results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
-    current_key = None
     
-    # 曜日検索の正規表現
-    # 「31」の後に何か（＋や空白など）があっても、最終的に「金」や「土」を探す
-    pattern = re.compile(r'31\D*([月火水木金土日士])')
-    
-    # ここからは簡易的な解析になりますが、全テキストからキーを探し、
-    # そのキーが含まれるブロック内で「31」と「曜日」のペアを探します
-    # ※シンプル化のため、全テキストから最大日付を探すロジックに特化
-    
-    # もし「31」が見つかり、かつ正規表現にマッチすれば曜日を抽出
-    match = pattern.search(full_text_stream)
-    if match:
-        day = match.group(1).replace('士', '土')
-        # どのキーに対しても一律で最終日を適用（T1などが1つしかない場合）
-        for key in valid_keys:
-            results[key]['max_date'] = 31
-            results[key]['last_day'] = day
+    for table in tables:
+        df = table.df
+        current_key = None
+        
+        # 行をループして解析
+        for i in range(len(df)):
+            row_values = df.iloc[i].astype(str).tolist()
+            row_str = " ".join(row_values)
             
+            # キー（T1等）の判定
+            found_key = next((k for k in valid_keys if k in row_str), None)
+            if found_key:
+                current_key = found_key
+                continue
+            
+            if current_key:
+                # 行の中に「31」があるか確認
+                if '31' in row_values:
+                    col_idx = row_values.index('31')
+                    
+                    # 31が見つかった場合、その周辺（同じブロック内の後続行）から曜日を探す
+                    # 31日の真下や周辺に曜日（月火水木金土日）が含まれるセルを探す
+                    for j in range(i + 1, min(i + 6, len(df))):
+                        potential_day_row = df.iloc[j].astype(str).tolist()
+                        
+                        # 列インデックスが範囲内か確認し、曜日が含まれるか判定
+                        if len(potential_day_row) > col_idx:
+                            day_val = potential_day_row[col_idx]
+                            # 曜日文字（士含む）が含まれている場合
+                            if re.search(r'[月火水木金土日士]', day_val):
+                                results[current_key]['max_date'] = 31
+                                results[current_key]['last_day'] = day_val.replace('士', '土')
+                                break
     return results 
     
 # --- [3] Google連携・メインUI ---
