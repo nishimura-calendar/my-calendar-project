@@ -46,6 +46,7 @@ def normalize_text(text):
 
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
+    # 修正: 'dates' 辞書を持つ構造に変更
     results = {key: {'dates': {}} for key in valid_keys}
     normalized_keys = {normalize_text(k): k for k in valid_keys}
 
@@ -57,36 +58,40 @@ def parse_shift_pdf(pdf_file, valid_keys):
             row_values = df.iloc[i].astype(str).tolist()
             norm_row = normalize_text(" ".join(row_values))
             
-            # ① キーの検索
             found_key = next((orig for norm_k, orig in normalized_keys.items() if norm_k == norm_row), None)
             if found_key:
                 current_key = found_key
                 continue
             
-            # ② キー以下の行を走査し、「日付の塊」を探す
             if current_key:
-                # 行内に「1〜31」の数字が複数含まれているか判定（日付行の目安）
                 nums_in_row = [re.findall(r'\b([1-9]|1[0-9]|2[0-9]|3[01])\b', val) for val in row_values]
-                
-                # 数字が含まれる列が一定数以上あれば「日付行」とみなす
-                if sum(len(n) for n in nums_in_row) >= 3: 
-                    # 直下の行をデータ行として取得
+                if sum(len(n) for n in nums_in_row) >= 3:
                     if i + 1 < len(df):
                         data_row = df.iloc[i + 1].astype(str).tolist()
-                        
-                        # 日付とデータをマッピング
                         for col_idx, nums in enumerate(nums_in_row):
                             for num_str in nums:
                                 date_val = int(num_str)
                                 data_val = data_row[col_idx]
-                                # 抽出（罫線や空白の掃除）
                                 clean_data = re.sub(r'[\|\s]+', '', data_val)
-                                
-                                # 最終日付(31日)に近づくにつれて値を上書き更新
                                 results[current_key]['dates'][date_val] = clean_data
-                                
     return results
-    
+
+# --- メインUI部分の修正（エラー回避） ---
+if uploaded_pdf:
+    with st.spinner('解析中...'):
+        results = parse_shift_pdf(uploaded_pdf, valid_keys)
+        st.write("### 解析結果")
+        for key, info in results.items():
+            if info['dates']:
+                # 28-31日を抽出して表示
+                st.write(f"#### 【{key}】")
+                cols = st.columns(4)
+                for idx, d in enumerate([28, 29, 30, 31]):
+                    val = info['dates'].get(d, "なし")
+                    cols[idx].metric(f"{d}日", val)
+            else:
+                st.info(f"【{key}】: データなし")
+                
 # --- [3] Google連携・メインUI ---
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
