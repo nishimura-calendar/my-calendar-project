@@ -37,43 +37,43 @@ def process_data(df):
 
 # --- [2] PDF解析ロジック ---
 def parse_shift_pdf(pdf_file, valid_keys):
-    # PDF読み込み
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
     full_df = pd.concat([t.df for t in tables], ignore_index=True)
     
     results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
     date_pattern = re.compile(r'\b([12]?\d|3[01])\b')
-    weekday_pattern = re.compile(r'[月火水木金土日]')
+    # 【修正】誤認識されやすい「士」も対象に含める
+    weekday_pattern = re.compile(r'[月火水木金土日士]')
+    
     current_key = None
     
-    # 行番号付きで走査
     for idx in range(len(full_df)):
         row = full_df.iloc[idx]
         row_str = " ".join([str(v) for v in row]).replace('\n', ' ').strip()
         
-        # (1)(2) Key検知と第1関門
         found_key = next((k for k in valid_keys if k in row_str), None)
         if found_key:
             current_key = found_key
             continue
             
-        # (3) Keyブロック内の最終日付・曜日抽出
         if current_key:
             dates = [int(d) for d in date_pattern.findall(row_str)]
             
             if dates:
                 max_d_in_row = max(dates)
                 
-                # 【修正箇所】次の行（idx + 1）から曜日を探す
                 day_in_row = None
                 if idx + 1 < len(full_df):
                     next_row = full_df.iloc[idx + 1]
                     next_row_str = " ".join([str(v) for v in next_row]).replace('\n', ' ').strip()
+                    
+                    # デバッグ用：曜日にNoneが出る場合、この行のデータを確認可能
+                    # print(f"DEBUG: 検索行={next_row_str}") 
+                    
                     weekdays = weekday_pattern.findall(next_row_str)
                     if weekdays:
-                        day_in_row = weekdays[0] # 見つかった曜日を採用
+                        day_in_row = weekdays[0].replace('士', '土') # 見つかったら「土」に補正
                 
-                # 最終日付比較：大きい方を保持
                 if max_d_in_row > results[current_key]['max_date']:
                     results[current_key]['max_date'] = max_d_in_row
                     results[current_key]['last_day'] = day_in_row
