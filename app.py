@@ -43,7 +43,7 @@ def normalize_text(text):
 # --- [2] PDF解析ロジック ---
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    results = {key: {'dates': {}} for key in valid_keys}
+    results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
     normalized_keys = {normalize_text(k): k for k in valid_keys}
 
     for table in tables:
@@ -60,21 +60,30 @@ def parse_shift_pdf(pdf_file, valid_keys):
                 current_key = found_key
                 continue
             
-            # キー以下の行を走査し、「日付の塊」を探す
+            # キー配下で、日付ブロックを発見したら走査
             if current_key:
                 nums_in_row = [re.findall(r'\b([1-9]|1[0-9]|2[0-9]|3[01])\b', val) for val in row_values]
-                # 数字が含まれる列が一定数以上あれば「日付行」とみなす
-                if sum(len(n) for n in nums_in_row) >= 3: 
+                
+                # 日付が複数並ぶ「ヘッダー行」を見つけた場合
+                if sum(len(n) for n in nums_in_row) >= 5:
                     if i + 1 < len(df):
                         data_row = df.iloc[i + 1].astype(str).tolist()
                         for col_idx, nums in enumerate(nums_in_row):
                             for num_str in nums:
                                 date_val = int(num_str)
-                                data_val = data_row[col_idx]
-                                clean_data = re.sub(r'[\|\s]+', '', data_val)
-                                results[current_key]['dates'][date_val] = clean_data
+                                # 最大値を更新
+                                if date_val >= results[current_key]['max_date']:
+                                    results[current_key]['max_date'] = date_val
+                                    # その下のデータを抽出
+                                    val = data_row[col_idx]
+                                    results[current_key]['last_day'] = re.sub(r'[\|\s]+', '', val)
+        
+        # 最初のブロックでデータが取得できたら、後続のブロックは走査せず終了
+        if any(res['max_date'] > 0 for res in results.values()):
+            break
+            
     return results
-
+    
 # --- [3] Google連携・データロード ---
 def get_service():
     creds_dict = st.secrets["google_oauth_credentials"]
