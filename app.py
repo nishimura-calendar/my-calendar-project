@@ -46,7 +46,7 @@ def normalize_text(text):
 
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
+    results = {key: {'dates': {}} for key in valid_keys}
     normalized_keys = {normalize_text(k): k for k in valid_keys}
 
     for table in tables:
@@ -63,32 +63,28 @@ def parse_shift_pdf(pdf_file, valid_keys):
                 current_key = found_key
                 continue
             
-            # ② キー以下のブロックを走査
+            # ② キー以下の行を走査し、「日付の塊」を探す
             if current_key:
-                for col_idx, val in enumerate(row_values):
-                    # 日付(1-31)を抽出
-                    nums = re.findall(r'\b([12]?[0-9]|3[01])\b', val)
-                    if nums:
-                        date_num = int(nums[0])
+                # 行内に「1〜31」の数字が複数含まれているか判定（日付行の目安）
+                nums_in_row = [re.findall(r'\b([1-9]|1[0-9]|2[0-9]|3[01])\b', val) for val in row_values]
+                
+                # 数字が含まれる列が一定数以上あれば「日付行」とみなす
+                if sum(len(n) for n in nums_in_row) >= 3: 
+                    # 直下の行をデータ行として取得
+                    if i + 1 < len(df):
+                        data_row = df.iloc[i + 1].astype(str).tolist()
                         
-                        # 直下のセルを特定
-                        if i + 1 < len(df):
-                            raw_below = str(df.iloc[i + 1, col_idx])
-                            # 罫線記号(|)や空白を除去して文字列だけをクリーンに抽出
-                            clean_below = re.sub(r'[\|\s]+', '', raw_below)
-                            
-                            # 空でなければ抽出結果として採用
-                            # (何が入っていても表示するため、曜日の判定は行わない)
-                            if clean_below:
-                                # 最大値の比較と更新
-                                if date_num >= results[current_key]['max_date']:
-                                    results[current_key]['max_date'] = date_num
-                                    results[current_key]['last_day'] = clean_below
-                            else:
-                                # 万が一空の場合も「データなし（空欄）」としてマークしておくと解析しやすい
-                                if date_num >= results[current_key]['max_date']:
-                                    results[current_key]['max_date'] = date_num
-                                    results[current_key]['last_day'] = "（空欄）"
+                        # 日付とデータをマッピング
+                        for col_idx, nums in enumerate(nums_in_row):
+                            for num_str in nums:
+                                date_val = int(num_str)
+                                data_val = data_row[col_idx]
+                                # 抽出（罫線や空白の掃除）
+                                clean_data = re.sub(r'[\|\s]+', '', data_val)
+                                
+                                # 最終日付(31日)に近づくにつれて値を上書き更新
+                                results[current_key]['dates'][date_val] = clean_data
+                                
     return results
     
 # --- [3] Google連携・メインUI ---
