@@ -46,7 +46,6 @@ def normalize_text(text):
 
 def parse_shift_pdf(pdf_file, valid_keys):
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
-    # 結果の初期化（max_dateを0で初期化）
     results = {key: {'max_date': 0, 'last_day': None} for key in valid_keys}
     normalized_keys = {normalize_text(k): k for k in valid_keys}
 
@@ -58,38 +57,38 @@ def parse_shift_pdf(pdf_file, valid_keys):
             row_values = df.iloc[i].astype(str).tolist()
             norm_row = normalize_text(" ".join(row_values))
             
-            # ① ヘッダー検索（現在の行がキーと完全一致するか）
+            # ① キーの検索
             found_key = next((orig for norm_k, orig in normalized_keys.items() if norm_k == norm_row), None)
             if found_key:
                 current_key = found_key
                 continue
             
-            # ② 日付と曜日の探索
+            # ② キー以下のブロックを走査
             if current_key:
-                # 行内の数字を探す
                 for col_idx, val in enumerate(row_values):
-                    # 「1〜31」の数字のみ抽出
+                    # 日付(1-31)を抽出
                     nums = re.findall(r'\b([12]?[0-9]|3[01])\b', val)
                     if nums:
-                        current_num = int(nums[0])
+                        date_num = int(nums[0])
                         
-                        # 数字があった場合、その直後の行（または同行）に曜日がないか探索
-                        # (同じ行または次の行に曜日があるケースを想定)
-                        target_rows = [i, i+1] 
-                        found_day = None
-                        for r in target_rows:
-                            if r < len(df):
-                                cell_val = str(df.iloc[r, col_idx])
-                                match = re.search(r'[月火水木金土日]', cell_val)
-                                if match:
-                                    found_day = match.group()
-                                    break
-                        
-                        # 最大値比較ロジック
-                        if current_num >= results[current_key]['max_date']:
-                            results[current_key]['max_date'] = current_num
-                            if found_day:
-                                results[current_key]['last_day'] = found_day
+                        # 直下のセルを特定
+                        if i + 1 < len(df):
+                            raw_below = str(df.iloc[i + 1, col_idx])
+                            # 罫線記号(|)や空白を除去して文字列だけをクリーンに抽出
+                            clean_below = re.sub(r'[\|\s]+', '', raw_below)
+                            
+                            # 空でなければ抽出結果として採用
+                            # (何が入っていても表示するため、曜日の判定は行わない)
+                            if clean_below:
+                                # 最大値の比較と更新
+                                if date_num >= results[current_key]['max_date']:
+                                    results[current_key]['max_date'] = date_num
+                                    results[current_key]['last_day'] = clean_below
+                            else:
+                                # 万が一空の場合も「データなし（空欄）」としてマークしておくと解析しやすい
+                                if date_num >= results[current_key]['max_date']:
+                                    results[current_key]['max_date'] = date_num
+                                    results[current_key]['last_day'] = "（空欄）"
     return results
     
 # --- [3] Google連携・メインUI ---
