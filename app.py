@@ -7,7 +7,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-# --- [1] 時程表の辞書登録ロジック (変更不可・保持) ---
+# --- [1] 時程表の辞書登録ロジック (変更不可) ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -35,12 +35,8 @@ def process_data(df):
         location_data[key] = schedule
     return location_data
 
-# --- [2] PDF解析ロジック (ヘッダー関門・最大値抽出) ---
+# --- [2] PDF解析ロジック ---
 def parse_shift_pdf(pdf_file, valid_keys):
-    """
-    Keyを第1関門としてブロック解析し、最大日付・曜日を抽出する[cite: 5, 6]
-    """
-    # PDF読み込み[cite: 5, 6]
     tables = camelot.read_pdf(io.BytesIO(pdf_file.read()), pages='all', flavor='stream')
     full_df = pd.concat([t.df for t in tables], ignore_index=True)
     
@@ -52,23 +48,17 @@ def parse_shift_pdf(pdf_file, valid_keys):
     for _, row in full_df.iterrows():
         row_str = " ".join([str(v) for v in row]).replace('\n', ' ').strip()
         
-        # (1)(2) Key検知と第1関門（ヘッダー行チェック）
         found_key = next((k for k in valid_keys if k in row_str), None)
         if found_key:
             current_key = found_key
             continue
             
-        # (3) Keyブロック内の最終日付・曜日抽出
         if current_key:
             dates = [int(d) for d in date_pattern.findall(row_str)]
             weekdays = weekday_pattern.findall(row_str)
-            
             if dates:
                 max_d_in_row = max(dates)
-                # 曜日が行内にあれば取得[cite: 6]
                 day_in_row = weekdays[0] if weekdays else None
-                
-                # 最大値比較ロジック：大きい方を最終日付として保持[cite: 5, 6]
                 if max_d_in_row > results[current_key]['max_date']:
                     results[current_key]['max_date'] = max_d_in_row
                     results[current_key]['last_day'] = day_in_row
@@ -90,7 +80,8 @@ def get_service():
 def load_and_process_data():
     service = get_service()
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    request = service.files().export_media(file_id=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    # 【修正箇所】 file_id -> fileId に変更
+    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -100,7 +91,6 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# メイン処理
 st.title("シフト解析システム")
 
 try:
@@ -108,11 +98,9 @@ try:
     valid_keys = list(data_dict.keys())
     
     uploaded_pdf = st.file_uploader("シフト表PDFをアップロード", type="pdf")
-    
     if uploaded_pdf:
         with st.spinner('解析中...'):
             results = parse_shift_pdf(uploaded_pdf, valid_keys)
-            
             st.write("### 解析結果")
             for key, info in results.items():
                 if info['max_date'] > 0:
