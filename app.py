@@ -57,34 +57,46 @@ def load_time_schedule():
 
 # ValueErrorを回避する堅牢な抽出関数
 def extract_date_day_pairs(df, key):
-    # 1. まずKey行のインデックスを探す
+    # 1. データの安全確認: 空でないかチェックし、NaNを空文字に置換
+    if df is None or df.empty:
+        return None, None, "テーブルデータが空です。"
+    
+    # 処理前にNaNを空文字に変換しておくことで、str変換時のエラーを完全に防ぐ
+    df = df.fillna('')
+
+    # 2. Key行の探索
     key_row_idx = -1
     for i in range(len(df)):
-        row_str = " ".join(df.iloc[i].astype(str).tolist())
-        if key in row_str:
-            key_row_idx = i
-            break
+        # iloc[i]がSeriesとして正しく取得できるか確認
+        try:
+            row_values = df.iloc[i].values
+            # リスト内包表記で安全に文字列化
+            row_str = " ".join([str(v) for v in row_values])
+            if key in row_str:
+                key_row_idx = i
+                break
+        except Exception:
+            continue # 読み取れない行はスキップ
             
     if key_row_idx == -1:
-        return None, None, f"キー '{key}' が見つかりません。"
+        return None, None, f"キー '{key}' が見つかりませんでした。"
 
-    # 2. Key行の周辺(上下)から「数字(日付)が並んでいる行」を探す
+    # 3. 日付行の探索（Keyの周辺で行う）
     target_date_idx = -1
     for i in [key_row_idx - 1, key_row_idx, key_row_idx + 1]:
         if 0 <= i < len(df):
-            row_vals = df.iloc[i].astype(str).tolist()
-            # 数字が5個以上並んでいる行を日付行とみなす
-            digit_count = sum(1 for v in row_vals if re.search(r'\d+', v))
+            row_vals = df.iloc[i].values
+            # 数値の並び（1〜31の数字）が5つ以上ある行を探す
+            digit_count = sum(1 for v in row_vals if re.search(r'^\d+$', str(v).strip()))
             if digit_count >= 5:
                 target_date_idx = i
                 break
     
     if target_date_idx == -1:
-        return None, None, "Key付近に日付行が見つかりませんでした。"
+        return None, None, f"キー '{key}' 付近に日付データが見つかりませんでした。"
 
-    # 3. 日付行とその下の曜日行を取得して抽出
+    # 4. 日付・曜日抽出
     date_row = df.iloc[target_date_idx].values
-    # 曜日行は通常日付のすぐ下にある
     day_row = df.iloc[target_date_idx + 1].values if target_date_idx + 1 < len(df) else None
     
     pairs = {}
@@ -92,10 +104,10 @@ def extract_date_day_pairs(df, key):
         d_val = str(date_row[col]).strip()
         day_val = str(day_row[col]).strip() if day_row is not None else ""
         
-        # 日付抽出
+        # 数字のみ抽出
         d_digit = re.sub(r'\D', '', d_val)
         
-        # 曜日抽出
+        # 曜日抽出（漢字1文字）
         day = ""
         for char in day_val:
             if char in "日月火水木金土":
