@@ -120,11 +120,13 @@ if uploaded_pdf:
                     break
             if found_key: break
         
-        # キーが見つからない場合
+        # [エラー1] キーが見つからない場合
         if not found_key:
             st.error("勤務地が見当りません確認して下さい。")
-            st.pdf(tfile.name) # PDFを表示
-            should_delete = False # ファイルを削除しない
+            with open(tfile.name, "rb") as f:
+                pdf_bytes = f.read()
+            st.pdf(pdf_bytes)
+            should_delete = False
             st.stop()
 
         # 年月取得と入力フォーム
@@ -138,15 +140,18 @@ if uploaded_pdf:
             
         result_B = calculate_last_date_info(y, m)
         
-        # 整合性チェック
+        # [エラー2] 整合性チェック
         if result_A == result_B:
             st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
         else:
             st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。")
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
-            st.pdf(tfile.name) # PDFを表示
-            should_delete = False # ファイルを削除しない
+            
+            with open(tfile.name, "rb") as f:
+                pdf_bytes = f.read()
+            st.pdf(pdf_bytes)
+            should_delete = False
             st.stop()
 
     finally:
