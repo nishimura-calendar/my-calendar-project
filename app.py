@@ -3,28 +3,25 @@ import pdfplumber
 import pandas as pd
 import re
 import calendar
-import base64
 from datetime import datetime
 
-# --- PDF表示用のHTML埋め込み関数 ---
-def show_pdf_preview(uploaded_file):
-    base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-    st.markdown(pdf_display, unsafe_allow_html=True)
-
-# 1. 抽出ロジック（pdfplumber専用版）
+# 1. 抽出ロジック（デバッグ情報付き）
 def extract_date_day_pairs(uploaded_file, key):
-    # ファイルポインタを先頭に戻す（念のため）
     uploaded_file.seek(0)
+    all_extracted_data = [] # デバッグ用
+    
     with pdfplumber.open(uploaded_file) as pdf:
-        for page in pdf.pages:
+        for page_idx, page in enumerate(pdf.pages):
             tables = page.extract_tables()
-            for table in tables:
+            for table_idx, table in enumerate(tables):
                 df = pd.DataFrame(table).fillna('')
+                all_extracted_data.append(df) # 読み取ったテーブルを保存
+                
                 table_str = " ".join([" ".join(row) for row in df.astype(str).values])
                 if key not in table_str:
                     continue
                 
+                # キー発見後の日付行探索
                 target_date_idx = -1
                 for i in range(len(df)):
                     row_vals = df.iloc[i].values
@@ -50,8 +47,8 @@ def extract_date_day_pairs(uploaded_file, key):
                             pairs[int(d_digit)] = day
                     if pairs:
                         last_date = max(pairs.keys())
-                        return last_date, pairs[last_date], None
-        return None, None, f"キー '{key}' と有効な日付データが見つかりません。"
+                        return last_date, pairs[last_date], None, all_extracted_data
+        return None, None, f"キー '{key}' と有効な日付データが見つかりません。", all_extracted_data
 
 # 2. メインロジック
 st.title("シフトカレンダー自動読込プログラム")
@@ -62,27 +59,30 @@ if uploaded_pdf:
     expected_end_of_month = calendar.monthrange(y, m)[1]
     expected_day_of_week = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, expected_end_of_month)]
 
-    last_date, last_day, error = None, None, None
+    last_date, last_day, error, debug_data = None, None, None, []
+    
+    # 検索実行
     for k in ["T1", "T2"]:
-        last_date, last_day, error = extract_date_day_pairs(uploaded_pdf, k)
+        last_date, last_day, error, debug_data = extract_date_day_pairs(uploaded_pdf, k)
         if error is None:
             break
     
     if error:
         st.error(error)
-        st.write("---")
-        st.subheader("アップロードされたPDFファイルの内容")
-        show_pdf_preview(uploaded_pdf) # ここでプレビューを表示
+        st.subheader("【デバッグ情報】読み取れたテーブル内容")
+        st.write("プログラムがPDFから読み取ったデータ構造です。")
+        for i, df in enumerate(debug_data):
+            st.write(f"テーブル {i+1}:")
+            st.dataframe(df) # これでPDFの中身が数値データとして見えます
     else:
         if last_date != expected_end_of_month:
             st.error("日付の整合性がとれませんでした。")
             st.write(f"① ファイル内容からの抽出：A={last_date}日({last_day}曜日)")
             st.write(f"② 設定年月からの算出：B={expected_end_of_month}日({expected_day_of_week}曜日)")
-            
-            st.write("---")
-            st.subheader("アップロードされたPDFファイルの内容")
-            show_pdf_preview(uploaded_pdf) # ここでプレビューを表示
-            
-            st.stop() # ここで停止
+            st.subheader("【デバッグ情報】読み取れたテーブル内容")
+            for i, df in enumerate(debug_data):
+                st.write(f"テーブル {i+1}:")
+                st.dataframe(df) # これでPDFの中身が見えます
+            st.stop()
         
         st.success(f"解析成功：{y}年{m}月 ({last_date}日 {last_day}曜日)")
