@@ -87,18 +87,37 @@ def calculate_last_date_info(year, month):
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
 
-# --- [4] 確実な表示・停止用ヘルパー ---
+# --- [4] 確実な表示・停止用ヘルパー (自動別タブ表示追加) ---
 def stop_with_display(file_path, filename):
-    # 1. 確実にダウンロードできるボタンを表示
     with open(file_path, "rb") as f:
         pdf_bytes = f.read()
+    
+    # Base64エンコード
+    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+    pdf_uri = f"data:application/pdf;base64,{base64_pdf}"
+    
+    # --- 変更点：JavaScriptで別タブを自動で開く ---
+    st.markdown(
+        f"""
+        <script>
+            // ポップアップブロックを回避するため、aタグを作成してクリックさせる手法
+            var a = document.createElement('a');
+            a.href = "{pdf_uri}";
+            a.target = "_blank"; // 新しいタブで開く
+            // a.download = "{filename}"; // もしダウンロードさせたい場合はコメントアウトを外す
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+    
+    # ブラウザのポップアップブロック機能などで開かなかった場合への備え
+    st.warning("※もしPDFが自動で開かない場合は、ブラウザのポップアップブロックを解除するか、以下のボタンからダウンロードしてください。")
     st.download_button(label="📥 PDFを確認する (ダウンロード)", data=pdf_bytes, file_name=filename, mime="application/pdf")
     
-    # 2. 画面内に埋め込み表示を試みる (表示できない環境の場合はダウンロードボタンが救済になる)
-    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-    st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf">', unsafe_allow_html=True)
-    
-    # 3. ファイルを削除させないフラグを立てて停止
+    # プログラム停止
     st.stop()
 
 # --- メインアプリケーション ---
@@ -137,8 +156,8 @@ if uploaded_pdf:
         
         # [エラー1] キーが見つからない場合
         if not found_key:
-            st.error("勤務地が見当りません。以下を確認してください：")
-            should_delete = False # 削除阻止
+            st.error("勤務地が見当りません。別タブでPDFを開きます。")
+            should_delete = False
             stop_with_display(tfile.name, uploaded_pdf.name)
 
         # 年月取得と入力フォーム
@@ -156,11 +175,11 @@ if uploaded_pdf:
         if result_A == result_B:
             st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
         else:
-            st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。")
+            st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。別タブでPDFを開きます。")
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
             
-            should_delete = False # 削除阻止
+            should_delete = False
             stop_with_display(tfile.name, uploaded_pdf.name)
 
     finally:
