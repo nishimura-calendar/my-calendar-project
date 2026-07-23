@@ -11,8 +11,9 @@ from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+from camelot.exceptions import PDFTextExtractionNotAllowed
 
-# --- [1] 時程表読込ロジック ---
+# --- [1] 各種関数 ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -55,7 +56,6 @@ def load_time_schedule():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] 抽出・画像表示ロジック ---
 def extract_date_day_pairs(df, key):
     for i in range(len(df)):
         row_values = df.iloc[i].astype(str).tolist()
@@ -76,20 +76,17 @@ def extract_date_day_pairs(df, key):
     return None, None, f"{key} 行付近から日付と曜日のペアを抽出できませんでした。"
 
 def display_pdf_as_image(file_path):
-    # PyMuPDF (fitz) でPDFを画像化
     try:
         doc = fitz.open(file_path)
-        page = doc.load_page(0)  # 1ページ目
-        pix = page.get_pixmap()  # 画像データ作成
-        img_data = pix.tobytes("png") # PNGバイト列へ
-        
+        page = doc.load_page(0)
+        pix = page.get_pixmap()
+        img_data = pix.tobytes("png")
         st.warning("ファイル内容を確認してください：")
         st.image(img_data, use_container_width=True)
         doc.close()
-    except Exception as e:
-        st.error(f"画像化中にエラーが発生しました: {e}")
+    except Exception:
+        pass
 
-# --- [3] 年月処理関数 ---
 def get_year_month_from_filename(filename):
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
@@ -119,10 +116,16 @@ if uploaded_pdf:
     should_delete = True
     
     try:
-        tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
+        # 1. 解析処理
+        try:
+            tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
+        except PDFTextExtractionNotAllowed:
+            st.error("エラー：このファイルは読み取り制限により自動解析できません。")
+            should_delete = False
+            display_pdf_as_image(tfile.name)
+            st.stop()
+
         found_key, result_A = None, None
-        
-        # PDF解析
         keys = list(time_schedule.keys())
         for table in tables:
             df = table.df
@@ -140,22 +143,24 @@ if uploaded_pdf:
             display_pdf_as_image(tfile.name)
             st.stop()
 
+        # 2. 年月取得と入力フォーム
         file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
+        
         if not file_y or not file_m:
+            st.write("年月を入力して下さい。")
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
+            st.stop() # 入力が必要な場合はここで停止
         else:
             y, m = file_y, file_m
             
         result_B = calculate_last_date_info(y, m)
         
+        # 3. 整合性チェック
         if result_A == result_B:
             st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
         else:
-            st.error("❌ 整合性エラー：データとファイル名の年月が一致しません。")
-            st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
-            st.write(f"算出: **{result_B[0]}日 {result_B[1]}曜日**")
-            
+            st.error("❌ エラー：データとファイル名の年月が一致しません。")
             should_delete = False
             display_pdf_as_image(tfile.name)
             st.stop()
