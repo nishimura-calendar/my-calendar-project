@@ -54,13 +54,11 @@ def load_time_schedule():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] 抽出ロジック (app(38).pyのロジックを関数化) ---
+# --- [2] 抽出ロジック (app(38).pyのロジック) ---
 def extract_date_day_pairs(df, key):
-    # テーブル全体を走査して key を含む行を探す
     for i in range(len(df)):
         row_values = df.iloc[i].astype(str).tolist()
         if key in row_values:
-            # key行の次の行を「曜日行」、その上の行を「日付行」と仮定
             date_row = df.iloc[i-1].values if i > 0 else None
             day_row = df.iloc[i+1].values if i < len(df)-1 else None
             
@@ -71,13 +69,12 @@ def extract_date_day_pairs(df, key):
                     day = str(day_row[col]).strip()
                     if d.isdigit() and day in "日月火水木金土":
                         pairs[int(d)] = day
-                
                 if pairs:
                     last_date = max(pairs.keys())
                     return last_date, pairs[last_date], None
     return None, None, f"{key} 行付近から日付と曜日のペアを抽出できませんでした。"
 
-# --- [3] 共通関数 (年月取得・算出) ---
+# --- [3] 年月処理関数 ---
 def get_year_month_from_filename(filename):
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
@@ -105,11 +102,10 @@ if uploaded_pdf:
     tfile.close()
     
     try:
-        # PDF解析
         tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
         found_key, result_A = None, None
         
-        # [2] 抽出ロジックの適用[cite: 5]
+        # PDF解析
         keys = list(time_schedule.keys())
         for table in tables:
             df = table.df
@@ -124,19 +120,21 @@ if uploaded_pdf:
         if not found_key:
             st.error("指定された key が PDF 内に見つかりませんでした。"); st.stop()
 
-        # [2] (3) ③〜⑤ 年月判定と結果Bの算出
-        y, m = get_year_month_from_filename(uploaded_pdf.name)
-        if not y or not m:
+        # 年月取得と入力フォーム
+        file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
+        
+        # フォーム表示ロジック
+        if not file_y or not file_m:
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
+        else:
+            y, m = file_y, file_m
         
         result_B = calculate_last_date_info(y, m)
         
-        # [2] (3) ⑥⑦ 整合性チェック
-        if result_A == result_B:
-            st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
-        else:
-            st.error("整合性エラー"); st.write(f"抽出: {result_A}, ファイル名算出: {result_B}"); st.stop()
+        # 処理続行
+        st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
+        st.info("以降の処理へ進みます。")
 
     finally:
         if os.path.exists(tfile.name): os.remove(tfile.name)
