@@ -41,6 +41,7 @@ def process_data(df):
 
 @st.cache_data(ttl=600)
 def load_time_schedule():
+    # 認証情報は Streamlit Secrets に保存している前提
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(**creds_dict)
     service = build('drive', 'v3', credentials=creds)
@@ -93,27 +94,36 @@ if uploaded_pdf:
         for table in tables:
             df = table.df
             for k in keys:
-# --- 修正後のPDF解析ループ ---
-for i in range(len(df)):
-    row_content = "".join(df.iloc[i].astype(str).tolist()).replace(" ", "")
-    if k.replace(" ", "") in row_content:
-        found_key = k
+                for i in range(len(df)):
+                    # キー検索
+                    if k.replace(" ", "") in "".join(df.iloc[i].astype(str).tolist()).replace(" ", ""):
+                        found_key = k
+                        
+                        # 堅牢な抽出ロジック (行の境界をチェック)
+                        date_row = None
+                        day_row = None
+                        
+                        # 1. keyの上下を参照を試みる
+                        if i > 0 and i < len(df) - 1:
+                            date_row = df.iloc[i-1]
+                            day_row = df.iloc[i+1]
+                        # 2. 上がダメならkeyの下2行を参照を試みる
+                        elif i < len(df) - 2:
+                            date_row = df.iloc[i+1]
+                            day_row = df.iloc[i+2]
+                            
+                        if date_row is not None and day_row is not None:
+                            pairs = {int(str(d)): str(day) for d, day in zip(date_row, day_row) if str(d).isdigit()}
+                            if pairs:
+                                result_A = (max(pairs.keys()), pairs[max(pairs.keys())])
+                        break
+                if found_key: break
+            if found_key: break
         
-        # keyより下の行のみを参照するように変更
-        # i+1 が日付行、i+2 が曜日行（またはその逆）と仮定
-        if i + 2 < len(df):
-            date_row = df.iloc[i+1]
-            day_row = df.iloc[i+2]
-            
-            # 日付と曜日を抽出
-            # date_rowとday_rowがどちらか判定するロジックを含めるとより堅牢です
-            pairs = {int(str(d)): str(day) for d, day in zip(date_row, day_row) if str(d).isdigit()}
-            if pairs:
-                result_A = (max(pairs.keys()), pairs[max(pairs.keys())])
-        
-        break # キーが見つかったのでループを抜ける        
         if not found_key:
             st.error("キーが見当りません。ファイルを確認して下さい。"); st.stop()
+        if not result_A:
+            st.error("日付データの抽出に失敗しました。ファイルを確認して下さい。"); st.stop()
 
         # [2] (3) ③〜⑤ 年月判定と結果Bの算出
         y, m = get_year_month_from_filename(uploaded_pdf.name)
