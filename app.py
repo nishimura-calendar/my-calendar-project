@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import io
-import camelot
 import tempfile
 import os
 import re
@@ -11,7 +10,6 @@ from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from camelot.exceptions import PDFTextExtractionNotAllowed
 
 # --- [1] 各種関数 ---
 def format_time(val):
@@ -116,7 +114,10 @@ if uploaded_pdf:
     should_delete = True
     
     try:
-        # 1. 解析処理
+        # 1. 解析処理（Lazy Importでエラー回避）
+        import camelot
+        from camelot.exceptions import PDFTextExtractionNotAllowed
+        
         try:
             tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
         except PDFTextExtractionNotAllowed:
@@ -143,14 +144,14 @@ if uploaded_pdf:
             display_pdf_as_image(tfile.name)
             st.stop()
 
-        # 2. 年月取得と入力フォーム
+        # 2. 年月取得と入力フォーム（ご要望の表示制限ロジック）
         file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
         
         if not file_y or not file_m:
             st.write("年月を入力して下さい。")
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
-            st.stop() # 入力が必要な場合はここで停止
+            st.stop()
         else:
             y, m = file_y, file_m
             
