@@ -101,7 +101,7 @@ if uploaded_pdf:
     tfile.write(uploaded_pdf.read())
     tfile.close()
     
-    # 処理後にファイルを削除するフラグ（成功時のみ削除）
+    # 処理後にファイルを削除するフラグ（成功時のみTrue）
     should_delete = True
     
     try:
@@ -123,9 +123,7 @@ if uploaded_pdf:
         # [エラー1] キーが見つからない場合
         if not found_key:
             st.error("勤務地が見当りません確認して下さい。")
-            with open(tfile.name, "rb") as f:
-                pdf_bytes = f.read()
-            st.pdf(pdf_bytes)
+            st.pdf(tfile.name) # ここで原型を表示
             should_delete = False
             st.stop()
 
@@ -148,12 +146,11 @@ if uploaded_pdf:
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
             
-            with open(tfile.name, "rb") as f:
-                pdf_bytes = f.read()
-            st.pdf(pdf_bytes)
+            st.pdf(tfile.name) # ここで原型を表示
             should_delete = False
             st.stop()
 
     finally:
+        # エラー時はshould_deleteがFalseなので削除されない
         if should_delete and os.path.exists(tfile.name):
             os.remove(tfile.name)
