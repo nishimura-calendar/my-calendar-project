@@ -1,15 +1,17 @@
 import streamlit as st
 import pandas as pd
 import io
+import camelot
 import tempfile
 import os
 import re
 import calendar
 import fitz  # PyMuPDF
-import pdfplumber  # camelotの代わりに追加
+from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+from camelot.exceptions import PDFTextExtractionNotAllowed
 
 # --- [1] 各種関数 ---
 def format_time(val):
@@ -96,11 +98,6 @@ def calculate_last_date_info(year, month):
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
 
-# --- 解析用ラッパークラス ---
-class TableWrapper:
-    def __init__(self, df):
-        self.df = df
-
 # --- メインアプリケーション ---
 st.title("シフトカレンダー自動読込プログラム")
 
@@ -119,17 +116,11 @@ if uploaded_pdf:
     should_delete = True
     
     try:
-        # 1. 解析処理（pdfplumberへ移行）
-        tables = []
-        with pdfplumber.open(tfile.name) as pdf:
-            for page in pdf.pages:
-                extracted_tables = page.extract_tables()
-                for table_data in extracted_tables:
-                    df = pd.DataFrame(table_data)
-                    tables.append(TableWrapper(df))
-        
-        if not tables:
-            st.error("エラー：このファイルから表を検出できませんでした。")
+        # 1. 解析処理
+        try:
+            tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
+        except PDFTextExtractionNotAllowed:
+            st.error("エラー：このファイルは読み取り制限により自動解析できません。")
             should_delete = False
             display_pdf_as_image(tfile.name)
             st.stop()
@@ -159,7 +150,7 @@ if uploaded_pdf:
             st.write("年月を入力して下さい。")
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
-            st.stop()
+            st.stop() # 入力が必要な場合はここで停止
         else:
             y, m = file_y, file_m
             
