@@ -10,3 +10,4 @@ opencv-python-headless
 numpy
 gspread
 pymupdf
+pdf2image
