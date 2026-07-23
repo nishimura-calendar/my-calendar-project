@@ -57,33 +57,59 @@ def load_time_schedule():
 
 # ValueErrorを回避する堅牢な抽出関数
 def extract_date_day_pairs(df, key):
-    # (Key探索ロジックは前回同様)
-    
-    # 1. 日付行と曜日行を特定
-    # 日付行のindexを idx とすると
-    date_row = df.iloc[idx].values
-    day_row = df.iloc[idx+1].values  # その下の行を曜日行とする
+    # 1. まずKey行のインデックスを探す
+    key_row_idx = -1
+    for i in range(len(df)):
+        row_str = " ".join(df.iloc[i].astype(str).tolist())
+        if key in row_str:
+            key_row_idx = i
+            break
+            
+    if key_row_idx == -1:
+        return None, None, f"キー '{key}' が見つかりません。"
 
+    # 2. Key行の周辺(上下)から「数字(日付)が並んでいる行」を探す
+    target_date_idx = -1
+    for i in [key_row_idx - 1, key_row_idx, key_row_idx + 1]:
+        if 0 <= i < len(df):
+            row_vals = df.iloc[i].astype(str).tolist()
+            # 数字が5個以上並んでいる行を日付行とみなす
+            digit_count = sum(1 for v in row_vals if re.search(r'\d+', v))
+            if digit_count >= 5:
+                target_date_idx = i
+                break
+    
+    if target_date_idx == -1:
+        return None, None, "Key付近に日付行が見つかりませんでした。"
+
+    # 3. 日付行とその下の曜日行を取得して抽出
+    date_row = df.iloc[target_date_idx].values
+    # 曜日行は通常日付のすぐ下にある
+    day_row = df.iloc[target_date_idx + 1].values if target_date_idx + 1 < len(df) else None
+    
     pairs = {}
     for col in range(len(date_row)):
-        d_raw = str(date_row[col]).strip()
-        day_raw = str(day_row[col]).strip()
+        d_val = str(date_row[col]).strip()
+        day_val = str(day_row[col]).strip() if day_row is not None else ""
         
-        # 日付: 数字のみ抽出
-        d_digit = re.sub(r'\D', '', d_raw)
+        # 日付抽出
+        d_digit = re.sub(r'\D', '', d_val)
         
-        # 曜日: 漢字の「日月火水木金土」だけを抽出
+        # 曜日抽出
         day = ""
-        for char in day_raw:
+        for char in day_val:
             if char in "日月火水木金土":
                 day = char
                 break
         
-        # 日付と曜日が両方揃った場合のみ登録
         if d_digit.isdigit() and day != "":
             pairs[int(d_digit)] = day
-    
-    return pairs # {1: '木', 2: '金', 3: '土', ...} が返ります
+            
+    if pairs:
+        last_date = max(pairs.keys())
+        return last_date, pairs[last_date], None
+        
+    return None, None, "日付と曜日のペアが抽出できませんでした。"
     
 def display_pdf_as_image(file_path):
     try:
