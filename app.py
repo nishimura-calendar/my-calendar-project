@@ -6,7 +6,7 @@ import tempfile
 import os
 import re
 import calendar
-import base64  # HTML埋め込み用に追加
+import base64  # HTML埋め込み用
 from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
@@ -87,14 +87,14 @@ def calculate_last_date_info(year, month):
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
 
-# --- [4] PDF表示用ヘルパー関数 ---
-def show_pdf_iframe(file_path):
+# --- [4] 確実なPDF埋め込み関数 ---
+def display_pdf_absolutely(file_path):
     with open(file_path, "rb") as f:
         base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-    st.markdown(
-        f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>',
-        unsafe_allow_html=True
-    )
+    
+    # 完全に埋め込むため、iframeでbase64データを直接表示
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
+    st.markdown(pdf_display, unsafe_allow_html=True)
 
 # --- メインアプリケーション ---
 st.title("シフトカレンダー自動読込プログラム")
@@ -131,8 +131,8 @@ if uploaded_pdf:
         
         # [エラー1] キーが見つからない場合
         if not found_key:
-            st.error("勤務地が見当りません確認して下さい。")
-            show_pdf_iframe(tfile.name) # iframeで原型を表示
+            st.error("勤務地が見当りません。以下を確認してください：")
+            display_pdf_absolutely(tfile.name) # 強制表示
             should_delete = False
             st.stop()
 
@@ -154,8 +154,8 @@ if uploaded_pdf:
             st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。")
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
-            
-            show_pdf_iframe(tfile.name) # iframeで原型を表示
+            st.write("--- 確認用のPDF ---")
+            display_pdf_absolutely(tfile.name) # 強制表示
             should_delete = False
             st.stop()
 
