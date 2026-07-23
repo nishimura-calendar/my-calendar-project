@@ -6,8 +6,8 @@ import tempfile
 import os
 import re
 import calendar
+import fitz  # PyMuPDF
 from datetime import datetime
-from pdf2image import convert_from_path  # 追加
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -76,13 +76,18 @@ def extract_date_day_pairs(df, key):
     return None, None, f"{key} 行付近から日付と曜日のペアを抽出できませんでした。"
 
 def display_pdf_as_image(file_path):
-    # PDFの1ページ目を画像に変換
-    images = convert_from_path(file_path, first_page=1, last_page=1)
-    if images:
-        st.warning("以下が現在アップロードされているファイルの内容です：")
-        st.image(images[0], use_container_width=True)
-    else:
-        st.error("画像化に失敗しました。")
+    # PyMuPDF (fitz) でPDFを画像化
+    try:
+        doc = fitz.open(file_path)
+        page = doc.load_page(0)  # 1ページ目
+        pix = page.get_pixmap()  # 画像データ作成
+        img_data = pix.tobytes("png") # PNGバイト列へ
+        
+        st.warning("ファイル内容を確認してください：")
+        st.image(img_data, use_container_width=True)
+        doc.close()
+    except Exception as e:
+        st.error(f"画像化中にエラーが発生しました: {e}")
 
 # --- [3] 年月処理関数 ---
 def get_year_month_from_filename(filename):
@@ -132,7 +137,7 @@ if uploaded_pdf:
         if not found_key:
             st.error("勤務地が見当りません。")
             should_delete = False
-            display_pdf_as_image(tfile.name) # 画像で自動表示
+            display_pdf_as_image(tfile.name)
             st.stop()
 
         file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
@@ -150,8 +155,9 @@ if uploaded_pdf:
             st.error("❌ 整合性エラー：データとファイル名の年月が一致しません。")
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"算出: **{result_B[0]}日 {result_B[1]}曜日**")
+            
             should_delete = False
-            display_pdf_as_image(tfile.name) # 画像で自動表示
+            display_pdf_as_image(tfile.name)
             st.stop()
 
     finally:
