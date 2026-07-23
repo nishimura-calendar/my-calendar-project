@@ -1,17 +1,16 @@
 import streamlit as st
 import pandas as pd
 import io
-import camelot
 import tempfile
 import os
 import re
 import calendar
 import fitz  # PyMuPDF
+import pdfplumber  # camelotの代わりに使用
 from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from camelot.exceptions import PDFTextExtractionNotAllowed
 
 # --- [1] 各種関数 ---
 def format_time(val):
@@ -56,20 +55,26 @@ def load_time_schedule():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
+# ValueErrorを回避する堅牢な抽出関数
 def extract_date_day_pairs(df, key):
     for i in range(len(df)):
         row_values = df.iloc[i].astype(str).tolist()
-        if key in row_values:
+        if any(key in str(val) for val in row_values):
             date_row = df.iloc[i-1].values if i > 0 else None
             day_row = df.iloc[i+1].values if i < len(df)-1 else None
             
             if date_row is not None and day_row is not None:
                 pairs = {}
                 for col in range(len(date_row)):
-                    d = str(date_row[col]).strip()
+                    d_raw = str(date_row[col]).strip()
                     day = str(day_row[col]).strip()
-                    if d.isdigit() and day in "日月火水木金土":
-                        pairs[int(d)] = day
+                    
+                    # 不要な文字列を除去し、数字のみを抽出
+                    if d_raw in ['nan', '', 'None']: continue
+                    d_digit = re.sub(r'\D', '', d_raw)
+                    
+                    if d_digit.isdigit() and day in "日月火水木金土":
+                        pairs[int(d_digit)] = day
                 if pairs:
                     last_date = max(pairs.keys())
                     return last_date, pairs[last_date], None
@@ -98,6 +103,11 @@ def calculate_last_date_info(year, month):
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
 
+# --- 解析用ラッパークラス ---
+class TableWrapper:
+    def __init__(self, df):
+        self.df = df
+
 # --- メインアプリケーション ---
 st.title("シフトカレンダー自動読込プログラム")
 
@@ -116,11 +126,19 @@ if uploaded_pdf:
     should_delete = True
     
     try:
-        # 1. 解析処理
+        # 1. 解析処理（pdfplumberへ完全移行）
+        tables = []
         try:
-            tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
-        except PDFTextExtractionNotAllowed:
-            st.error("エラー：このファイルは読み取り制限により自動解析できません。")
+            with pdfplumber.open(tfile.name) as pdf:
+                for page in pdf.pages:
+                    for table_data in page.extract_tables():
+                        df = pd.DataFrame(table_data)
+                        tables.append(TableWrapper(df))
+            
+            if not tables:
+                raise Exception("表を検出できませんでした。")
+        except Exception as e:
+            st.error(f"解析エラー: {e}")
             should_delete = False
             display_pdf_as_image(tfile.name)
             st.stop()
@@ -150,7 +168,7 @@ if uploaded_pdf:
             st.write("年月を入力して下さい。")
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
-            st.stop() # 入力が必要な場合はここで停止
+            st.stop()
         else:
             y, m = file_y, file_m
             
@@ -160,7 +178,9 @@ if uploaded_pdf:
         if result_A == result_B:
             st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
         else:
-            st.error("❌ エラー：データとファイル名の年月が一致しません。")
+            st.error(f"❌ エラー：データとファイル名の年月が一致しません。\n\n"
+                     f"抽出結果: {result_A[0]}日 {result_A[1]}曜日\n"
+                     f"想定結果: {result_B[0]}日 {result_B[1]}曜日")
             should_delete = False
             display_pdf_as_image(tfile.name)
             st.stop()
