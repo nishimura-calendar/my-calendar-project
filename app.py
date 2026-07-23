@@ -4,57 +4,50 @@ import re
 import tempfile
 import os
 
-def extract_last_date_and_day(uploaded_file):
+def extract_from_first_t1(uploaded_file):
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     tfile.write(uploaded_file.read())
     tfile.close()
     
     try:
-        # streamモードで読み込み
+        # PDFからテーブルテキストを抽出
         tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
+        full_text = "\n".join([table.df.to_string() for table in tables])
         
-        for table in tables:
-            df = table.df
-            # テーブル内を走査
-            for i in range(len(df) - 1): # 最終行以外をループ
-                row_text = " ".join([str(cell) for cell in df.iloc[i]])
-                
-                # T1 または T2 が見つかった場合
-                if re.search(r"T[12]", row_text):
-                    # その行（日付行）と次の行（曜日行）を取得
-                    date_row = df.iloc[i].values
-                    day_row = df.iloc[i+1].values
-                    
-                    # 数字と曜日のペアを探す
-                    pairs = []
-                    for j in range(len(date_row)):
-                        # 日付が数字（1-31）か確認
-                        if re.match(r'^\d{1,2}$', str(date_row[j]).strip()):
-                            day = str(day_row[j]).strip()
-                            # 曜日っぽい文字があればペアとして保存
-                            if re.match(r'^[日月火水木金土]$', day):
-                                pairs.append((int(date_row[j]), day))
-                    
-                    if pairs:
-                        # 日付でソートして最後を返す
-                        pairs.sort(key=lambda x: x[0])
-                        return pairs[-1]
+        # 最初に出現する "T1" の位置を探す
+        t1_index = full_text.find("T1")
         
-        return None, None
+        if t1_index == -1:
+            return None, None, "T1が見つかりませんでした。"
+        
+        # T1以降のテキストのみを対象にする
+        relevant_text = full_text[t1_index:]
+        
+        # 日付と曜日のペアを全抽出
+        matches = re.findall(r'(\d{1,2})[\s\n]+([日月火水木金土])', relevant_text)
+        
+        if matches:
+            # 最後に見つかったペア（＝最終日付）を返す
+            last_date, last_day = matches[-1]
+            return int(last_date), last_day, None
+            
+        return None, None, "T1以降に日付情報が見つかりませんでした。"
+        
     finally:
         if os.path.exists(tfile.name):
             os.remove(tfile.name)
 
-# UI
+# --- UI構築 ---
 st.title("シフト表自動読込プログラム")
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
 
 if uploaded_pdf:
     with st.spinner('解析中...'):
-        last_date, last_day = extract_last_date_and_day(uploaded_pdf)
-        if last_date:
+        last_date, last_day, error = extract_from_first_t1(uploaded_pdf)
+        
+        if error:
+            st.error(error)
+        else:
             st.success("解析成功")
             st.write(f"最終日付: {last_date}日")
             st.write(f"最終曜日: {last_day}曜日")
-        else:
-            st.error("日付と曜日を特定できませんでした。")
