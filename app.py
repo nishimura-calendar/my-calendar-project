@@ -6,6 +6,7 @@ import tempfile
 import os
 import re
 import calendar
+import base64  # HTML埋め込み用に追加
 from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
@@ -86,6 +87,15 @@ def calculate_last_date_info(year, month):
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
 
+# --- [4] PDF表示用ヘルパー関数 ---
+def show_pdf_iframe(file_path):
+    with open(file_path, "rb") as f:
+        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+    st.markdown(
+        f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf"></iframe>',
+        unsafe_allow_html=True
+    )
+
 # --- メインアプリケーション ---
 st.title("シフトカレンダー自動読込プログラム")
 
@@ -101,7 +111,6 @@ if uploaded_pdf:
     tfile.write(uploaded_pdf.read())
     tfile.close()
     
-    # 処理後にファイルを削除するフラグ（成功時のみTrue）
     should_delete = True
     
     try:
@@ -123,7 +132,7 @@ if uploaded_pdf:
         # [エラー1] キーが見つからない場合
         if not found_key:
             st.error("勤務地が見当りません確認して下さい。")
-            st.pdf(tfile.name) # ここで原型を表示
+            show_pdf_iframe(tfile.name) # iframeで原型を表示
             should_delete = False
             st.stop()
 
@@ -146,11 +155,10 @@ if uploaded_pdf:
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
             
-            st.pdf(tfile.name) # ここで原型を表示
+            show_pdf_iframe(tfile.name) # iframeで原型を表示
             should_delete = False
             st.stop()
 
     finally:
-        # エラー時はshould_deleteがFalseなので削除されない
         if should_delete and os.path.exists(tfile.name):
             os.remove(tfile.name)
