@@ -6,8 +6,8 @@ import tempfile
 import os
 import re
 import calendar
-import base64
 from datetime import datetime
+from pdf2image import convert_from_path  # 追加
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -55,7 +55,7 @@ def load_time_schedule():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] 抽出ロジック ---
+# --- [2] 抽出・画像表示ロジック ---
 def extract_date_day_pairs(df, key):
     for i in range(len(df)):
         row_values = df.iloc[i].astype(str).tolist()
@@ -75,6 +75,15 @@ def extract_date_day_pairs(df, key):
                     return last_date, pairs[last_date], None
     return None, None, f"{key} 行付近から日付と曜日のペアを抽出できませんでした。"
 
+def display_pdf_as_image(file_path):
+    # PDFの1ページ目を画像に変換
+    images = convert_from_path(file_path, first_page=1, last_page=1)
+    if images:
+        st.warning("以下が現在アップロードされているファイルの内容です：")
+        st.image(images[0], use_container_width=True)
+    else:
+        st.error("画像化に失敗しました。")
+
 # --- [3] 年月処理関数 ---
 def get_year_month_from_filename(filename):
     year_match = re.search(r'(\d{4})', filename)
@@ -86,39 +95,6 @@ def calculate_last_date_info(year, month):
     _, last_day = calendar.monthrange(year, month)
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
-
-# --- [4] 確実な表示・停止用ヘルパー (自動別タブ表示追加) ---
-def stop_with_display(file_path, filename):
-    with open(file_path, "rb") as f:
-        pdf_bytes = f.read()
-    
-    # Base64エンコード
-    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
-    pdf_uri = f"data:application/pdf;base64,{base64_pdf}"
-    
-    # --- 変更点：JavaScriptで別タブを自動で開く ---
-    st.markdown(
-        f"""
-        <script>
-            // ポップアップブロックを回避するため、aタグを作成してクリックさせる手法
-            var a = document.createElement('a');
-            a.href = "{pdf_uri}";
-            a.target = "_blank"; // 新しいタブで開く
-            // a.download = "{filename}"; // もしダウンロードさせたい場合はコメントアウトを外す
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        </script>
-        """,
-        unsafe_allow_html=True
-    )
-    
-    # ブラウザのポップアップブロック機能などで開かなかった場合への備え
-    st.warning("※もしPDFが自動で開かない場合は、ブラウザのポップアップブロックを解除するか、以下のボタンからダウンロードしてください。")
-    st.download_button(label="📥 PDFを確認する (ダウンロード)", data=pdf_bytes, file_name=filename, mime="application/pdf")
-    
-    # プログラム停止
-    st.stop()
 
 # --- メインアプリケーション ---
 st.title("シフトカレンダー自動読込プログラム")
@@ -135,7 +111,6 @@ if uploaded_pdf:
     tfile.write(uploaded_pdf.read())
     tfile.close()
     
-    # 処理後にファイルを削除するフラグ
     should_delete = True
     
     try:
@@ -154,15 +129,13 @@ if uploaded_pdf:
                     break
             if found_key: break
         
-        # [エラー1] キーが見つからない場合
         if not found_key:
-            st.error("勤務地が見当りません。別タブでPDFを開きます。")
+            st.error("勤務地が見当りません。")
             should_delete = False
-            stop_with_display(tfile.name, uploaded_pdf.name)
+            display_pdf_as_image(tfile.name) # 画像で自動表示
+            st.stop()
 
-        # 年月取得と入力フォーム
         file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
-        
         if not file_y or not file_m:
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
@@ -171,16 +144,15 @@ if uploaded_pdf:
             
         result_B = calculate_last_date_info(y, m)
         
-        # [エラー2] 整合性チェック
         if result_A == result_B:
             st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
         else:
-            st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。別タブでPDFを開きます。")
+            st.error("❌ 整合性エラー：データとファイル名の年月が一致しません。")
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
-            st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
-            
+            st.write(f"算出: **{result_B[0]}日 {result_B[1]}曜日**")
             should_delete = False
-            stop_with_display(tfile.name, uploaded_pdf.name)
+            display_pdf_as_image(tfile.name) # 画像で自動表示
+            st.stop()
 
     finally:
         if should_delete and os.path.exists(tfile.name):
