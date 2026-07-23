@@ -6,6 +6,7 @@ import tempfile
 import os
 import re
 import calendar
+import base64
 from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
@@ -54,7 +55,7 @@ def load_time_schedule():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] 抽出ロジック (app(38).pyのロジック) ---
+# --- [2] 抽出ロジック (app(38).pyのロジック)[cite: 5] ---
 def extract_date_day_pairs(df, key):
     for i in range(len(df)):
         row_values = df.iloc[i].astype(str).tolist()
@@ -105,7 +106,7 @@ if uploaded_pdf:
         tables = camelot.read_pdf(tfile.name, flavor='stream', pages='all')
         found_key, result_A = None, None
         
-        # PDF解析
+        # PDF解析[cite: 6]
         keys = list(time_schedule.keys())
         for table in tables:
             df = table.df
@@ -117,24 +118,38 @@ if uploaded_pdf:
                     break
             if found_key: break
         
+        # [2] キーが見つからない場合の処理を追加
         if not found_key:
-            st.error("指定された key が PDF 内に見つかりませんでした。"); st.stop()
+            st.error("勤務地が見当りません確認して下さい。")
+            with open(tfile.name, "rb") as f:
+                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+            st.markdown(f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="500" type="application/pdf"></iframe>', unsafe_allow_html=True)
+            st.stop()
 
         # 年月取得と入力フォーム
         file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
         
-        # フォーム表示ロジック
         if not file_y or not file_m:
             y = st.number_input("年", value=datetime.now().year)
             m = st.number_input("月", value=datetime.now().month)
         else:
             y, m = file_y, file_m
-        
+            
         result_B = calculate_last_date_info(y, m)
         
-        # 処理続行
-        st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
-        st.info("以降の処理へ進みます。")
+        # 整合性チェックと停止処理 (PDF表示付き)
+        if result_A == result_B:
+            st.success(f"解析成功：{y}年{m}月 ({result_A[0]}日 {result_A[1]}曜日)")
+        else:
+            st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。")
+            st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
+            st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
+            
+            with open(tfile.name, "rb") as f:
+                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+            
+            st.markdown(f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="500" type="application/pdf"></iframe>', unsafe_allow_html=True)
+            st.stop()
 
     finally:
         if os.path.exists(tfile.name): os.remove(tfile.name)
