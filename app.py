@@ -3,20 +3,16 @@ import pdfplumber
 import pandas as pd
 import re
 import calendar
-from datetime import datetime
+import base64
 
 # 1. 抽出ロジック（変更なし）
 def extract_date_day_pairs(uploaded_file, key):
     uploaded_file.seek(0)
-    all_extracted_data = [] 
-    
     with pdfplumber.open(uploaded_file) as pdf:
-        for page_idx, page in enumerate(pdf.pages):
+        for page in pdf.pages:
             tables = page.extract_tables()
-            for table_idx, table in enumerate(tables):
+            for table in tables:
                 df = pd.DataFrame(table).fillna('')
-                all_extracted_data.append(df)
-                
                 table_str = " ".join([" ".join(row) for row in df.astype(str).values])
                 if key not in table_str:
                     continue
@@ -46,50 +42,43 @@ def extract_date_day_pairs(uploaded_file, key):
                             pairs[int(d_digit)] = day
                     if pairs:
                         last_date = max(pairs.keys())
-                        return last_date, pairs[last_date], None, all_extracted_data
-        return None, None, f"キー '{key}' と有効な日付データが見つかりません。", all_extracted_data
+                        return last_date, pairs[last_date], None
+        return None, None, f"キー '{key}' と有効な日付データが見つかりません。"
 
 # 2. メインロジック
 st.title("シフトカレンダー自動読込プログラム")
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
 
 if uploaded_pdf:
-    # 以前の成功体験に基づき、ダウンロードボタン（閲覧ボタン）を設置
-    st.download_button(
-        label="📥 アップロードされたPDFを表示/ダウンロード",
-        data=uploaded_pdf.getvalue(),
-        file_name=uploaded_pdf.name,
-        mime="application/pdf"
-    )
+    # 判定ロジックの前に「表示」を置くことで、停止しても表示は残るようにする
+    st.subheader("アップロードされたPDF")
+    base64_pdf = base64.b64encode(uploaded_pdf.getvalue()).decode('utf-8')
+    pdf_display = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="600px" type="application/pdf">'
+    st.markdown(pdf_display, unsafe_allow_html=True)
+    st.download_button("📥 PDFをダウンロード", data=uploaded_pdf.getvalue(), file_name=uploaded_pdf.name, mime="application/pdf")
+    
+    st.write("---")
 
+    # 解析開始
     y, m = 2026, 1
     expected_end_of_month = calendar.monthrange(y, m)[1]
     expected_day_of_week = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, expected_end_of_month)]
 
-    last_date, last_day, error, debug_data = None, None, None, []
-    
+    last_date, last_day, error = None, None, None
     for k in ["T1", "T2"]:
-        last_date, last_day, error, debug_data = extract_date_day_pairs(uploaded_pdf, k)
+        last_date, last_day, error = extract_date_day_pairs(uploaded_pdf, k)
         if error is None:
             break
     
+    # 解析結果の表示と整合性チェック
     if error:
         st.error(error)
-        st.write("---")
-        st.subheader("【デバッグ情報】認識しているテーブルデータ")
-        for i, df in enumerate(debug_data):
-            st.write(f"テーブル {i+1}:")
-            st.dataframe(df)
     else:
         if last_date != expected_end_of_month:
             st.error("日付の整合性がとれませんでした。")
             st.write(f"① ファイル内容からの抽出：A={last_date}日({last_day}曜日)")
             st.write(f"② 設定年月からの算出：B={expected_end_of_month}日({expected_day_of_week}曜日)")
-            st.write("---")
-            st.subheader("【デバッグ情報】認識しているテーブルデータ")
-            for i, df in enumerate(debug_data):
-                st.write(f"テーブル {i+1}:")
-                st.dataframe(df)
+            # ここで停止しても、上のPDF表示コードは既に実行済みなので消えません
             st.stop()
         
         st.success(f"解析成功：{y}年{m}月 ({last_date}日 {last_day}曜日)")
