@@ -3,11 +3,19 @@ import pdfplumber
 import pandas as pd
 import re
 import calendar
+import base64
 from datetime import datetime
 
-# 1. 抽出ロジック（pdfplumber専用版・camelot不使用）
+# --- PDF表示用のHTML埋め込み関数 ---
+def show_pdf_preview(uploaded_file):
+    base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+    st.markdown(pdf_display, unsafe_allow_html=True)
+
+# 1. 抽出ロジック（pdfplumber専用版）
 def extract_date_day_pairs(uploaded_file, key):
-    # pdfplumberでアップロードされたファイルを直接開く
+    # ファイルポインタを先頭に戻す（念のため）
+    uploaded_file.seek(0)
     with pdfplumber.open(uploaded_file) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
@@ -63,8 +71,8 @@ if uploaded_pdf:
     if error:
         st.error(error)
         st.write("---")
-        st.subheader("アップロードされたPDFファイル")
-        st.write(uploaded_pdf) # ファイル情報の表示
+        st.subheader("アップロードされたPDFファイルの内容")
+        show_pdf_preview(uploaded_pdf) # ここでプレビューを表示
     else:
         if last_date != expected_end_of_month:
             st.error("日付の整合性がとれませんでした。")
@@ -72,9 +80,9 @@ if uploaded_pdf:
             st.write(f"② 設定年月からの算出：B={expected_end_of_month}日({expected_day_of_week}曜日)")
             
             st.write("---")
-            st.subheader("アップロードされたPDFファイル")
-            st.write(uploaded_pdf) # ここで表示
+            st.subheader("アップロードされたPDFファイルの内容")
+            show_pdf_preview(uploaded_pdf) # ここでプレビューを表示
             
-            st.stop() # ここでプログラムを停止
+            st.stop() # ここで停止
         
         st.success(f"解析成功：{y}年{m}月 ({last_date}日 {last_day}曜日)")
