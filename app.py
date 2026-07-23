@@ -93,15 +93,25 @@ if uploaded_pdf:
         for table in tables:
             df = table.df
             for k in keys:
-                for i in range(len(df)):
-                    if k.replace(" ", "") in "".join(df.iloc[i].astype(str).tolist()).replace(" ", ""):
-                        found_key = k
-                        pairs = {int(str(d)): str(day) for d, day in zip(df.iloc[i-1], df.iloc[i+1]) if str(d).isdigit()}
-                        if pairs: result_A = (max(pairs.keys()), pairs[max(pairs.keys())])
-                        break
-                if found_key: break
-            if found_key: break
+# --- 修正後のPDF解析ループ ---
+for i in range(len(df)):
+    row_content = "".join(df.iloc[i].astype(str).tolist()).replace(" ", "")
+    if k.replace(" ", "") in row_content:
+        found_key = k
         
+        # keyより下の行のみを参照するように変更
+        # i+1 が日付行、i+2 が曜日行（またはその逆）と仮定
+        if i + 2 < len(df):
+            date_row = df.iloc[i+1]
+            day_row = df.iloc[i+2]
+            
+            # 日付と曜日を抽出
+            # date_rowとday_rowがどちらか判定するロジックを含めるとより堅牢です
+            pairs = {int(str(d)): str(day) for d, day in zip(date_row, day_row) if str(d).isdigit()}
+            if pairs:
+                result_A = (max(pairs.keys()), pairs[max(pairs.keys())])
+        
+        break # キーが見つかったのでループを抜ける        
         if not found_key:
             st.error("キーが見当りません。ファイルを確認して下さい。"); st.stop()
 
