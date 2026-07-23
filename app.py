@@ -18,7 +18,7 @@ def extract_date_day_pairs(uploaded_file):
             # テーブル全体を走査して「T1」を含む行を探す
             for i in range(len(df)):
                 row_values = df.iloc[i].astype(str).tolist()
-                if "T2" in row_values:
+                if "T1" in row_values:
                     # T1行の次の行を「曜日行」、その上の行を「日付行」と仮定
                     # 表の構造に合わせて調整（必要であれば i+1 や i-1 などで微調整）
                     date_row = df.iloc[i-1].values if i > 0 else None
