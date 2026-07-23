@@ -57,61 +57,33 @@ def load_time_schedule():
 
 # ValueErrorを回避する堅牢な抽出関数
 def extract_date_day_pairs(df, key):
-    # 表全体の中でキーが存在するか確認
-    key_exists = False
-    for i in range(len(df)):
-        row_values = df.iloc[i].astype(str).tolist()
-        if any(key in str(val) for val in row_values):
-            key_exists = True
-            break
-            
-    if not key_exists:
-        return None, None, f"キー '{key}' はこの表に含まれていません。"
+    # (Key探索ロジックは前回同様)
+    
+    # 1. 日付行と曜日行を特定
+    # 日付行のindexを idx とすると
+    date_row = df.iloc[idx].values
+    day_row = df.iloc[idx+1].values  # その下の行を曜日行とする
 
-    # キーが見つかった表の中で、日付行と曜日行を探す
-    date_row_idx = -1
-    day_row_idx = -1
-    
-    for i in range(len(df)):
-        row_str = " ".join(df.iloc[i].astype(str).tolist())
-        # 日付行の特徴（1 2 3...という数字列）を探す
-        if "1 2 3" in row_str or "28 29 30" in row_str:
-             date_row_idx = i
-             # 次の行を曜日行と仮定
-             if i + 1 < len(df):
-                 next_row_str = " ".join(df.iloc[i+1].astype(str).tolist())
-                 if any(day in next_row_str for day in "日月火水木金土"):
-                     day_row_idx = i + 1
-                     break
-    
-    if date_row_idx != -1 and day_row_idx != -1:
-        date_row = df.iloc[date_row_idx].values
-        day_row = df.iloc[day_row_idx].values
+    pairs = {}
+    for col in range(len(date_row)):
+        d_raw = str(date_row[col]).strip()
+        day_raw = str(day_row[col]).strip()
         
-        pairs = {}
-        for col in range(len(date_row)):
-            d_raw = str(date_row[col]).strip()
-            day_raw = str(day_row[col]).strip()
-            
-            if d_raw in ['nan', '', 'None']: continue
-            
-            d_digit = re.sub(r'\D', '', d_raw)
-            
-            # 曜日抽出（セル内の余計な文字を無視して1文字抽出）
-            day = ""
-            for char in day_raw:
-                 if char in "日月火水木金土":
-                     day = char
-                     break
-                     
-            if d_digit.isdigit() and day != "":
-                pairs[int(d_digit)] = day
-                
-        if pairs:
-            last_date = max(pairs.keys())
-            return last_date, pairs[last_date], None
-            
-    return None, None, f"キー '{key}' の表から日付と曜日を抽出できませんでした。"
+        # 日付: 数字のみ抽出
+        d_digit = re.sub(r'\D', '', d_raw)
+        
+        # 曜日: 漢字の「日月火水木金土」だけを抽出
+        day = ""
+        for char in day_raw:
+            if char in "日月火水木金土":
+                day = char
+                break
+        
+        # 日付と曜日が両方揃った場合のみ登録
+        if d_digit.isdigit() and day != "":
+            pairs[int(d_digit)] = day
+    
+    return pairs # {1: '木', 2: '金', 3: '土', ...} が返ります
     
 def display_pdf_as_image(file_path):
     try:
