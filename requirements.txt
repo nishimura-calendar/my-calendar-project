@@ -1,12 +1,10 @@
-streamlit
+camelot-py[base]
+pymupdf
+opencv-python-headless
 pandas
 openpyxl
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-pdfplumber
-camelot-py[base]
-opencv-python-headless
 numpy
 gspread
-pymupdf
