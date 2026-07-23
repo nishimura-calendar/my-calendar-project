@@ -6,7 +6,7 @@ import tempfile
 import os
 import re
 import calendar
-import base64  # HTML埋め込み用
+import base64
 from datetime import datetime
 from googleapiclient.http import MediaIoBaseDownload
 from googleapiclient.discovery import build
@@ -87,14 +87,19 @@ def calculate_last_date_info(year, month):
     last_weekday = calendar.weekday(year, month, last_day)
     return last_day, ["月", "火", "水", "木", "金", "土", "日"][last_weekday]
 
-# --- [4] 確実なPDF埋め込み関数 ---
-def display_pdf_absolutely(file_path):
+# --- [4] 確実な表示・停止用ヘルパー ---
+def stop_with_display(file_path, filename):
+    # 1. 確実にダウンロードできるボタンを表示
     with open(file_path, "rb") as f:
-        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+        pdf_bytes = f.read()
+    st.download_button(label="📥 PDFを確認する (ダウンロード)", data=pdf_bytes, file_name=filename, mime="application/pdf")
     
-    # 完全に埋め込むため、iframeでbase64データを直接表示
-    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
-    st.markdown(pdf_display, unsafe_allow_html=True)
+    # 2. 画面内に埋め込み表示を試みる (表示できない環境の場合はダウンロードボタンが救済になる)
+    base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+    st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf">', unsafe_allow_html=True)
+    
+    # 3. ファイルを削除させないフラグを立てて停止
+    st.stop()
 
 # --- メインアプリケーション ---
 st.title("シフトカレンダー自動読込プログラム")
@@ -111,6 +116,7 @@ if uploaded_pdf:
     tfile.write(uploaded_pdf.read())
     tfile.close()
     
+    # 処理後にファイルを削除するフラグ
     should_delete = True
     
     try:
@@ -132,9 +138,8 @@ if uploaded_pdf:
         # [エラー1] キーが見つからない場合
         if not found_key:
             st.error("勤務地が見当りません。以下を確認してください：")
-            display_pdf_absolutely(tfile.name) # 強制表示
-            should_delete = False
-            st.stop()
+            should_delete = False # 削除阻止
+            stop_with_display(tfile.name, uploaded_pdf.name)
 
         # 年月取得と入力フォーム
         file_y, file_m = get_year_month_from_filename(uploaded_pdf.name)
@@ -154,10 +159,9 @@ if uploaded_pdf:
             st.error("❌ 整合性エラー：PDFの抽出データとファイル名の年月が一致しません。")
             st.write(f"PDFからの抽出: **{result_A[0]}日 {result_A[1]}曜日**")
             st.write(f"ファイル名/入力値からの算出: **{result_B[0]}日 {result_B[1]}曜日**")
-            st.write("--- 確認用のPDF ---")
-            display_pdf_absolutely(tfile.name) # 強制表示
-            should_delete = False
-            st.stop()
+            
+            should_delete = False # 削除阻止
+            stop_with_display(tfile.name, uploaded_pdf.name)
 
     finally:
         if should_delete and os.path.exists(tfile.name):
