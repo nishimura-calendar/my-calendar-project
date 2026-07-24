@@ -6,6 +6,7 @@ import re
 import calendar
 import unicodedata
 import base64
+import streamlit.components.v1 as components
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
@@ -59,7 +60,7 @@ def display_pdf(uploaded_file):
     # markdownではなく、コンポーネントとしてHTMLを読み込ませる
     pdf_html = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf">'
     components.html(pdf_html, height=800)
-な
+    
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
@@ -109,17 +110,21 @@ if uploaded_pdf:
     _, last_day = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
         
-# 4. 判定と表示の分岐
-if is_consistent:
+    # --- ここで変数を定義してから判定に入ります ---
+    is_consistent = (A_date == last_day and A_day == last_day_w)
+
+    # 4. 判定と表示の分岐
+    if is_consistent:
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.success("第2関門通過")
     else:
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
         st.error("整合性が不一致です。ファイルを確認してください。")
-        # ここで関数を呼び出せば確実に表示されます
         display_pdf(uploaded_pdf)
 
     # 5. 次の処理
     if is_consistent:
         st.write("解析処理へ進みます...")
+    else:
+        st.info("不一致のため、これ以上の解析は行いません。")
