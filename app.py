@@ -139,9 +139,3 @@ if uploaded_pdf:
         # 不一致時はここで表示ボタンを出し、解析ロジックには絶対に触れさせない
         display_pdf(uploaded_pdf)
         st.info("※不一致のため、これ以上の解析は行いません。")
-        
-    # 5. 次の処理
-    if is_consistent:
-        st.write("解析処理へ進みます...")
-    else:
-        st.info("不一致のため、これ以上の解析は行いません。")
