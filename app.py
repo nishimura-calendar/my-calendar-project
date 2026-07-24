@@ -55,25 +55,21 @@ def load_and_process_data():
     return process_data(df)
 
 # --- [2] PDF解析・整合性チェック ---
+# --- [2] PDF解析・整合性チェック ---
 def display_pdf(uploaded_file):
     # ファイルの読み込み位置を先頭に戻す
     uploaded_file.seek(0)
-    
-    # バイナリデータを取得
     data = uploaded_file.getvalue()
     
-    # デバッグ用にファイルサイズを表示
-    st.write(f"デバッグ: ファイルサイズ = {len(data)} バイト") 
+    # シンプルなダウンロードボタンのみを表示
+    st.download_button(
+        label="📄 PDFファイルを開いて確認する",
+        data=data,
+        file_name="シフト表_確認用.pdf",
+        mime="application/pdf",
+        use_container_width=True
+    )
     
-    if len(data) == 0:
-        st.error("エラー: データが空です。正しく読み取れていません。")
-        return
-
-    # PDF表示処理
-    base64_pdf = base64.b64encode(data).decode('utf-8')
-    # iframeに変更して表示を試みる
-    pdf_html = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px"></iframe>'
-    components.html(pdf_html, height=800)    
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
@@ -126,16 +122,24 @@ if uploaded_pdf:
     # --- ここで変数を定義してから判定に入ります ---
     is_consistent = (A_date == last_day and A_day == last_day_w)
 
-    # 4. 判定と表示の分岐
+　　# 4. 判定と分岐処理 (解析処理の停止をここで完結させます)
     if is_consistent:
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-        st.success("第2関門通過")
+        st.success("第2関門通過：整合性が確認されました。")
+        
+        # 整合性がOKの時だけ解析を進めます
+        st.write("解析処理へ進みます...")
+        # ※ここに今後の解析処理ロジックを追記してください
+        
     else:
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
-        st.error("整合性が不一致です。ファイルを確認してください。")
+        st.error("整合性が不一致です。")
+        
+        # 不一致時はここで表示ボタンを出し、解析ロジックには絶対に触れさせない
         display_pdf(uploaded_pdf)
-
+        st.info("※不一致のため、これ以上の解析は行いません。")
+        
     # 5. 次の処理
     if is_consistent:
         st.write("解析処理へ進みます...")
