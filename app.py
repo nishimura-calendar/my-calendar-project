@@ -12,7 +12,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from pypdf import PdfReader
 
-# --- [1] 時程表読み込み (添付ロジック) ---
+# --- [1] 時程表読み込み ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -54,13 +54,10 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] PDF解析・整合性チェック ---
+# --- [2] PDF表示用関数 ---
 def display_pdf(uploaded_file):
-    # ファイルの読み込み位置を先頭に戻す
     uploaded_file.seek(0)
     data = uploaded_file.getvalue()
-    
-    # シンプルなダウンロードボタンのみを表示
     st.download_button(
         label="📄 PDFファイルを開いて確認する",
         data=data,
@@ -76,7 +73,7 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
-    # 1. PDF読み込みとキー検索
+    # --- Step 1: キー検索 ---
     found_key = None
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -86,36 +83,11 @@ if uploaded_pdf:
                 break
     
     if not found_key:
-        display_pdf(uploaded_pdf)# 3. 年月算出
-    filename = uploaded_pdf.name
-    year_match = re.search(r'(\d{4})', filename)
-    month_match = re.search(r'(\d{1,2})月', filename)
-    
-    if year_match and month_match:
-        y, m = int(year_match.group(1)), int(month_match.group(1))
-        label_b = "ファイル名から算出結果"
-        is_ready = True # 年月が取得できているので即解析可能
-    else:
-        st.warning("年月が確認できません。年月を入力して下さい。")
-        y = st.number_input("年", min_value=2000, max_value=2100, value=2025)
-        m = st.number_input("月", min_value=1, max_value=12, value=3)
-        label_b = "入力年月"
-        # 確定ボタンを押すまでは解析ロジックに進まない
-        is_ready = st.button("この年月で確定する")
-        if not is_ready:
-            st.stop() # ボタンが押されるまでここで停止
-
-    if is_ready:
-        _, last_day = calendar.monthrange(y, m)
-        last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
-        
-        # --- 変数を定義してから判定へ ---
-        is_consistent = (A_date == last_day and A_day == last_day_w)
-        # （ここから下に判定処理を繋げます）
         st.error("勤務地(Key)が確認できません。")
+        display_pdf(uploaded_pdf)
         st.stop()
 
-    # 2. 整合性チェック用データの抽出
+    # --- Step 2: 整合性データの抽出 ---
     with pdfplumber.open(uploaded_pdf) as pdf:
         words = pdf.pages[0].extract_words()
         date_words = [w for w in words if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', w['text'])]
@@ -126,3 +98,41 @@ if uploaded_pdf:
         candidates = [w for w in day_words if abs(w['x0'] - last_date_obj['x0']) < 15]
         A_day = candidates[0]['text'] if candidates else "不明"
 
+    # --- Step 3: 年月の確定 ---
+    filename = uploaded_pdf.name
+    year_match = re.search(r'(\d{4})', filename)
+    month_match = re.search(r'(\d{1,2})月', filename)
+    
+    is_ready = False
+    
+    if year_match and month_match:
+        y, m = int(year_match.group(1)), int(month_match.group(1))
+        label_b = "ファイル名から算出結果"
+        is_ready = True
+    else:
+        st.warning("年月が確認できません。年月を入力して下さい。")
+        y = st.number_input("年", min_value=2000, max_value=2100, value=2026)
+        m = st.number_input("月", min_value=1, max_value=12, value=3)
+        label_b = "入力年月"
+        if st.button("この年月で確定する"):
+            is_ready = True
+        else:
+            st.stop()
+
+    # --- Step 4: 整合性判定と処理 ---
+    if is_ready:
+        _, last_day = calendar.monthrange(y, m)
+        last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
+        
+        is_consistent = (A_date == last_day and A_day == last_day_w)
+        
+        if is_consistent:
+            st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
+            st.success("第2関門通過：整合性が確認されました。")
+            st.write("解析処理へ進みます...")
+        else:
+            st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
+            st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
+            st.error("整合性が不一致です。")
+            display_pdf(uploaded_pdf)
+            st.info("※不一致のため、これ以上の解析は行いません。")
