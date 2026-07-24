@@ -64,10 +64,13 @@ def load_and_process_data():
 # --- [2] PDF表示用関数 ---
 # 修正箇所: base64でPDFをiframe埋め込みする形式に変更
 def display_pdf(uploaded_file):
+    # ファイルの読み込み位置を先頭に戻す
     uploaded_file.seek(0)
+    # PDFのバイナリデータを取得
     pdf_data = uploaded_file.read()
+    # base64にエンコード
     b64_pdf = base64.b64encode(pdf_data).decode('utf-8')
-    # プレビュー表示用のiframe
+    # iframeで埋め込み表示
     pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
     st.markdown(pdf_display, unsafe_html=True)
     
