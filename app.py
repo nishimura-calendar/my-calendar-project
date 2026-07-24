@@ -56,11 +56,24 @@ def load_and_process_data():
 
 # --- [2] PDF解析・整合性チェック ---
 def display_pdf(uploaded_file):
-    base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-    # markdownではなく、コンポーネントとしてHTMLを読み込ませる
-    pdf_html = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf">'
-    components.html(pdf_html, height=800)
+    # ファイルの読み込み位置を先頭に戻す
+    uploaded_file.seek(0)
     
+    # バイナリデータを取得
+    data = uploaded_file.getvalue()
+    
+    # デバッグ用にファイルサイズを表示
+    st.write(f"デバッグ: ファイルサイズ = {len(data)} バイト") 
+    
+    if len(data) == 0:
+        st.error("エラー: データが空です。正しく読み取れていません。")
+        return
+
+    # PDF表示処理
+    base64_pdf = base64.b64encode(data).decode('utf-8')
+    # iframeに変更して表示を試みる
+    pdf_html = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px"></iframe>'
+    components.html(pdf_html, height=800)    
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
