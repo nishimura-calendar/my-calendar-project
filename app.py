@@ -55,7 +55,6 @@ def load_and_process_data():
     return process_data(df)
 
 # --- [2] PDF解析・整合性チェック ---
-# --- [2] PDF解析・整合性チェック ---
 def display_pdf(uploaded_file):
     # ファイルの読み込み位置を先頭に戻す
     uploaded_file.seek(0)
@@ -102,23 +101,26 @@ if uploaded_pdf:
         candidates = [w for w in day_words if abs(w['x0'] - last_date_obj['x0']) < 15]
         A_day = candidates[0]['text'] if candidates else "不明"
 
-    # 3. 年月算出
+# 3. 年月算出
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
+    # 「月」の抽出を少し柔軟にしました
     month_match = re.search(r'(\d{1,2})月', filename)
     
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
         label_b = "ファイル名から算出結果"
     else:
-        st.error("年月が確認できません。")
-        y = st.number_input("年", value=2026)
-        m = st.number_input("月", value=1)
+        st.warning("年月が確認できません。年月を入力して下さい。")
+        y = st.number_input("年", min_value=2000, max_value=2100, value=2026)
+        m = st.number_input("月", min_value=1, max_value=12, value=1)
         label_b = "入力年月"
+        # ここで処理を停止させるため、これ以下の表示（不一致判定等）は実行されません
+        st.stop()
         
     _, last_day = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
-        
+    
 # --- ここで変数を定義してから判定に入ります ---
     is_consistent = (A_date == last_day and A_day == last_day_w)
 
