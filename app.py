@@ -62,16 +62,14 @@ def load_and_process_data():
     return process_data(df)
 
 # --- [2] PDF表示用関数 ---
+# 修正箇所: base64でPDFをiframe埋め込みする形式に変更
 def display_pdf(uploaded_file):
     uploaded_file.seek(0)
-    data = uploaded_file.getvalue()
-    st.download_button(
-        label="📄 PDFファイルを開いて確認する",
-        data=data,
-        file_name="シフト表_確認用.pdf",
-        mime="application/pdf",
-        use_container_width=True
-    )
+    pdf_data = uploaded_file.read()
+    b64_pdf = base64.b64encode(pdf_data).decode('utf-8')
+    # プレビュー表示用のiframe
+    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
+    st.markdown(pdf_display, unsafe_html=True)
     
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
@@ -89,11 +87,12 @@ if uploaded_pdf:
                 found_key = key
                 break
     
+    # 修正箇所: keyが見つからない場合の挙動
     if not found_key:
-        st.error("勤務地(Key)が確認できません。")
-        display_pdf(uploaded_pdf)
+        st.error("勤務地(Key)がPDFから特定できませんでした。")
+        display_pdf(uploaded_pdf) # ボタンなしで直接表示
         st.stop()
-
+        
     # --- Step 2: 整合性データの抽出 ---
     with pdfplumber.open(uploaded_pdf) as pdf:
         words = pdf.pages[0].extract_words()
@@ -131,15 +130,16 @@ if uploaded_pdf:
         _, last_day = calendar.monthrange(y, m)
         last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
         
+        # 修正箇所: 整合性判定ロジック
         is_consistent = (A_date == last_day and A_day == last_day_w)
-        
+
         if is_consistent:
-            st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-            st.success("第2関門通過：整合性が確認されました。")
-            st.write("解析処理へ進みます...")
+            # ⑥ 無言通過: ここには何も書かず、そのまま次の解析ロジックへ進ませる
+            pass 
         else:
+            # ⑦ 不整合時: エラー表示 + PDF表示 + 停止
             st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
             st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
             st.error("整合性が不一致です。")
-            display_pdf(uploaded_pdf)
-            st.info("※不一致のため、これ以上の解析は行いません。")
+            display_pdf(uploaded_pdf) # ボタンなしで直接表示
+    st.stop()
