@@ -96,21 +96,22 @@ if uploaded_pdf:
         candidates = [w for w in day_words if abs(w['x0'] - last_date_obj['x0']) < 15]
         A_day = candidates[0]['text'] if candidates else "不明"
 
-　　 # (3) ③〜④ ファイル名から年月を取得・判定
-    filename = uploaded_pdf.name
-    year_match = re.search(r'(\d{4})', filename)
-    month_match = re.search(r'(\d{1,2})月', filename)
+　　    # (3) ③〜④ ファイル名から年月を取得・判定
+       filename = uploaded_pdf.name
+       year_match = re.search(r'(\d{4})', filename)
+       month_match = re.search(r'(\d{1,2})月', filename)
     
-    if year_match and month_match:
-        y, m = int(year_match.group(1)), int(month_match.group(1))
-        label_b = "ファイル名から算出結果"
-    else:
-        # (3) ④ 取得できない場合は入力フォームを表示
-        st.error("シフト表の年月が確認できません。年月を入力して下さい。")
-        y = st.number_input("年", value=2026)
-        m = st.number_input("月", value=1)
-        label_b = "入力年月から算出結果"
-        if not st.button("確定"): st.stop()
+      if year_match and month_match:
+          y, m = int(year_match.group(1)), int(month_match.group(1))
+          label_b = "ファイル名から算出結果"
+      else:
+          (3) ④ 取得できない場合は入力フォームを表示
+          st.error("シフト表の年月が確認できません。年月を入力して下さい。")
+          y = st.number_input("年", value=2026)
+          m = st.number_input("月", value=1)
+          label_b = "入力年月から算出結果"
+     if not st.button("確定"): st.stop()
+         
     _, last_day = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
     
