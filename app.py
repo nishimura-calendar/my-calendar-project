@@ -56,8 +56,10 @@ def load_and_process_data():
 # --- [2] PDF解析・整合性チェック ---
 def display_pdf(uploaded_file):
     base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
-    st.markdown(f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf">', unsafe_allow_html=True)
-
+    # markdownではなく、コンポーネントとしてHTMLを読み込ませる
+    pdf_html = f'<embed src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800px" type="application/pdf">'
+    components.html(pdf_html, height=800)
+な
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
@@ -108,24 +110,16 @@ if uploaded_pdf:
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
         
 # 4. 判定と表示の分岐
-    is_consistent = (A_date == last_day and A_day == last_day_w)
-
-    if is_consistent:
-        # A=Bの場合：Aを表示し「第2関門通過」と表示
+if is_consistent:
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.success("第2関門通過")
     else:
-        # A≠Bの場合：AとBを表示し、PDFを表示
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
         st.error("整合性が不一致です。ファイルを確認してください。")
+        # ここで関数を呼び出せば確実に表示されます
         display_pdf(uploaded_pdf)
 
-    # 5. 次の処理：フラグがTrueの時だけ実行する
+    # 5. 次の処理
     if is_consistent:
-        # --- ここから先に本来の解析処理を記述してください ---
         st.write("解析処理へ進みます...")
-    else:
-        # 不一致時は解析処理をスキップ（プログラムを停止させない）
-        st.info("不一致のため、これ以上の解析は行いません。")
-    
