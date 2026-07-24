@@ -88,7 +88,7 @@ def display_pdf(uploaded_file):
         
     except Exception as e:
         # エラーが発生した場合、何が起きているかを表示する
-        st.error(f"PDFプレビュー表示中にエラーが発生しました: {type(e).__name__} - {e}
+        st.error(f"PDFプレビュー表示中にエラーが発生しました: {type(e).__name__} - {e}")
         
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
