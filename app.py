@@ -65,7 +65,7 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
-    # (2) ① キー検索
+    # 1. PDF読み込みとキー検索
     found_key = None
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -75,28 +75,22 @@ if uploaded_pdf:
                 break
     
     if not found_key:
-        st.error("勤務地(Key)が確認できません。")
         display_pdf(uploaded_pdf)
+        st.error("勤務地(Key)が確認できません。")
         st.stop()
 
-    # (3) ②〜⑦ 整合性チェック
+    # 2. 整合性チェック用データの抽出
     with pdfplumber.open(uploaded_pdf) as pdf:
-        page = pdf.pages[0]
-        words = page.extract_words()
-        
-        # 日付と曜日を抽出
+        words = pdf.pages[0].extract_words()
         date_words = [w for w in words if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', w['text'])]
         day_words = [w for w in words if w['text'] in "日月火水木金土"]
         
-        # 最終日を探す
         last_date_obj = sorted(date_words, key=lambda x: int(x['text']))[-1]
         A_date = int(last_date_obj['text'])
-        
-        # 日付に近い曜日を探す
         candidates = [w for w in day_words if abs(w['x0'] - last_date_obj['x0']) < 15]
         A_day = candidates[0]['text'] if candidates else "不明"
 
-    # (3) ③〜④ ファイル名から年月を取得・判定
+    # 3. 年月算出
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
@@ -105,29 +99,24 @@ if uploaded_pdf:
         y, m = int(year_match.group(1)), int(month_match.group(1))
         label_b = "ファイル名から算出結果"
     else:
-        st.error("シフト表の年月が確認できません。年月を入力して下さい。")
+        st.error("年月が確認できません。")
         y = st.number_input("年", value=2026)
         m = st.number_input("月", value=1)
-        label_b = "入力年月から算出結果"
-        if not st.button("確定"): st.stop()
-         
+        label_b = "入力年月"
+    
     _, last_day = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
     
-    st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-    
-# 整合性チェック (整合していない場合)
+    # 4. 判定と結果表示（ここでPDFを先に表示する）
     if A_date == last_day and A_day == last_day_w:
         st.success("整合性確認OK")
-        # 次のステップへ進む
     else:
-        st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-        st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
-        st.error("ファイルを確認して下さい。")
-        
-        # 1. PDF表示を先に実行
+        # まずPDFを確実に表示
         display_pdf(uploaded_pdf)
         
-        # 2. その後で停止
-        st.stop()
+        # 次に結果を1回だけ表示
+        st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
+        st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
+        st.error("整合性が不一致です。ファイルを確認して下さい。")
         
+        st.stop()        
