@@ -119,7 +119,10 @@ if uploaded_pdf:
     _, last_day = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
         
-# 4. 判定と分岐処理 (解析処理の停止をここで完結させます)
+# --- ここで変数を定義してから判定に入ります ---
+    is_consistent = (A_date == last_day and A_day == last_day_w)
+
+    # 4. 判定と分岐処理 (解析処理の停止をここで完結させます)
     if is_consistent:
         st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.success("第2関門通過：整合性が確認されました。")
