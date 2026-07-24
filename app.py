@@ -86,7 +86,32 @@ if uploaded_pdf:
                 break
     
     if not found_key:
-        display_pdf(uploaded_pdf)
+        display_pdf(uploaded_pdf)# 3. 年月算出
+    filename = uploaded_pdf.name
+    year_match = re.search(r'(\d{4})', filename)
+    month_match = re.search(r'(\d{1,2})月', filename)
+    
+    if year_match and month_match:
+        y, m = int(year_match.group(1)), int(month_match.group(1))
+        label_b = "ファイル名から算出結果"
+        is_ready = True # 年月が取得できているので即解析可能
+    else:
+        st.warning("年月が確認できません。年月を入力して下さい。")
+        y = st.number_input("年", min_value=2000, max_value=2100, value=2025)
+        m = st.number_input("月", min_value=1, max_value=12, value=3)
+        label_b = "入力年月"
+        # 確定ボタンを押すまでは解析ロジックに進まない
+        is_ready = st.button("この年月で確定する")
+        if not is_ready:
+            st.stop() # ボタンが押されるまでここで停止
+
+    if is_ready:
+        _, last_day = calendar.monthrange(y, m)
+        last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
+        
+        # --- 変数を定義してから判定へ ---
+        is_consistent = (A_date == last_day and A_day == last_day_w)
+        # （ここから下に判定処理を繋げます）
         st.error("勤務地(Key)が確認できません。")
         st.stop()
 
@@ -101,43 +126,3 @@ if uploaded_pdf:
         candidates = [w for w in day_words if abs(w['x0'] - last_date_obj['x0']) < 15]
         A_day = candidates[0]['text'] if candidates else "不明"
 
-# 3. 年月算出
-    filename = uploaded_pdf.name
-    year_match = re.search(r'(\d{4})', filename)
-    # 「月」の抽出を少し柔軟にしました
-    month_match = re.search(r'(\d{1,2})月', filename)
-    
-    if year_match and month_match:
-        y, m = int(year_match.group(1)), int(month_match.group(1))
-        label_b = "ファイル名から算出結果"
-    else:
-        st.warning("年月が確認できません。年月を入力して下さい。")
-        y = st.number_input("年", min_value=2000, max_value=2100, value=2026)
-        m = st.number_input("月", min_value=1, max_value=12, value=1)
-        label_b = "入力年月"
-        # ここで処理を停止させるため、これ以下の表示（不一致判定等）は実行されません
-        st.stop()
-        
-    _, last_day = calendar.monthrange(y, m)
-    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
-    
-# --- ここで変数を定義してから判定に入ります ---
-    is_consistent = (A_date == last_day and A_day == last_day_w)
-
-    # 4. 判定と分岐処理 (解析処理の停止をここで完結させます)
-    if is_consistent:
-        st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-        st.success("第2関門通過：整合性が確認されました。")
-        
-        # 整合性がOKの時だけ解析を進めます
-        st.write("解析処理へ進みます...")
-        # ※ここに今後の解析処理ロジックを追記してください
-        
-    else:
-        st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-        st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
-        st.error("整合性が不一致です。")
-        
-        # 不一致時はここで表示ボタンを出し、解析ロジックには絶対に触れさせない
-        display_pdf(uploaded_pdf)
-        st.info("※不一致のため、これ以上の解析は行いません。")
