@@ -104,6 +104,9 @@ if uploaded_pdf:
         m = st.number_input("月", value=1)
         label_b = "入力年月"
         
+    _, last_day = calendar.monthrange(y, m)
+    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
+        
 # 4. 判定と表示の分岐
     is_consistent = (A_date == last_day and A_day == last_day_w)
 
@@ -125,6 +128,4 @@ if uploaded_pdf:
     else:
         # 不一致時は解析処理をスキップ（プログラムを停止させない）
         st.info("不一致のため、これ以上の解析は行いません。")
-    _, last_day = calendar.monthrange(y, m)
-    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
     
