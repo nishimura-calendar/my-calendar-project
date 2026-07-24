@@ -43,8 +43,11 @@ def process_data(df):
 def load_and_process_data():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(**creds_dict)
+    
+    # --- 認証切れ対策コード ---
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
+    # --------------------------
     
     service = build('drive', 'v3', credentials=creds)
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
@@ -104,11 +107,14 @@ if uploaded_pdf:
         y, m = int(year_match.group(1)), int(month_match.group(1))
         label_b = "ファイル名から算出"
     else:
-        y = st.number_input("年", value=2026)
-        m = st.number_input("月", value=3)
+        # ご要望のメッセージを表示
+        st.warning("シフト表の年月が確認できません。下記フォームに入力後、年月確定ボタンを押して下さい。")
+        y = st.number_input("年", min_value=2000, max_value=2100, value=2026)
+        m = st.number_input("月", min_value=1, max_value=12, value=3)
         label_b = "手動入力"
-        if not st.button("年月確定"): st.stop()
-
+        if not st.button("年月確定"):
+            st.stop()
+            
     # (2)⑥⑦ 整合性判定
     _, last_day = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
