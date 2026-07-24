@@ -84,7 +84,7 @@ def display_pdf(uploaded_file):
         
         # iframeで埋め込み表示
         pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_html=True)
+        st.markdown(pdf_display, unsafe_allow_html=True)  
         
     except Exception as e:
         # エラーが発生した場合、何が起きているかを表示する
