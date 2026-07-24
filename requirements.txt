@@ -1,11 +1,8 @@
 streamlit
 pandas
 openpyxl
+pdfplumber
+pypdf
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
-pdfplumber
-opencv-python-headless
-numpy
-gspread
-pymupdf
