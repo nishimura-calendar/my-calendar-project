@@ -11,6 +11,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from pypdf import PdfReader
+from google.auth.transport.requests import Request
 
 # --- [1] 時程表読み込み ---
 def format_time(val):
@@ -44,6 +45,12 @@ def process_data(df):
 def load_and_process_data():
     creds_dict = st.secrets["google_oauth_credentials"]
     creds = Credentials(**creds_dict)
+    
+    # --- 認証切れ対策コード ---
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    # --------------------------
+    
     service = build('drive', 'v3', credentials=creds)
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
