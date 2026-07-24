@@ -116,12 +116,18 @@ if uploaded_pdf:
     
     st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
     
+# 整合性チェック (整合していない場合)
     if A_date == last_day and A_day == last_day_w:
         st.success("整合性確認OK")
-        st.stop()
+        # 次のステップへ進む
     else:
+        st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
         st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
         st.error("ファイルを確認して下さい。")
+        
+        # 1. PDF表示を先に実行
         display_pdf(uploaded_pdf)
+        
+        # 2. その後で停止
         st.stop()
         
