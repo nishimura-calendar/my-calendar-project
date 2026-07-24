@@ -103,6 +103,7 @@ if uploaded_pdf:
         y = st.number_input("年", value=2026)
         m = st.number_input("月", value=1)
         label_b = "入力年月"
+        
 # 4. 判定と表示の分岐
     is_consistent = (A_date == last_day and A_day == last_day_w)
 
