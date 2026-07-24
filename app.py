@@ -8,7 +8,7 @@ import unicodedata
 import base64
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from google.oauth2.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload
 from pypdf import PdfReader
 
 # --- [1] 時程表読み込み (添付ロジック) ---
