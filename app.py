@@ -8,6 +8,7 @@ import unicodedata
 import base64
 import streamlit.components.v1 as components
 from googleapiclient.discovery import build
+from streamlit_pdf_viewer import pdf_viewer
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from pypdf import PdfReader
@@ -64,32 +65,14 @@ def load_and_process_data():
 # --- [2] PDF表示用関数 ---
 # 修正箇所: base64でPDFをiframe埋め込みする形式に変更
 def display_pdf(uploaded_file):
-    # ファイルが存在するか確認
-    if uploaded_file is None:
-        st.error("PDFファイルが正しくアップロードされていません。")
-        return
-
-    try:
-        # ファイルの読み込み位置を強制的に先頭に戻す
-        uploaded_file.seek(0)
-        pdf_data = uploaded_file.read()
-        
-        # データが読み込めているか確認
-        if not pdf_data:
-            st.error("ファイルの中身が空です。")
-            return
-
-        # base64にエンコード
-        b64_pdf = base64.b64encode(pdf_data).decode('utf-8')
-        
-        # iframeで埋め込み表示
-        pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="100%" height="800px" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)  
-        
-    except Exception as e:
-        # エラーが発生した場合、何が起きているかを表示する
-        st.error(f"PDFプレビュー表示中にエラーが発生しました: {type(e).__name__} - {e}")
-        
+    # ファイルの読み込み位置を先頭に戻す
+    uploaded_file.seek(0)
+    # PDFの中身をバイトデータとして読み込む
+    pdf_bytes = uploaded_file.read()
+    
+    # ライブラリを使って表示
+    pdf_viewer(input=pdf_bytes, width=700)
+    
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
