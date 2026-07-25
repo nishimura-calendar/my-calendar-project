@@ -68,11 +68,9 @@ def display_pdf(uploaded_file):
 uploaded_file = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
 
 if uploaded_file is not None:
-    # 2. ファイルパスではなく、uploaded_file オブジェクトを直接渡す
-    # pdfplumber はファイルライクなオブジェクトを直接受け取れます
-    names = extract_staff_names(uploaded_file)
+    names = extract_staff_names(uploaded_file) # ここは OK
     st.write(names)
-
+    
 def extract_staff_names(pdf_file):
     staff_names = []
     
@@ -192,5 +190,5 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
-    names = extract_staff_names("免税店シフト表.pdf")
-    print(names)
+    names = extract_staff_names(uploaded_pdf) # "免税店シフト表.pdf" ではなく変数にする
+    st.write(names)
