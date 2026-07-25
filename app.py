@@ -73,11 +73,11 @@ if uploaded_file is not None:
     names = extract_staff_names(uploaded_file)
     st.write(names)
 
-def extract_staff_names(pdf_file): # 引数を pdf_path から pdf_file に変更
+def extract_staff_names(pdf_file):
     staff_names = []
     
-    # 3. with pdfplumber.open(pdf_file) として開く
-    with pdfpl        # 最初のページを対象にする
+    with pdfplumber.open(pdf_file) as pdf:
+        # 最初のページを対象にする
         page = pdf.pages[0]
         words = page.extract_words()
         
