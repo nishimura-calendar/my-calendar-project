@@ -168,8 +168,10 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
-　　# メイン処理での呼び出し例
-    st.write("次の中から、target_staff（あなた）を選んで下さい。")
-    staff_list = extract_staff_names(page, found_key)
+    # メイン処理での呼び出し例
+    with pdfplumber.open(uploaded_pdf) as pdf:
+        page = pdf.pages[0]
+        staff_list = extract_staff_names(page, found_key)
+        
+        st.write("次の中から、target_staff（あなた）を選んで下さい。")
     target_staff = st.selectbox("スタッフを選択", staff_list)
-
