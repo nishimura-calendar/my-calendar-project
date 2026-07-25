@@ -171,7 +171,7 @@ if uploaded_pdf:
             all_keys = list(st.session_state.data_dict.keys())
             
             # 複数Key対応の抽出関数を実行
-            items = extract_all_items_below_all_keys(pdf.pages[0], all_keys)
+            staff_names = extract_names_below_all_keys(pdf.pages[0], all_keys)
             
             if items:
                 # 抽出された全要素（人名・資格含む）から選択
