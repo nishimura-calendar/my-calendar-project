@@ -65,6 +65,42 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
+def extract_staff_names(page, key_text):
+    """
+    Key(x=1)を基準に、右方向にある人名を抽出する
+    """
+    # y=0行付近のヘッダー領域（高さ50pt）を対象
+    header_area = page.crop((0, 0, page.width, 50))
+    words = header_area.extract_words()
+    
+    # x座標でソート
+    words.sort(key=lambda w: w['x0'])
+    
+    # Keyのx座標を特定
+    key_word = next((w for w in words if key_text in w['text']), None)
+    if not key_word:
+        return ["特定なし"]
+    
+    key_x = key_word['x0']
+    
+    # 人名の抽出（Keyのx座標より大きく、かつ一定間隔以上離れているもの）
+    staff_list = ["特定なし"]
+    for w in words:
+        # Key自身やヘッダー内の不要なテキストを除外
+        if w['text'] in [key_text, "関空免税店警備隊", "都市環境整美株式会社", "勤務予定表", "1月度"]:
+            continue
+            
+        # Keyからの距離が右側にあるかチェック
+        if w['x0'] > key_x + 10: 
+            # 2文字以上で数字のみでないものを人名とみなす
+            if len(w['text']) >= 2 and not w['text'].isdigit():
+                # 重複回避
+                if w['text'] not in staff_list:
+                    staff_list.append(w['text'])
+                    
+    return staff_list
+    
+
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
@@ -132,28 +168,8 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
-    # --- [4] 解析処理：人名のリストアップ ---
-    st.subheader("解析対象スタッフの選択")
-    
-    # 人名行のY座標範囲を特定（PDF上部を人名行と定義）
-    # PDFのページ高さを取得し、ヘッダー付近を切り出す
-    page = pdfplumber.open(uploaded_pdf).pages[0]
-    # Y=0付近（ヘッダーから一定の高さまで）をクロップ
-    header_area = page.crop((0, 0, page.width, 50)) # 50は調整可能な高さ
-    
-    # 抽出処理
-    raw_names = header_area.extract_text().split()
-    
-    # リスト作成：Key（T1, T2）や不要なヘッダーを除外
-    staff_list = ["特定なし"]
-    for name in raw_names:
-        if name not in [found_key, "関空免税店警備隊", "都市環境整美株式会社", "勤務予定表", "1月度"]:
-            staff_list.append(name)
-
-    # コンボボックス表示
+　　# メイン処理での呼び出し例
     st.write("次の中から、target_staff（あなた）を選んで下さい。")
-    target_staff = st.selectbox("対象スタッフ", staff_list)
-    
-    if st.button("このスタッフで解析開始"):
-        st.session_state.target_staff = target_staff
-        st.success(f"{target_staff} を選択しました。")
+    staff_list = extract_staff_names(page, found_key)
+    target_staff = st.selectbox("スタッフを選択", staff_list)
+
