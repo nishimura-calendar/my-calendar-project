@@ -65,20 +65,19 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
+import re # ファイル冒頭のimportに追加してください
+
 def extract_staff_names_relative(page, key_text):
-    """
-    Key(T1など)を基準に、姓・名の間のスペースやKeyを除外して人名を抽出する
-    """
     words = page.extract_words()
     
-    # 1. すべてのKey(key_textを含む単語)の座標を特定
+    # 1. すべてのKeyの座標を特定
     key_objs = [w for w in words if key_text in w['text']]
     if not key_objs:
         return []
     
     key_y_list = [k['top'] for k in key_objs]
     
-    # 2. 行ごとに単語をまとめる (y座標で5pt刻みに丸める)
+    # 2. 行ごとに単語をまとめる
     lines = {}
     for w in words:
         y_group = round(w['top'] / 5) * 5
@@ -88,31 +87,34 @@ def extract_staff_names_relative(page, key_text):
     
     staff_list = []
     
+    # シフト記号のみを判定するための正規表現 (A-Z, 休, 数字, ドットのみ)
+    # これに該当する場合はシフト行とみなす
+    shift_pattern = re.compile(r'^[A-Z休\d\.]+$')
+    
     # 3. 各行をチェックして抽出
     for y, line_words in lines.items():
-        # いずれかのKeyより下に存在すれば候補とする
         if any(y > ky + 5 for ky in key_y_list):
             
-            # x座標でソートして左から順に並べる
             line_words.sort(key=lambda w: w['x0'])
             
-            # --- 結合とスペース除去 ---
-            # 1. まず"|"を除いて文字を連結
+            # 結合とスペース除去
             raw_text = "".join([w['text'] for w in line_words if w['text'] not in ["|"]])
-            
-            # 2. 結合された文字列から、全角・半角スペースを完全に除去
             full_name = raw_text.replace(" ", "").replace(" ", "")
             
-            # 3. Key自体のスキップと不要語句の除外
-            # ※Keyそのものを除外する判定
+            # 判定ロジック
             is_key_itself = (full_name == key_text)
-            
-            # ※その他の不要なワードが含まれているか
             is_invalid = any(keyword in full_name for keyword in 
-                             ["1", "2", "3", "4", "日月火水木金土", "勤務", "隊", "株式会社", "予定表"])
+                             ["1月度", "勤務予定表", "関空免税店警備隊", "都市環境整美株式会社"])
             
-            # 人名抽出：2文字以上、数字のみでない、かつKeyそのものではない
-            if len(full_name) >= 2 and not full_name.isdigit() and not is_invalid and not is_key_itself:
+            # 【重要】シフト記号のみで構成されているかチェック
+            is_shift_row = bool(shift_pattern.match(full_name))
+            
+            # 抽出条件:
+            # 1. 2文字以上
+            # 2. シフト行ではない
+            # 3. Keyそのものではない
+            # 4. 除外ワードを含まない
+            if len(full_name) >= 2 and not is_shift_row and not is_key_itself and not is_invalid:
                 if full_name not in staff_list:
                     staff_list.append(full_name)
     
