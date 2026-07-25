@@ -67,57 +67,59 @@ def display_pdf(uploaded_file):
 
 import re # ファイル冒頭のimportに追加してください
 
-def extract_staff_names_relative(page, key_text):
+def extract_staff_names_below_key(page, key_text):
     words = page.extract_words()
     
-    # 1. すべてのKeyの座標を特定
-    key_objs = [w for w in words if key_text in w['text']]
-    if not key_objs:
+    # 1. Keyの座標を特定
+    key_obj = next((w for w in words if key_text in w['text']), None)
+    if not key_obj:
         return []
     
-    key_y_list = [k['top'] for k in key_objs]
+    key_x = key_obj['x0']
+    key_y = key_obj['top']
     
-    # 2. 行ごとに単語をまとめる
-    lines = {}
-    for w in words:
+    # 2. Keyの座標基準で候補を抽出
+    # w['top'] > key_y + 5 : Keyより「下」にあるもののみ対象（Key自体は含まれない）
+    # abs(w['x0'] - key_x) < 20 : Keyと同じ列にあるもののみ対象
+    candidate_words = [
+        w for w in words 
+        if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 20
+    ]
+    
+    # 3. Y座標順にソートしてグループ化
+    candidate_words.sort(key=lambda w: w['top'])
+    
+    grouped_names = {}
+    for w in candidate_words:
         y_group = round(w['top'] / 5) * 5
-        if y_group not in lines:
-            lines[y_group] = []
-        lines[y_group].append(w)
-    
+        if y_group not in grouped_names:
+            grouped_names[y_group] = ""
+        grouped_names[y_group] += w['text']
+        
     staff_list = []
     
-    # シフト記号のみを判定するための正規表現 (A-Z, 休, 数字, ドットのみ)
-    # これに該当する場合はシフト行とみなす
-    shift_pattern = re.compile(r'^[A-Z休\d\.]+$')
-    
-    # 3. 各行をチェックして抽出
-    for y, line_words in lines.items():
-        if any(y > ky + 5 for ky in key_y_list):
+    # 4. 抽出とKeyのスキップ
+    for y, full_name in grouped_names.items():
+        name = full_name.replace(" ", "").replace(" ", "")
+        
+        # --- ここでKeyを確実にスキップ ---
+        # 1. nameがkey_textそのものではないこと
+        is_key = (name == key_text)
+        
+        # その他の不要ワード判定
+        is_shift = bool(re.match(r'^[A-Z休\d\.]+$', name))
+        is_day = any(d in name for d in ["月","火","水","木","金","土","日"])
+        is_invalid = any(k in name for k in ["勤務", "隊", "1月度", "株式会社", "予定表"])
+        
+        if (len(name) >= 2 and 
+            not is_key and    # <--- 【重要】ここでKeyを除外
+            not is_shift and 
+            not is_day and 
+            not is_invalid):
             
-            line_words.sort(key=lambda w: w['x0'])
-            
-            # 結合とスペース除去
-            raw_text = "".join([w['text'] for w in line_words if w['text'] not in ["|"]])
-            full_name = raw_text.replace(" ", "").replace(" ", "")
-            
-            # 判定ロジック
-            is_key_itself = (full_name == key_text)
-            is_invalid = any(keyword in full_name for keyword in 
-                             ["1月度", "勤務予定表", "関空免税店警備隊", "都市環境整美株式会社"])
-            
-            # 【重要】シフト記号のみで構成されているかチェック
-            is_shift_row = bool(shift_pattern.match(full_name))
-            
-            # 抽出条件:
-            # 1. 2文字以上
-            # 2. シフト行ではない
-            # 3. Keyそのものではない
-            # 4. 除外ワードを含まない
-            if len(full_name) >= 2 and not is_shift_row and not is_key_itself and not is_invalid:
-                if full_name not in staff_list:
-                    staff_list.append(full_name)
-    
+            if name not in staff_list:
+                staff_list.append(name)
+                
     return staff_list
     
 # --- [3] メイン処理 ---
