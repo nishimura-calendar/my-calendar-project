@@ -65,64 +65,6 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-uploaded_file = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
-
-if uploaded_file is not None:
-    names = extract_staff_names(uploaded_file) # ここは OK
-    st.write(names)
-    
-def extract_staff_names(pdf_file):
-    staff_names = []
-    
-    with pdfplumber.open(pdf_file) as pdf:
-        # 最初のページを対象にする
-        page = pdf.pages[0]
-        words = page.extract_words()
-        
-        # Y座標(top)でソートし、近いY座標にある単語を「行」としてグルーピング
-        words.sort(key=lambda w: w['top'])
-        rows = []
-        if words:
-            current_row = [words[0]]
-            for w in words[1:]:
-                # Y座標の誤差が5pt以内なら同じ行とみなす
-                if abs(w['top'] - current_row[0]['top']) < 5:
-                    current_row.append(w)
-                else:
-                    rows.append(current_row)
-                    current_row = [w]
-            rows.append(current_row)
-            
-        # 状態管理フラグによる解析
-        state = 'searching_key'
-        
-        for row in rows:
-            # 行全体のテキストを結合
-            text_content = "".join([w['text'] for w in row])
-            
-            # Key (T1, T2) を検知して解析開始
-            if "T1" in text_content or "T2" in text_content:
-                state = 'get_name'
-                continue
-            
-            if state == 'get_name':
-                # 人名行の処理: 最初の単語を人名として抽出
-                name = row[0]['text']
-                # シフトコードや数字のみ、不要な語句を除外
-                if len(name) >= 2 and not re.match(r'^[\d\s\W]+$', name):
-                    if name not in ["本町", "研修", "教育"]:
-                        staff_names.append(name)
-                        state = 'skip_qual' # 次は資格行なのでスキップ
-                continue
-            
-            elif state == 'skip_qual':
-                # 資格行をスキップして、次の人名行へ戻る
-                state = 'get_name'
-                continue
-                
-    # 重複を除去して返す
-    return sorted(list(set(staff_names)))
-
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
@@ -190,5 +132,54 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
-    names = extract_staff_names(uploaded_pdf) # "免税店シフト表.pdf" ではなく変数にする
-    st.write(names)
+    # ... (既存の第2関門通過コードの直後) ...
+    st.success("第2関門通過")
+    
+    # 抽出関数の定義（呼び出しの前に定義します）
+    def extract_staff_names(pdf_file):
+        staff_names = []
+        with pdfplumber.open(pdf_file) as pdf:
+            page = pdf.pages[0]
+            words = page.extract_words()
+            words.sort(key=lambda w: w['top'])
+            
+            rows = []
+            if words:
+                current_row = [words[0]]
+                for w in words[1:]:
+                    if abs(w['top'] - current_row[0]['top']) < 5:
+                        current_row.append(w)
+                    else:
+                        rows.append(current_row)
+                        current_row = [w]
+                rows.append(current_row)
+                
+            state = 'searching_key'
+            for row in rows:
+                text_content = "".join([w['text'] for w in row])
+                if "T1" in text_content or "T2" in text_content:
+                    state = 'get_name'
+                    continue
+                
+                if state == 'get_name':
+                    name = row[0]['text'].strip()
+                    # 姓のみ(1文字以上)を許可し、数字・記号・特定除外ワードを排除
+                    is_name = (
+                        len(name) >= 1 and 
+                        not re.search(r'\d', name) and 
+                        not re.search(r'[①-⑨]', name) and 
+                        name not in ["本町", "研修", "教育", "同伴", "T1", "T2"]
+                    )
+                    if is_name:
+                        staff_names.append(name)
+                        state = 'skip_qual'
+                    continue
+                elif state == 'skip_qual':
+                    state = 'get_name'
+                    continue
+        return sorted(list(set(staff_names)), key=lambda x: staff_names.index(x) if x in staff_names else 99)
+
+    # 実行と結果表示
+    staff_list = extract_staff_names(uploaded_pdf)
+    st.write("### 抽出されたスタッフ名")
+    st.write(staff_list)
