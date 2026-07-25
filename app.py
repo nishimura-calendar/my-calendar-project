@@ -65,49 +65,45 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-import re
-
-def extract_name_safely(full_text):
-    """
-    行全体のテキストから「人名」と思われる最初の部分だけを抜き出す
-    """
-    # 1. パイプ記号や不要な記号を除去
-    clean_text = full_text.replace("|", " ").strip()
-    
-    # 2. 複数のスペースを1つのスペースに正規化
-    clean_text = re.sub(r'\s+', ' ', clean_text)
-    
-    # 3. スペースで分割してパーツに分ける
-    parts = clean_text.split(' ')
-    
-    # 4. 「最初のパーツ」が人名（姓）、「2番目のパーツ」が名（もしあれば）
-    # 資格などの不要データは、3番目以降のパーツとして無視する
-    if len(parts) >= 2:
-        # スペースがあってもなくても、最初の2つのパーツを結合して返す
-        # 例: ["水野", "順三", "資格"] -> "水野 順三"
-        # 例: ["岸田", "貢", "資格"] -> "岸田 貢"
-        return f"{parts[0]} {parts[1]}"
-    
-    # スペースがない場合（パーツが1つしかない場合）
-    # 例: "岸田貢" -> "岸田貢"
-    return parts[0]
-
 def extract_staff_names_below_key(page, key_text):
-    # (中略: candidate_wordsの抽出処理は以前と同じ)
-    # ...
+    words = page.extract_words()
+    key_obj = next((w for w in words if key_text in w['text']), None)
+    if not key_obj: return []
+    
+    key_x, key_y = key_obj['x0'], key_obj['top']
+    
+    # Keyより下、同じ列(x座標が近い)にある単語を抽出[cite: 2]
+    candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 20]
+    candidate_words.sort(key=lambda w: w['top'])
+    
+    # 【修正】ここで必ず変数を初期化する
+    grouped = {}
+    for w in candidate_words:
+        y = round(w['top'] / 5) * 5
+        # 既存のテキストに連結する[cite: 2]
+        grouped[y] = grouped.get(y, "") + " " + w['text']
     
     staff_list = []
+    # 資格などの除外ワード設定[cite: 2]
+    blacklist = ["教育", "研修", "同伴", "資格", "本町", "9114", "91114", "勤務", "隊", "1月度", "株式会社"]
+    
+    # groupedが空でもエラーにならないよう、items()でループ処理
     for y, full_text in grouped.items():
-        # 行全体のテキストから名前部分だけを抽出
         name = extract_name_safely(full_text)
         
-        # 不要行（曜日・シフト記号行）の判定
-        is_invalid = any(bl in name for bl in ["教育", "研修", "同伴", "資格", "本町"])
+        # 不要ワード判定
+        is_invalid = any(bl in name for bl in blacklist)
+        is_key = (name == key_text)
         
-        # 抽出: 2文字以上かつKey以外ならリストに追加
-        if len(name.replace(" ", "")) >= 2 and name != key_text and not is_invalid:
+        # 曜日・記号行の判定
+        is_shift_or_day = bool(re.match(r'^[A-Z休\d\.]+$', name.replace(" ", ""))) or \
+                          any(d in name for d in ["月","火","水","木","金","土","日"])
+        
+        # 2文字以上あり、かつKey以外、除外ワードを含まない[cite: 2]
+        if len(name.replace(" ", "")) >= 2 and not is_key and not is_invalid and not is_shift_or_day:
             if name not in staff_list:
                 staff_list.append(name)
+    
     return staff_list
     
 # --- [3] メイン処理 ---
