@@ -65,41 +65,29 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-def extract_staff_names(page, key_text):
-    """
-    Key(x=1)を基準に、右方向にある人名を抽出する
-    """
-    # y=0行付近のヘッダー領域（高さ50pt）を対象
-    header_area = page.crop((0, 0, page.width, 50))
-    words = header_area.extract_words()
+def extract_staff_names_relative(page, key_text):
+    words = page.extract_words()
     
-    # x座標でソート
-    words.sort(key=lambda w: w['x0'])
+    # 1. Key(T1など)の座標を特定
+    key_obj = next((w for w in words if key_text in w['text']), None)
+    if not key_obj:
+        return []
     
-    # Keyのx座標を特定
-    key_word = next((w for w in words if key_text in w['text']), None)
-    if not key_word:
-        return ["特定なし"]
+    key_x = key_obj['x0']
+    key_y = key_obj['top']
     
-    key_x = key_word['x0']
-    
-    # 人名の抽出（Keyのx座標より大きく、かつ一定間隔以上離れているもの）
-    staff_list = ["特定なし"]
+    # 2. Keyの座標を基準に人名を抽出
+    # 人名は「Keyとほぼ同じx座標（左端）」かつ「Keyより下のy座標」にある
+    staff_list = []
     for w in words:
-        # Key自身やヘッダー内の不要なテキストを除外
-        if w['text'] in [key_text, "関空免税店警備隊", "都市環境整美株式会社", "勤務予定表", "1月度"]:
-            continue
-            
-        # Keyからの距離が右側にあるかチェック
-        if w['x0'] > key_x + 10: 
-            # 2文字以上で数字のみでないものを人名とみなす
-            if len(w['text']) >= 2 and not w['text'].isdigit():
-                # 重複回避
-                if w['text'] not in staff_list:
-                    staff_list.append(w['text'])
-                    
-    return staff_list
-    
+        # Keyより下（y > key_y + 10）にあり、かつKeyより左、またはKeyに近い列（x < key_x + 50）
+        if w['top'] > key_y + 10 and w['x0'] < key_x + 50:
+            text = w['text']
+            # 除外キーワード
+            if text not in ["1", "2", "3", "4", "日月火水木金土"] and len(text) >= 2:
+                if text not in staff_list:
+                    staff_list.append(text)
+    return staff_list    
 
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
