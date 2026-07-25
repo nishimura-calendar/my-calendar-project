@@ -65,34 +65,41 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-def extract_names_below_all_keys(page, keys):
+def extract_names_by_coordinate_logic(page, keys):
     words = page.extract_words()
-    key_objs = [w for w in words if w['text'] in keys]
+    # 全Keyを特定してソートしておく（上から順に処理するため）
+    key_objs = sorted([w for w in words if w['text'] in keys], key=lambda w: w['top'])
     full_names = []
     
+    # グリッドの許容誤差（PDFのズレを吸収するための閾値）
+    Y_TOLERANCE = 5 
+    
     for key_obj in key_objs:
-        key_x, key_y = key_obj['x0'], key_obj['top']
-        # 左右の列の範囲を限定
-        candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 30]
+        kx, ky = key_obj['x0'], key_obj['top']
         
-        # Y座標でグループ化
-        rows = {}
-        for w in candidate_words:
-            y_key = round(w['top'] / 5) * 5
-            if y_key not in rows: rows[y_key] = []
-            rows[y_key].append(w)
+        # このKeyの配下にある言葉を抽出
+        # 1. Y座標がKeyとほぼ同じ (y ≈ ky)
+        # 2. X座標がKeyより右側 (x > kx)
+        row_candidates = [
+            w for w in words 
+            if abs(w['top'] - ky) < Y_TOLERANCE and w['x0'] > kx
+        ]
         
-        # 結合処理とフィルタリング
-        for y in sorted(rows.keys()):
-            row_words = sorted(rows[y], key=lambda w: w['x0'])
-            full_name = "".join([w['text'] for w in row_words]).strip()
+        # X座標順にソートして、ユーザーが仰る「1列目」「3列目」等の位置を特定する
+        row_candidates.sort(key=lambda w: w['x0'])
+        
+        # 座標ベースで人名をフィルタリング
+        # ユーザーの仮説: 名前の座標 = (KeyX + offset, KeyY)
+        # 例えば「1列目」は KeyX + 10～40 程度の範囲と特定できる
+        for w in row_candidates:
+            relative_x = w['x0'] - kx
             
-            # 条件：Key以外、2文字以上、漢字/かなを含む
-            if (full_name and full_name not in keys and 
-                len(full_name) >= 2 and 
-                re.search(r'[\u4e00-\u9faf\u3040-\u309f]', full_name)):
-                
-                full_names.append(full_name)
+            # 「人名」が来るべき座標範囲（例: 5pt～50pt）を指定
+            # この範囲外の座標にあるものは「資格」や「シフト」とみなして無視
+            if 5 < relative_x < 50:
+                # 資格行やKeyそのものを除外する処理
+                if w['text'] not in keys and len(w['text']) >= 2:
+                    full_names.append(w['text'])
             
     return sorted(list(set(full_names)))
     
