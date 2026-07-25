@@ -67,38 +67,37 @@ def display_pdf(uploaded_file):
 
 def extract_names_below_all_keys(page, keys):
     words = page.extract_words()
-    # 全Keyを取得し、Y座標（top）でソート
-    key_objs = sorted([w for w in words if w['text'] in keys], key=lambda w: w['top'])
     staff_names = []
+    
+    # ページ内のすべての単語から、Keyを含む行全体を探索
+    for w in words:
+        if w['text'] in keys:
+            target_y = w['top']
+            
+            # 同じ行（Y座標が近く、かつX座標がKeyより右）にある単語をすべて取得
+            row_words = [
+                word for word in words 
+                if abs(word['top'] - target_y) < 10  # 行の高さ許容範囲
+            ]
+            # X座標順にソート
+            row_words.sort(key=lambda x: x['x0'])
+            
+            # 連結して人名らしきものを探す（2文字以上、かつ記号でない）
+            full_line = "".join([word['text'] for word in row_words])
+            
+            # --- ここで抽出ルールを適用 ---
+            # 「Key(T1)」などの文字を削除し、残った文字列から抽出
+            for word in row_words:
+                name = word['text']
+                # キーワード以外、かつ2文字以上の日本語（漢字/かな）を含むもの
+                if (name not in keys and 
+                    len(name) >= 2 and 
+                    re.search(r'[\u4e00-\u9faf\u3040-\u309f]', name)):
+                    
+                    # 不要な単語を除外
+                    if not re.search(r'(研修|教育|同伴|本町|警備隊|株式会社)', name):
+                        staff_names.append(name)
 
-    # 1. 各Keyの出現位置を基準にする
-    for key_obj in key_objs:
-        kx, ky = key_obj['x0'], key_obj['top']
-        
-        # 2. そのKeyとY座標が同じ（約5pt以内）にある単語を抽出
-        # ユーザーの仮説に基づき、名前はKeyの右側に配置されている前提
-        row_candidates = [
-            w for w in words 
-            if abs(w['top'] - ky) < 5 and w['x0'] > kx
-        ]
-        
-        # 3. X座標でソート（左から右へ）
-        row_candidates.sort(key=lambda w: w['x0'])
-        
-        # 4. 「1列目」「3列目」等の座標範囲で人名を特定
-        # relative_x: Keyの左端からの相対距離
-        for w in row_candidates:
-            relative_x = w['x0'] - kx
-            
-            # 名前の座標範囲: Keyの直後から、シフトコードが始まる手前まで（ここでは約5pt〜60ptと定義）
-            if 5 < relative_x < 60:
-                # フィルタ: 2文字以上、かつ数字や記号のみのシフトコードでない
-                if len(w['text']) >= 2 and not re.search(r'[\d\.\(\)\[\]]', w['text']):
-                    # 資格キーワードの除外（座標でフィルタできない場合）
-                    if not re.search(r'(研修|教育|同伴|本町|警備隊)', w['text']):
-                        staff_names.append(w['text'])
-            
-    # 重複を除去してソート
     return sorted(list(set(staff_names)))
     
 # --- [3] メイン処理 ---
