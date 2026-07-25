@@ -167,13 +167,14 @@ if uploaded_pdf:
             # 登録されている全Keyを取得
             all_keys = list(st.session_state.data_dict.keys())
             
-            # 複数Key対応の抽出関数を実行
+            # 抽出関数を実行
             staff_names = extract_names_below_all_keys(pdf.pages[0], all_keys)
             
-            if items:
-                # 抽出された全要素（人名・資格含む）から選択
-                selected_item = st.selectbox("スタッフ（または項目）を選択してください", items)
-                st.write(f"選択された項目: {selected_item}")
+            # ★修正：items ではなく staff_names を判定に使用
+            if staff_names:
+                # ★修正：selectbox のリストも staff_names を指定
+                selected_item = st.selectbox("スタッフを選択してください", staff_names)
+                st.write(f"選択されたスタッフ: {selected_item}")
             else:
-                st.warning("項目が自動抽出できませんでした。手動で入力してください。")
-                selected_item = st.text_input("スタッフ名を入力")    
+                st.warning("スタッフ名が自動抽出できませんでした。手動で入力してください。")
+                selected_item = st.text_input("スタッフ名を入力")
