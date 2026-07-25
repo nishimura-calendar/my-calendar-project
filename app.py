@@ -65,32 +65,40 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-def extract_all_items_below_all_keys(page, keys):
-    """
-    ページ内にあるすべてのKeyを検出し、それぞれのKeyの真下にある全テキストを抽出する。
-    Keyそのものは除外する。資格等のフィルタリングは行わない。
-    """
+def extract_names_below_all_keys(page, keys):
     words = page.extract_words()
-    all_items = []
-    
-    # ページ内の全単語からKeyに該当するオブジェクトをすべて特定
     key_objs = [w for w in words if w['text'] in keys]
+    full_names = []
     
     for key_obj in key_objs:
         key_x, key_y = key_obj['x0'], key_obj['top']
-        
-        # Keyの真下かつ同じX座標列にあるすべての単語を取得
+        # 左右の列の範囲を限定
         candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 30]
         
+        # Y座標でグループ化
+        rows = {}
         for w in candidate_words:
-            text = w['text'].strip()
-            # Keyそのものはスキップし、それ以外を追加
-            if text and text not in keys:
-                all_items.append(text)
+            y_key = round(w['top'] / 5) * 5
+            if y_key not in rows: rows[y_key] = []
+            rows[y_key].append(w)
+        
+        # 結合処理と構造的フィルタリング
+        for y in sorted(rows.keys()):
+            row_words = sorted(rows[y], key=lambda w: w['x0'])
+            full_name = "".join([w['text'] for w in row_words]).strip()
             
-    # 重複を削除してソート
-    return sorted(list(set(all_items)))
-
+            # フィルタ条件：
+            # 1. Keyではないこと
+            # 2. 2文字以上であること（これで「J」「休」等のコードを除外）
+            # 3. 漢字またはかなが含まれること（これで記号のみの行を除外）
+            if (full_name and full_name not in keys and 
+                len(full_name) >= 2 and 
+                re.search(r'[\u4e00-\u9faf\u3040-\u309f]', full_name)):
+                
+                full_names.append(full_name)
+            
+    return sorted(list(set(full_names)))
+    
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
