@@ -192,7 +192,7 @@ if uploaded_pdf:
     with pdfplumber.open(uploaded_pdf) as pdf:
         page = pdf.pages[0]
         # 修正：定義した関数名に変更
-        staff_list = extract_staff_names_relative(page, found_key)
+        staff_list = extract_staff_names_below_key(page, found_key)
         
         # デバッグ：何が取れているか確認用
         if not staff_list:
