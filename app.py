@@ -132,3 +132,28 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
+    # --- [4] 解析処理：人名のリストアップ ---
+    st.subheader("解析対象スタッフの選択")
+    
+    # 人名行のY座標範囲を特定（PDF上部を人名行と定義）
+    # PDFのページ高さを取得し、ヘッダー付近を切り出す
+    page = pdfplumber.open(uploaded_pdf).pages[0]
+    # Y=0付近（ヘッダーから一定の高さまで）をクロップ
+    header_area = page.crop((0, 0, page.width, 50)) # 50は調整可能な高さ
+    
+    # 抽出処理
+    raw_names = header_area.extract_text().split()
+    
+    # リスト作成：Key（T1, T2）や不要なヘッダーを除外
+    staff_list = ["特定なし"]
+    for name in raw_names:
+        if name not in [found_key, "関空免税店警備隊", "都市環境整美株式会社", "勤務予定表", "1月度"]:
+            staff_list.append(name)
+
+    # コンボボックス表示
+    st.write("次の中から、target_staff（あなた）を選んで下さい。")
+    target_staff = st.selectbox("対象スタッフ", staff_list)
+    
+    if st.button("このスタッフで解析開始"):
+        st.session_state.target_staff = target_staff
+        st.success(f"{target_staff} を選択しました。")
