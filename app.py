@@ -134,62 +134,38 @@ if uploaded_pdf:
     st.success("第2関門通過")
 def extract_staff_names(pdf_file):
     staff_names = []
-    
     with pdfplumber.open(pdf_file) as pdf:
         page = pdf.pages[0]
-        # X座標の範囲を特定するための変数
-        key_x_start = None
-        
         words = page.extract_words()
         words.sort(key=lambda w: w['top'])
         
-        # 行をグループ化
+        # 行グループ化
         rows = []
         if words:
             current_row = [words[0]]
             for w in words[1:]:
-                if abs(w['top'] - current_row[0]['top']) < 5:
+                if abs(w['top'] - current_row[0]['top']) < 3:
                     current_row.append(w)
                 else:
                     rows.append(current_row)
                     current_row = [w]
             rows.append(current_row)
             
-        state = 'searching_key'
-        
+        # スタッフ名の抽出（今回は座標制限を少し広げて確実に拾います）
         for row in rows:
-            text_content = "".join([w['text'] for w in row])
-            
-            # Key検知時に、そのKeyのX座標（左端）を記録する
-            if "T1" in text_content or "T2" in text_content:
-                # KeyのX座標を人名列の基準にする
-                key_word = [w for w in row if "T1" in w['text'] or "T2" in w['text']][0]
-                key_x_start = key_word['x0']
-                state = 'get_name'
-                continue
-            
-            if state == 'get_name':
-                # --- 座標フィルタリング ---
-                # KeyのX座標に近い単語だけを拾う（名前列に限定）
-                # 誤差±20pt以内なら人名列とする
-                name_words = [w for w in row if key_x_start - 10 <= w['x0'] <= key_x_start + 60]
-                
-                if name_words:
-                    name = name_words[0]['text'].strip()
-                    # 除外判定
-                    exclude_words = ["木", "金", "土", "日", "月", "火", "水", "休", "T1", "T2"]
-                    if len(name) >= 1 and name not in exclude_words and not re.search(r'\d', name):
-                        staff_names.append(name)
-                        state = 'skip_qual'
-                continue
-            
-            elif state == 'skip_qual':
-                state = 'get_name'
-                continue
-                
-    return sorted(list(set(staff_names)), key=lambda x: staff_names.index(x) if x in staff_names else 99)
-    
-    # 実行と結果表示
-    staff_list = extract_staff_names(uploaded_pdf)
-    st.write("### 抽出されたスタッフ名")
-    st.write(staff_list)
+            text = "".join([w['text'] for w in row])
+            # 明らかに名前の列にあると思われるパターンを抽出
+            # 名前の横に「休」「J」などのシフトコードが来る行を狙う
+            if any(code in text for code in ["休", "J", "A", "B", "C", "D", "E", "F", "G", "H"]):
+                # 行の左端にあるテキストを候補とする
+                potential_name = row[0]['text'].strip()
+                if len(potential_name) >= 1 and not re.search(r'\d', potential_name) and \
+                   potential_name not in ["木", "金", "土", "日", "月", "火", "水", "T1", "T2", "年", "月"]:
+                    staff_names.append(potential_name)
+                    
+    return list(dict.fromkeys(staff_names)) # 重複削除しつつ順序維持
+
+# 2. 関数呼び出し部分（関数の中ではなく、一番外側に配置）
+staff_list = extract_staff_names(uploaded_pdf)
+st.write("### 抽出されたスタッフ名")
+st.write(staff_list)
