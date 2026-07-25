@@ -69,28 +69,53 @@ import re # ファイル冒頭のimportに追加してください
 
 import re
 
-def extract_name_safely(raw_text):
-    # 1. 前後の余計な空白を除去
-    text = raw_text.strip()
+import re
+
+def extract_staff_names_below_key(page, key_text):
+    words = page.extract_words()
+    key_obj = next((w for w in words if key_text in w['text']), None)
+    if not key_obj: return []
     
-    # 2. 内部のスペース（タブや連続スペース）を半角スペース1つに統一
-    # これにより「姓   名」が「姓 名」になります
-    text = re.sub(r'\s+', ' ', text)
+    key_x, key_y = key_obj['x0'], key_obj['top']
     
-    # 3. スペースで分割してパーツに分ける
-    parts = text.split(' ')
+    # Keyより下、同じ列(x座標が近い)にある単語を抽出
+    # abs(w['x0'] - key_x) < 20 : Keyの列を特定
+    candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 20]
+    candidate_words.sort(key=lambda w: w['top'])
     
-    # 4. 人名部分を抽出
-    # もしパーツが2つ以上ある場合（例：「姓 名 資格」）
-    if len(parts) >= 2:
-        # 最初の2つを人名として結合する（間にスペースを戻す）
-        # これにより「資格」などが混入していても最初の2要素（姓と名）だけが残ります
-        extracted_name = f"{parts[0]} {parts[1]}"
-    else:
-        # パーツが1つしかない場合（例：「姓名」）
-        extracted_name = parts[0]
+    # 行ごとに単語をグループ化
+    grouped = {}
+    for w in candidate_words:
+        y = round(w['top'] / 5) * 5
+        if y not in grouped:
+            grouped[y] = []
+        grouped[y].append(w)
+    
+    staff_list = []
+    
+    # Y座標順に処理
+    for y in sorted(grouped.keys()):
+        # その行の全単語を左から順に並べて結合（間に半角スペースを1つ挟む）
+        line_words = sorted(grouped[y], key=lambda w: w['x0'])
+        full_text = " ".join([w['text'] for w in line_words])
         
-    return extracted_name
+        # 1. 先頭の不要な空白を削除（lstrip）
+        name = full_text.lstrip()
+        
+        # 2. 後の空白（末尾の無駄なスペース）も削除（rstrip）
+        name = name.rstrip()
+        
+        # 3. スペースを文字として扱い、Key自体や不要な記号を除外してリストアップ
+        # 曜日・シフト記号のみの行は弾く
+        is_shift_or_day = bool(re.match(r'^[A-Z休\d\.]+$', name.replace(" ", ""))) or \
+                          any(d in name for d in ["月","火","水","木","金","土","日"])
+        
+        # 2文字以上あり、かつKeyそのものではなく、記号行でなければOK
+        if len(name.replace(" ", "")) >= 2 and name != key_text and not is_shift_or_day:
+            if name not in staff_list:
+                staff_list.append(name)
+                
+    return staff_list
     
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
