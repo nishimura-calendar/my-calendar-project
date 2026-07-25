@@ -67,60 +67,30 @@ def display_pdf(uploaded_file):
 
 import re # ファイル冒頭のimportに追加してください
 
-def extract_staff_names_below_key(page, key_text):
-    words = page.extract_words()
+import re
+
+def extract_name_safely(raw_text):
+    # 1. 前後の余計な空白を除去
+    text = raw_text.strip()
     
-    # 1. Keyの座標を特定
-    key_obj = next((w for w in words if key_text in w['text']), None)
-    if not key_obj:
-        return []
+    # 2. 内部のスペース（タブや連続スペース）を半角スペース1つに統一
+    # これにより「姓   名」が「姓 名」になります
+    text = re.sub(r'\s+', ' ', text)
     
-    key_x = key_obj['x0']
-    key_y = key_obj['top']
+    # 3. スペースで分割してパーツに分ける
+    parts = text.split(' ')
     
-    # 2. Keyの座標基準で候補を抽出
-    # w['top'] > key_y + 5 : Keyより「下」にあるもののみ対象（Key自体は含まれない）
-    # abs(w['x0'] - key_x) < 20 : Keyと同じ列にあるもののみ対象
-    candidate_words = [
-        w for w in words 
-        if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 20
-    ]
-    
-    # 3. Y座標順にソートしてグループ化
-    candidate_words.sort(key=lambda w: w['top'])
-    
-    grouped_names = {}
-    for w in candidate_words:
-        y_group = round(w['top'] / 5) * 5
-        if y_group not in grouped_names:
-            grouped_names[y_group] = ""
-        grouped_names[y_group] += w['text']
+    # 4. 人名部分を抽出
+    # もしパーツが2つ以上ある場合（例：「姓 名 資格」）
+    if len(parts) >= 2:
+        # 最初の2つを人名として結合する（間にスペースを戻す）
+        # これにより「資格」などが混入していても最初の2要素（姓と名）だけが残ります
+        extracted_name = f"{parts[0]} {parts[1]}"
+    else:
+        # パーツが1つしかない場合（例：「姓名」）
+        extracted_name = parts[0]
         
-    staff_list = []
-    
-    # 4. 抽出とKeyのスキップ
-    for y, full_name in grouped_names.items():
-        name = full_name.replace(" ", "").replace(" ", "")
-        
-        # --- ここでKeyを確実にスキップ ---
-        # 1. nameがkey_textそのものではないこと
-        is_key = (name == key_text)
-        
-        # その他の不要ワード判定
-        is_shift = bool(re.match(r'^[A-Z休\d\.]+$', name))
-        is_day = any(d in name for d in ["月","火","水","木","金","土","日"])
-        is_invalid = any(k in name for k in ["勤務", "隊", "1月度", "株式会社", "予定表"])
-        
-        if (len(name) >= 2 and 
-            not is_key and    # <--- 【重要】ここでKeyを除外
-            not is_shift and 
-            not is_day and 
-            not is_invalid):
-            
-            if name not in staff_list:
-                staff_list.append(name)
-                
-    return staff_list
+    return extracted_name
     
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
