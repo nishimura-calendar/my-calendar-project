@@ -65,6 +65,32 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
+def extract_all_items_below_all_keys(page, keys):
+    """
+    ページ内にあるすべてのKeyを検出し、それぞれのKeyの真下にある全テキストを抽出する。
+    Keyそのものは除外する。資格等のフィルタリングは行わない。
+    """
+    words = page.extract_words()
+    all_items = []
+    
+    # ページ内の全単語からKeyに該当するオブジェクトをすべて特定
+    key_objs = [w for w in words if w['text'] in keys]
+    
+    for key_obj in key_objs:
+        key_x, key_y = key_obj['x0'], key_obj['top']
+        
+        # Keyの真下かつ同じX座標列にあるすべての単語を取得
+        candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 30]
+        
+        for w in candidate_words:
+            text = w['text'].strip()
+            # Keyそのものはスキップし、それ以外を追加
+            if text and text not in keys:
+                all_items.append(text)
+            
+    # 重複を削除してソート
+    return sorted(list(set(all_items)))
+
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
@@ -132,3 +158,17 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
+    with pdfplumber.open(uploaded_pdf) as pdf:
+            # 登録されている全Keyを取得
+            all_keys = list(st.session_state.data_dict.keys())
+            
+            # 複数Key対応の抽出関数を実行
+            items = extract_all_items_below_all_keys(pdf.pages[0], all_keys)
+            
+            if items:
+                # 抽出された全要素（人名・資格含む）から選択
+                selected_item = st.selectbox("スタッフ（または項目）を選択してください", items)
+                st.write(f"選択された項目: {selected_item}")
+            else:
+                st.warning("項目が自動抽出できませんでした。手動で入力してください。")
+                selected_item = st.text_input("スタッフ名を入力")    
