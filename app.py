@@ -65,56 +65,49 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-import re # ファイル冒頭のimportに追加してください
-
 import re
 
-import re
+def extract_name_safely(full_text):
+    """
+    行全体のテキストから「人名」と思われる最初の部分だけを抜き出す
+    """
+    # 1. パイプ記号や不要な記号を除去
+    clean_text = full_text.replace("|", " ").strip()
+    
+    # 2. 複数のスペースを1つのスペースに正規化
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    
+    # 3. スペースで分割してパーツに分ける
+    parts = clean_text.split(' ')
+    
+    # 4. 「最初のパーツ」が人名（姓）、「2番目のパーツ」が名（もしあれば）
+    # 資格などの不要データは、3番目以降のパーツとして無視する
+    if len(parts) >= 2:
+        # スペースがあってもなくても、最初の2つのパーツを結合して返す
+        # 例: ["水野", "順三", "資格"] -> "水野 順三"
+        # 例: ["岸田", "貢", "資格"] -> "岸田 貢"
+        return f"{parts[0]} {parts[1]}"
+    
+    # スペースがない場合（パーツが1つしかない場合）
+    # 例: "岸田貢" -> "岸田貢"
+    return parts[0]
 
 def extract_staff_names_below_key(page, key_text):
-    words = page.extract_words()
-    key_obj = next((w for w in words if key_text in w['text']), None)
-    if not key_obj: return []
-    
-    key_x, key_y = key_obj['x0'], key_obj['top']
-    
-    # Keyより下、同じ列(x座標が近い)にある単語を抽出
-    # abs(w['x0'] - key_x) < 20 : Keyの列を特定
-    candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 20]
-    candidate_words.sort(key=lambda w: w['top'])
-    
-    # 行ごとに単語をグループ化
-    grouped = {}
-    for w in candidate_words:
-        y = round(w['top'] / 5) * 5
-        if y not in grouped:
-            grouped[y] = []
-        grouped[y].append(w)
+    # (中略: candidate_wordsの抽出処理は以前と同じ)
+    # ...
     
     staff_list = []
-    
-    # Y座標順に処理
-    for y in sorted(grouped.keys()):
-        # その行の全単語を左から順に並べて結合（間に半角スペースを1つ挟む）
-        line_words = sorted(grouped[y], key=lambda w: w['x0'])
-        full_text = " ".join([w['text'] for w in line_words])
+    for y, full_text in grouped.items():
+        # 行全体のテキストから名前部分だけを抽出
+        name = extract_name_safely(full_text)
         
-        # 1. 先頭の不要な空白を削除（lstrip）
-        name = full_text.lstrip()
+        # 不要行（曜日・シフト記号行）の判定
+        is_invalid = any(bl in name for bl in ["教育", "研修", "同伴", "資格", "本町"])
         
-        # 2. 後の空白（末尾の無駄なスペース）も削除（rstrip）
-        name = name.rstrip()
-        
-        # 3. スペースを文字として扱い、Key自体や不要な記号を除外してリストアップ
-        # 曜日・シフト記号のみの行は弾く
-        is_shift_or_day = bool(re.match(r'^[A-Z休\d\.]+$', name.replace(" ", ""))) or \
-                          any(d in name for d in ["月","火","水","木","金","土","日"])
-        
-        # 2文字以上あり、かつKeyそのものではなく、記号行でなければOK
-        if len(name.replace(" ", "")) >= 2 and name != key_text and not is_shift_or_day:
+        # 抽出: 2文字以上かつKey以外ならリストに追加
+        if len(name.replace(" ", "")) >= 2 and name != key_text and not is_invalid:
             if name not in staff_list:
                 staff_list.append(name)
-                
     return staff_list
     
 # --- [3] メイン処理 ---
