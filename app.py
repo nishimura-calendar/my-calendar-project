@@ -65,43 +65,41 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-def extract_names_by_coordinate_logic(page, keys):
+def extract_names_below_all_keys(page, keys):
     words = page.extract_words()
-    # 全Keyを特定してソートしておく（上から順に処理するため）
+    # 全Keyを取得し、Y座標（top）でソート
     key_objs = sorted([w for w in words if w['text'] in keys], key=lambda w: w['top'])
-    full_names = []
-    
-    # グリッドの許容誤差（PDFのズレを吸収するための閾値）
-    Y_TOLERANCE = 5 
-    
+    staff_names = []
+
+    # 1. 各Keyの出現位置を基準にする
     for key_obj in key_objs:
         kx, ky = key_obj['x0'], key_obj['top']
         
-        # このKeyの配下にある言葉を抽出
-        # 1. Y座標がKeyとほぼ同じ (y ≈ ky)
-        # 2. X座標がKeyより右側 (x > kx)
+        # 2. そのKeyとY座標が同じ（約5pt以内）にある単語を抽出
+        # ユーザーの仮説に基づき、名前はKeyの右側に配置されている前提
         row_candidates = [
             w for w in words 
-            if abs(w['top'] - ky) < Y_TOLERANCE and w['x0'] > kx
+            if abs(w['top'] - ky) < 5 and w['x0'] > kx
         ]
         
-        # X座標順にソートして、ユーザーが仰る「1列目」「3列目」等の位置を特定する
+        # 3. X座標でソート（左から右へ）
         row_candidates.sort(key=lambda w: w['x0'])
         
-        # 座標ベースで人名をフィルタリング
-        # ユーザーの仮説: 名前の座標 = (KeyX + offset, KeyY)
-        # 例えば「1列目」は KeyX + 10～40 程度の範囲と特定できる
+        # 4. 「1列目」「3列目」等の座標範囲で人名を特定
+        # relative_x: Keyの左端からの相対距離
         for w in row_candidates:
             relative_x = w['x0'] - kx
             
-            # 「人名」が来るべき座標範囲（例: 5pt～50pt）を指定
-            # この範囲外の座標にあるものは「資格」や「シフト」とみなして無視
-            if 5 < relative_x < 50:
-                # 資格行やKeyそのものを除外する処理
-                if w['text'] not in keys and len(w['text']) >= 2:
-                    full_names.append(w['text'])
+            # 名前の座標範囲: Keyの直後から、シフトコードが始まる手前まで（ここでは約5pt〜60ptと定義）
+            if 5 < relative_x < 60:
+                # フィルタ: 2文字以上、かつ数字や記号のみのシフトコードでない
+                if len(w['text']) >= 2 and not re.search(r'[\d\.\(\)\[\]]', w['text']):
+                    # 資格キーワードの除外（座標でフィルタできない場合）
+                    if not re.search(r'(研修|教育|同伴|本町|警備隊)', w['text']):
+                        staff_names.append(w['text'])
             
-    return sorted(list(set(full_names)))
+    # 重複を除去してソート
+    return sorted(list(set(staff_names)))
     
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
@@ -175,13 +173,12 @@ if uploaded_pdf:
             all_keys = list(st.session_state.data_dict.keys())
             
             # 抽出関数を実行
+            # ... (PDF解析部分)
             staff_names = extract_names_below_all_keys(pdf.pages[0], all_keys)
             
-            # ★修正：items ではなく staff_names を判定に使用
+            # ここで判定を行うことで、空リストでもエラーにならず警告が表示されます
             if staff_names:
-                # ★修正：selectbox のリストも staff_names を指定
                 selected_item = st.selectbox("スタッフを選択してください", staff_names)
-                st.write(f"選択されたスタッフ: {selected_item}")
             else:
                 st.warning("スタッフ名が自動抽出できませんでした。手動で入力してください。")
                 selected_item = st.text_input("スタッフ名を入力")
