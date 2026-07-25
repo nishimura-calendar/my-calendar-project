@@ -82,15 +82,12 @@ def extract_names_below_all_keys(page, keys):
             if y_key not in rows: rows[y_key] = []
             rows[y_key].append(w)
         
-        # 結合処理と構造的フィルタリング
+        # 結合処理とフィルタリング
         for y in sorted(rows.keys()):
             row_words = sorted(rows[y], key=lambda w: w['x0'])
             full_name = "".join([w['text'] for w in row_words]).strip()
             
-            # フィルタ条件：
-            # 1. Keyではないこと
-            # 2. 2文字以上であること（これで「J」「休」等のコードを除外）
-            # 3. 漢字またはかなが含まれること（これで記号のみの行を除外）
+            # 条件：Key以外、2文字以上、漢字/かなを含む
             if (full_name and full_name not in keys and 
                 len(full_name) >= 2 and 
                 re.search(r'[\u4e00-\u9faf\u3040-\u309f]', full_name)):
