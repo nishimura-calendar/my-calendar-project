@@ -65,11 +65,19 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-def extract_staff_names(pdf_path):
+uploaded_file = st.file_uploader("PDFシフト表をアップロード", type=["pdf"])
+
+if uploaded_file is not None:
+    # 2. ファイルパスではなく、uploaded_file オブジェクトを直接渡す
+    # pdfplumber はファイルライクなオブジェクトを直接受け取れます
+    names = extract_staff_names(uploaded_file)
+    st.write(names)
+
+def extract_staff_names(pdf_file): # 引数を pdf_path から pdf_file に変更
     staff_names = []
     
-    with pdfplumber.open(pdf_path) as pdf:
-        # 最初のページを対象にする
+    # 3. with pdfplumber.open(pdf_file) として開く
+    with pdfpl        # 最初のページを対象にする
         page = pdf.pages[0]
         words = page.extract_words()
         
