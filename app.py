@@ -65,41 +65,57 @@ def display_pdf(uploaded_file):
     pdf_bytes = uploaded_file.read()
     pdf_viewer(input=pdf_bytes, width=700)
 
-def extract_names_below_all_keys(page, keys):
-    words = page.extract_words()
+def extract_staff_names(pdf_path):
     staff_names = []
     
-    # ページ内のすべての単語から、Keyを含む行全体を探索
-    for w in words:
-        if w['text'] in keys:
-            target_y = w['top']
+    with pdfplumber.open(pdf_path) as pdf:
+        # 最初のページを対象にする
+        page = pdf.pages[0]
+        words = page.extract_words()
+        
+        # 1. Y座標(top)でソートし、近いY座標にある単語を「行」としてグルーピング
+        words.sort(key=lambda w: w['top'])
+        rows = []
+        if words:
+            current_row = [words[0]]
+            for w in words[1:]:
+                # Y座標の誤差が5pt以内なら同じ行とみなす
+                if abs(w['top'] - current_row[0]['top']) < 5:
+                    current_row.append(w)
+                else:
+                    rows.append(current_row)
+                    current_row = [w]
+            rows.append(current_row)
             
-            # 同じ行（Y座標が近く、かつX座標がKeyより右）にある単語をすべて取得
-            row_words = [
-                word for word in words 
-                if abs(word['top'] - target_y) < 10  # 行の高さ許容範囲
-            ]
-            # X座標順にソート
-            row_words.sort(key=lambda x: x['x0'])
+        # 2. 状態管理フラグによる解析
+        state = 'searching_key'
+        
+        for row in rows:
+            # 行全体のテキストを結合
+            text_content = "".join([w['text'] for w in row])
             
-            # 連結して人名らしきものを探す（2文字以上、かつ記号でない）
-            full_line = "".join([word['text'] for word in row_words])
+            # Key (T1, T2) を検知して解析開始
+            if "T1" in text_content or "T2" in text_content:
+                state = 'get_name'
+                continue
             
-            # --- ここで抽出ルールを適用 ---
-            # 「Key(T1)」などの文字を削除し、残った文字列から抽出
-            for word in row_words:
-                name = word['text']
-                # キーワード以外、かつ2文字以上の日本語（漢字/かな）を含むもの
-                if (name not in keys and 
-                    len(name) >= 2 and 
-                    re.search(r'[\u4e00-\u9faf\u3040-\u309f]', name)):
-                    
-                    # 不要な単語を除外
-                    if not re.search(r'(研修|教育|同伴|本町|警備隊|株式会社)', name):
+            if state == 'get_name':
+                # 人名行の処理: 最初の単語を人名として抽出
+                # (シフトコードの「J」「休」や数字のみの行を除外するフィルタ)
+                name = row[0]['text']
+                if len(name) >= 2 and not re.match(r'^[\d\s\W]+$', name):
+                    if name not in ["本町", "研修", "教育"]: # 除外対象の定義
                         staff_names.append(name)
-
-    return sorted(list(set(staff_names)))
-    
+                        state = 'skip_qual' # 次は資格行なのでスキップへ
+                continue
+            
+            elif state == 'skip_qual':
+                # 資格行をスキップして、次の人名行へ戻る
+                state = 'get_name'
+                continue
+                
+    # 重複を除去して返す
+    return sorted(list(set(staff_names)))    
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
@@ -167,17 +183,6 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
-    with pdfplumber.open(uploaded_pdf) as pdf:
-            # 登録されている全Keyを取得
-            all_keys = list(st.session_state.data_dict.keys())
-            
-            # 抽出関数を実行
-            # ... (PDF解析部分)
-            staff_names = extract_names_below_all_keys(pdf.pages[0], all_keys)
-            
-            # ここで判定を行うことで、空リストでもエラーにならず警告が表示されます
-            if staff_names:
-                selected_item = st.selectbox("スタッフを選択してください", staff_names)
-            else:
-                st.warning("スタッフ名が自動抽出できませんでした。手動で入力してください。")
-                selected_item = st.text_input("スタッフ名を入力")
+    names = extract_staff_names("免税店シフト表.pdf")
+　　print(names)
+    
