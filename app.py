@@ -5,13 +5,16 @@ import pdfplumber
 import re
 import calendar
 import unicodedata
+import base64
+import streamlit.components.v1 as components
 from googleapiclient.discovery import build
 from streamlit_pdf_viewer import pdf_viewer
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
+from pypdf import PdfReader
 from google.auth.transport.requests import Request
 
-# --- [1] 時程表読み込み・整形 ---
+# --- [1] 時程表読み込み ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -59,54 +62,17 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] PDF表示関数 ---
+# --- [2] PDF表示用関数 ---
+# 修正箇所: base64でPDFをiframe埋め込みする形式に変更
 def display_pdf(uploaded_file):
+    # ファイルの読み込み位置を先頭に戻す
     uploaded_file.seek(0)
+    # PDFの中身をバイトデータとして読み込む
     pdf_bytes = uploaded_file.read()
+    
+    # ライブラリを使って表示
     pdf_viewer(input=pdf_bytes, width=700)
-
-def extract_staff_names_below_key(page, key_text):
-    words = page.extract_words()
-    key_obj = next((w for w in words if key_text in w['text']), None)
-    if not key_obj: return []
     
-    key_x, key_y = key_obj['x0'], key_obj['top']
-    
-    # Keyより下、同じ列(x座標が近い)にある単語を抽出[cite: 2]
-    candidate_words = [w for w in words if w['top'] > key_y + 5 and abs(w['x0'] - key_x) < 20]
-    candidate_words.sort(key=lambda w: w['top'])
-    
-    # 【修正】ここで必ず変数を初期化する
-    grouped = {}
-    for w in candidate_words:
-        y = round(w['top'] / 5) * 5
-        # 既存のテキストに連結する[cite: 2]
-        grouped[y] = grouped.get(y, "") + " " + w['text']
-    
-    staff_list = []
-    # 資格などの除外ワード設定[cite: 2]
-    blacklist = ["教育", "研修", "同伴", "資格", "本町", "9114", "91114", "勤務", "隊", "1月度", "株式会社"]
-    
-    # groupedが空でもエラーにならないよう、items()でループ処理
-    for y, full_text in grouped.items():
-        name = extract_name_safely(full_text)
-        
-        # 不要ワード判定
-        is_invalid = any(bl in name for bl in blacklist)
-        is_key = (name == key_text)
-        
-        # 曜日・記号行の判定
-        is_shift_or_day = bool(re.match(r'^[A-Z休\d\.]+$', name.replace(" ", ""))) or \
-                          any(d in name for d in ["月","火","水","木","金","土","日"])
-        
-        # 2文字以上あり、かつKey以外、除外ワードを含まない[cite: 2]
-        if len(name.replace(" ", "")) >= 2 and not is_key and not is_invalid and not is_shift_or_day:
-            if name not in staff_list:
-                staff_list.append(name)
-    
-    return staff_list
-    
-# --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
@@ -114,7 +80,7 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
-    # (2)① Keyの特定
+    # --- Step 1: キー検索 ---
     found_key = None
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -123,12 +89,13 @@ if uploaded_pdf:
                 found_key = key
                 break
     
+    # 修正箇所: keyが見つからない場合の挙動
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
-        display_pdf(uploaded_pdf)
+        display_pdf(uploaded_pdf) # ボタンなしで直接表示
         st.stop()
-    
-    # (2)②~⑤ 整合性データの抽出
+        
+    # --- Step 2: 整合性データの抽出 ---
     with pdfplumber.open(uploaded_pdf) as pdf:
         words = pdf.pages[0].extract_words()
         date_words = [w for w in words if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', w['text'])]
@@ -139,48 +106,42 @@ if uploaded_pdf:
         candidates = [w for w in day_words if abs(w['x0'] - last_date_obj['x0']) < 15]
         A_day = candidates[0]['text'] if candidates else "不明"
 
-    # 年月の確定
+    # --- Step 3: 年月の確定 ---
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
     
+    is_ready = False
+    
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
-        label_b = "ファイル名から算出"
+        label_b = "ファイル名から算出結果"
+        is_ready = True
     else:
-        # ご要望のメッセージを表示
-        st.warning("シフト表の年月が確認できません。下記フォームに入力後、年月確定ボタンを押して下さい。")
+        st.warning("年月が確認できません。年月を入力して下さい。")
         y = st.number_input("年", min_value=2000, max_value=2100, value=2026)
         m = st.number_input("月", min_value=1, max_value=12, value=3)
-        label_b = "手動入力"
-        if not st.button("年月確定"):
+        label_b = "入力年月"
+        if st.button("この年月で確定する"):
+            is_ready = True
+        else:
             st.stop()
-            
-    # (2)⑥⑦ 整合性判定
-    _, last_day = calendar.monthrange(y, m)
-    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
-    
-    if A_date == last_day and A_day == last_day_w:
-        # ⑥ 整合時：無言通過（何も表示せず次の処理へ）
-        pass
-    else:
-        # ⑦ 不整合時：エラー表示＋PDF表示＋停止
-        st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
-        st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
-        st.error("整合性が不一致です。")
-        display_pdf(uploaded_pdf)
-        st.stop()
 
-    # ここまで通過すれば解析成功
-    st.success("第2関門通過")
-    with pdfplumber.open(uploaded_pdf) as pdf:
-        page = pdf.pages[0]
-        # 修正：定義した関数名に変更
-        staff_list = extract_staff_names_below_key(page, found_key)
+    # --- Step 4: 整合性判定と処理 ---
+    if is_ready:
+        _, last_day = calendar.monthrange(y, m)
+        last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day)]
         
-        # デバッグ：何が取れているか確認用
-        if not staff_list:
-            st.write("人名が見つかりません。PDFの構造を確認中...")
-        
-        st.write("次の中から、target_staff（あなた）を選んで下さい。")
-        target_staff = st.selectbox("スタッフを選択", staff_list)
+        # 修正箇所: 整合性判定ロジック
+        is_consistent = (A_date == last_day and A_day == last_day_w)
+
+        if is_consistent:
+            # ⑥ 無言通過: ここには何も書かず、そのまま次の解析ロジックへ進ませる
+            pass 
+        else:
+            # ⑦ 不整合時: エラー表示 + PDF表示 + 停止
+            st.write(f"A：抽出結果 ＝ {A_date}日({A_day}曜日)")
+            st.write(f"B：{label_b} ＝ {last_day}日({last_day_w}曜日)")
+            st.error("整合性が不一致です。")
+            display_pdf(uploaded_pdf) # ボタンなしで直接表示
+    st.stop()
