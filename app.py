@@ -73,7 +73,7 @@ def extract_staff_names(pdf_path):
         page = pdf.pages[0]
         words = page.extract_words()
         
-        # 1. Y座標(top)でソートし、近いY座標にある単語を「行」としてグルーピング
+        # Y座標(top)でソートし、近いY座標にある単語を「行」としてグルーピング
         words.sort(key=lambda w: w['top'])
         rows = []
         if words:
@@ -87,7 +87,7 @@ def extract_staff_names(pdf_path):
                     current_row = [w]
             rows.append(current_row)
             
-        # 2. 状態管理フラグによる解析
+        # 状態管理フラグによる解析
         state = 'searching_key'
         
         for row in rows:
@@ -101,12 +101,12 @@ def extract_staff_names(pdf_path):
             
             if state == 'get_name':
                 # 人名行の処理: 最初の単語を人名として抽出
-                # (シフトコードの「J」「休」や数字のみの行を除外するフィルタ)
                 name = row[0]['text']
+                # シフトコードや数字のみ、不要な語句を除外
                 if len(name) >= 2 and not re.match(r'^[\d\s\W]+$', name):
-                    if name not in ["本町", "研修", "教育"]: # 除外対象の定義
+                    if name not in ["本町", "研修", "教育"]:
                         staff_names.append(name)
-                        state = 'skip_qual' # 次は資格行なのでスキップへ
+                        state = 'skip_qual' # 次は資格行なのでスキップ
                 continue
             
             elif state == 'skip_qual':
@@ -115,7 +115,8 @@ def extract_staff_names(pdf_path):
                 continue
                 
     # 重複を除去して返す
-    return sorted(list(set(staff_names)))    
+    return sorted(list(set(staff_names)))
+
 # --- [3] メイン処理 ---
 st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
@@ -184,5 +185,4 @@ if uploaded_pdf:
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
     names = extract_staff_names("免税店シフト表.pdf")
-　　print(names)
-    
+    print(names)
