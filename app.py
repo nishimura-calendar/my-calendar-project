@@ -156,10 +156,14 @@ if uploaded_pdf:
 
     # ここまで通過すれば解析成功
     st.success("第2関門通過")
-    # メイン処理での呼び出し例
     with pdfplumber.open(uploaded_pdf) as pdf:
         page = pdf.pages[0]
-        staff_list = extract_staff_names(page, found_key)
+        # 修正：定義した関数名に変更
+        staff_list = extract_staff_names_relative(page, found_key)
+        
+        # デバッグ：何が取れているか確認用
+        if not staff_list:
+            st.write("人名が見つかりません。PDFの構造を確認中...")
         
         st.write("次の中から、target_staff（あなた）を選んで下さい。")
-    target_staff = st.selectbox("スタッフを選択", staff_list)
+        target_staff = st.selectbox("スタッフを選択", staff_list)
