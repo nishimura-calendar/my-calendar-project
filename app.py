@@ -2,56 +2,45 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 
-st.title("免税店シフト表・自動解析アプリ")
+st.title("シフトデータ確認用ダッシュボード")
 
-# 1. ファイルアップロード
-uploaded_pdf = st.file_uploader("シフト表PDFをアップロードしてください", type="pdf")
+uploaded_pdf = st.file_uploader("シフト表PDFをアップロード", type="pdf")
 
-def get_clean_names(df):
-    """0列目から名前を抽出し、不要な文字を除去してリスト化する"""
-    # 0列目のデータを取得（欠損値を除去して文字列化）
-    raw_names = df.iloc[:, 0].dropna().astype(str).tolist()
-    clean_names = []
-    
-    for item in raw_names:
-        # T1, T2などのキーが含まれる行は無視
-        if "T1" in item or "T2" in item:
-            continue
-        # 改行コードがある場合はその前までを取得
-        name = item.split('\n')[0].strip()
-        # 2文字以上で、リストに未登録のものだけ追加
-        if len(name) >= 2 and name not in clean_names:
-            clean_names.append(name)
-    return clean_names
+# (簡易的な時間データ - 実際はPDFから読み取るか別途用意したリスト)
+time_schedule_db = {
+    "A": "09:00 - 18:00",
+    "B": "13:00 - 22:00",
+    "夜": "22:00 - 07:00",
+    "休": "公休"
+}
 
 if uploaded_pdf:
     with pdfplumber.open(uploaded_pdf) as pdf:
-        page = pdf.pages[0]
-        table = page.extract_table()
+        df_pdf = pd.DataFrame(pdf.pages[0].extract_table())
         
-        if table:
-            df_pdf = pd.DataFrame(table)
-            
-            # 2. 人名リストの作成
-            clean_names = get_clean_names(df_pdf)
-            
-            if clean_names:
-                # 3. 選択メニューの表示
-                selected_name = st.selectbox("シフトを確認する人を選択してください", clean_names)
-                st.write(f"### 選択された人: **{selected_name}** さんの行データ")
-                
-                # 4. 選択した人の行データを抽出
-                # (0列目に名前が含まれている行を検索)
-                row_data = df_pdf[df_pdf.iloc[:, 0].astype(str).str.contains(selected_name, na=False)]
-                
-                if not row_data.empty:
-                    st.dataframe(row_data)
-                    
-                    # 補足：ここから先は個別のシフト情報の処理に使えます
-                    st.info("この行データを解析して、個別のシフトをカレンダーに追加する準備が整いました。")
-                else:
-                    st.error("データの抽出に失敗しました。")
-            else:
-                st.warning("人名が抽出できませんでした。")
-        else:
-            st.error("PDFから表データを読み込めませんでした。")
+        # 名前リスト作成（ロジックは前回同様）
+        names_list = []
+        for i, row in df_pdf.iterrows():
+            val = str(row[0]).strip()
+            if len(val) >= 2 and "T1" not in val:
+                names_list.append((i, val.split('\n')[0]))
+
+        selected_name = st.selectbox("確認したいスタッフを選択", [n[1] for n in names_list])
+        idx = [n[0] for n in names_list if n[1] == selected_name][0]
+
+        # 1. my_daily_shift (本人・2行)
+        st.write("### 1. my_daily_shift (本人行＋下段の2行)")
+        my_daily_shift = df_pdf.iloc[idx:idx+2, :]
+        st.dataframe(my_daily_shift)
+
+        # 2. other_daily_shift (他者・名前行のみ)
+        st.write("### 2. other_daily_shift (他者一覧)")
+        others = [n[1] for n in names_list if n[1] != selected_name]
+        st.write(others)
+
+        # 3. time_schedule (Key検索機能)
+        st.write("### 3. time_schedule (シフト記号検索)")
+        search_key = st.text_input("シフト記号を入力 (例: A, B, 夜, 休)")
+        if search_key:
+            result = time_schedule_db.get(search_key.upper(), "該当なし")
+            st.write(f"検索結果: **{search_key}** → {result}")
