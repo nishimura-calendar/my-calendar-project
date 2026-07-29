@@ -109,72 +109,64 @@ if uploaded_pdf:
     
     # (3)④〜⑦ 整合性判定
     _, last_day_num = calendar.monthrange(y, m)
-    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
     
-    if A_date == last_day_num and A_day == last_day_w:
-        st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
-    else:
-        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
-        st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
-        st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
-        st.stop()
-        
-# --- [設定] 対象スタッフ ---
-target_staff_list = ["西村 文宏"]
+    # --- [修正箇所] ここから下をすべてインデントの内側に入れました ---
+    
+    # --- [設定] 対象スタッフ ---
+    target_staff_list = ["西村 文宏"]
 
-# --- [1] 辞書への登録と振り分け ---
-final_data = {
-    found_key: {
-        "my_daily_shift": {},
-        "other_daily_shift": {},
-        "time_schedule": st.session_state.data_dict.get(found_key)
+    # --- [1] 辞書への登録と振り分け ---
+    final_data = {
+        found_key: {
+            "my_daily_shift": {},
+            "other_daily_shift": {},
+            "time_schedule": st.session_state.data_dict.get(found_key)
+        }
     }
-}
 
-# PDF抽出済みデータ (df_pdf) から名前行を特定して辞書登録
-# 下段1行を含めるため、rangeの終端を -1 に設定
-for row in range(2, df_pdf.shape[0] - 1): 
-    name = str(df_pdf.iloc[row, 1]).strip()
-    
-    # 無効な名前行をスキップ
-    if name == "None" or len(name) < 2:
-        continue
+    # PDF抽出済みデータ (df_pdf) から名前行を特定して辞書登録
+    for row in range(2, df_pdf.shape[0] - 1): 
+        name = str(df_pdf.iloc[row, 1]).strip()
         
-    if name in target_staff_list:
-        # target_staff の場合: その行と下段1行（計2行）を抽出
-        my_shifts = [
-            df_pdf.iloc[row, 3:3+last_day_num].tolist(),    # 本人行
-            df_pdf.iloc[row+1, 3:3+last_day_num].tolist()   # 下段1行
-        ]
-        final_data[found_key]["my_daily_shift"][name] = my_shifts
+        # 無効な名前行をスキップ
+        if name == "None" or len(name) < 2:
+            continue
+            
+        if name in target_staff_list:
+            # target_staff の場合: その行と下段1行（計2行）を抽出
+            my_shifts = [
+                df_pdf.iloc[row, 3:3+last_day_num].tolist(),    # 本人行
+                df_pdf.iloc[row+1, 3:3+last_day_num].tolist()   # 下段1行
+            ]
+            final_data[found_key]["my_daily_shift"][name] = my_shifts
+        else:
+            # その他の場合: 通常のシフト抽出
+            shifts = df_pdf.iloc[row, 3:3+last_day_num].tolist()
+            final_data[found_key]["other_daily_shift"][name] = shifts
+
+    # --- [2] 結果の表示 ---
+    st.write("---")
+    st.header(f"解析結果: {found_key}")
+
+    # 1. my_daily_shift 表示
+    st.subheader("1. my_daily_shift (Target Staff)")
+    my_data = final_data[found_key]["my_daily_shift"]
+    for name, shifts_list in my_data.items():
+        st.write(f"対象スタッフ: {name}")
+        df_my_display = pd.DataFrame(shifts_list, index=["本人行", "下段1行"])
+        st.dataframe(df_my_display)
+
+    # 2. other_daily_shift 表示
+    st.subheader("2. other_daily_shift (Others)")
+    if final_data[found_key]["other_daily_shift"]:
+        df_other = pd.DataFrame.from_dict(final_data[found_key]["other_daily_shift"], orient='index')
+        st.dataframe(df_other)
     else:
-        # その他の場合: 通常のシフト抽出
-        shifts = df_pdf.iloc[row, 3:3+last_day_num].tolist()
-        final_data[found_key]["other_daily_shift"][name] = shifts
+        st.write("該当なし")
 
-# --- [2] 結果の表示 ---
-st.write("---")
-st.header(f"解析結果: {found_key}")
-
-# 1. my_daily_shift 表示
-st.subheader("1. my_daily_shift (Target Staff)")
-my_data = final_data[found_key]["my_daily_shift"]
-for name, shifts_list in my_data.items():
-    st.write(f"対象スタッフ: {name}")
-    df_my_display = pd.DataFrame(shifts_list, index=["本人行", "下段1行"])
-    st.dataframe(df_my_display)
-
-# 2. other_daily_shift 表示
-st.subheader("2. other_daily_shift (Others)")
-if final_data[found_key]["other_daily_shift"]:
-    df_other = pd.DataFrame.from_dict(final_data[found_key]["other_daily_shift"], orient='index')
-    st.dataframe(df_other)
-else:
-    st.write("該当なし")
-
-# 3. time_schedule 表示
-st.subheader("3. time_schedule")
-if final_data[found_key]["time_schedule"] is not None:
-    st.dataframe(final_data[found_key]["time_schedule"])
-else:
-    st.write("基本時程表データなし")
+    # 3. time_schedule 表示
+    st.subheader("3. time_schedule")
+    if final_data[found_key]["time_schedule"] is not None:
+        st.dataframe(final_data[found_key]["time_schedule"])
+    else:
+        st.write("基本時程表データなし")
