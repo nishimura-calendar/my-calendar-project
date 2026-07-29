@@ -1,19 +1,43 @@
+import streamlit as st
 import pandas as pd
+import pdfplumber
+
+st.title("シフト表解析アプリ")
+
+# 1. ファイルアップロードボタンの表示
+uploaded_pdf = st.file_uploader("シフト表PDFをアップロードしてください", type="pdf")
 
 def find_key_position(df):
-    """
-    DataFrameの中から 'T1' または 'T2' を探し、その行番号(row)と列番号(col)を返す
-    """
+    """DataFrameの中から 'T1' または 'T2' を探し、位置を返す"""
     for row_idx in range(df.shape[0]):
         for col_idx in range(df.shape[1]):
             val = str(df.iloc[row_idx, col_idx])
-            # T1 または T2 を検索（部分一致）
             if "T1" in val or "T2" in val:
                 return row_idx, col_idx
     return None, None
 
-# 使用例:
-# row, col = find_key_position(df_pdf)
-# if row is not None:
-#     st.write(f"キーが見つかりました: {row}行目, {col}列目")
-#     found_key = df_pdf.iloc[row, col]
+if uploaded_pdf:
+    with pdfplumber.open(uploaded_pdf) as pdf:
+        page = pdf.pages[0]
+        # 表を抽出
+        table = page.extract_table()
+        if table:
+            df_pdf = pd.DataFrame(table)
+            
+            # 2. キー（T1/T2）の位置を自動特定
+            row, col = find_key_position(df_pdf)
+            
+            if row is not None:
+                st.success(f"キー '{df_pdf.iloc[row, col]}' を {row}行目, {col}列目で発見しました！")
+                
+                # キーの行を基準にデータを整理
+                df_data = df_pdf.iloc[row+1:, :].reset_index(drop=True)
+                
+                st.write("### 抽出されたデータ（キー以降）")
+                st.dataframe(df_data)
+                
+                # ここに今後の人名抽出やシフト解析の処理を追加していきます
+            else:
+                st.error("PDF内に 'T1' または 'T2' が見つかりませんでした。")
+        else:
+            st.error("PDFから表を読み込めませんでした。")
