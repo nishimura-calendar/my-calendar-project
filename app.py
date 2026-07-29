@@ -119,11 +119,11 @@ if uploaded_pdf:
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
 # ---------------------------------------------------------
-    # 第2関門突破後の表示ロジック (最終修正版)
+    # 第2関門突破後の表示ロジック (最終統合版)
     # ---------------------------------------------------------
     st.divider()
 
-    # --- 人名とデータの抽出処理 ---
+    # --- 1. インデックスと人名の抽出 ---
     staff_data = []
     for idx in range(0, df_pdf.shape[0], 2):
         name_val = str(df_pdf.iloc[idx, 0])
@@ -131,7 +131,7 @@ if uploaded_pdf:
         if name_val in st.session_state.data_dict.keys():
             continue
         
-        # 【修正】名前は改行までとする
+        # 名前は改行までとする
         clean_name = name_val.split('\n')[0] if name_val != 'None' else "該当なし"
         staff_data.append((idx, clean_name))
 
@@ -139,41 +139,37 @@ if uploaded_pdf:
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
-    # --- ① my_daily_shift ---
+    # --- 2. ① my_daily_shift (本人) ---
     st.header("① my_daily_shift")
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
     
-    # 【修正】人名列のみ空白にする(行インデックスは my_df 内の 1)
+    # データ行（2行目）の「人名列（0列目）」のみ空白にする
     my_df.iloc[1, 0] = "" 
     st.dataframe(my_df)
     
-    # ダウンロード用
     csv_my = my_df.to_csv(index=False, header=False).encode('utf-8-sig')
     st.download_button("my_daily_shift.csv をダウンロード", csv_my, "my_daily_shift.csv", "text/csv")
 
-    # --- ② other_daily_shift ---
-    st.header("② other_daily_shift (人名行＋シフト行 一覧)")
+    # --- 3. ② other_daily_shift (人名行のみ・シフト付) ---
+    st.header("② other_daily_shift")
     
-    # 本人以外の人名行とその下のシフトデータ行をすべて結合
     other_rows = []
     for idx, name in staff_data:
         if name != target_name:
-            # 人名行の処理（名前を改行カット）
-            row_name = df_pdf.iloc[idx:idx+1].copy()
-            row_name.iloc[0, 0] = name
-            other_rows.append(row_name)
-            # データ行を結合
-            other_rows.append(df_pdf.iloc[idx+1 : idx+2])
+            # 人名行(idx)のみを抽出して名前をクレンジング
+            row = df_pdf.iloc[idx : idx+1].copy()
+            row.iloc[0, 0] = name
+            other_rows.append(row)
     
     if other_rows:
         other_df = pd.concat(other_rows)
         st.dataframe(other_df)
         
-        # 【修正】人名＋データが含まれたCSVを出力
+        # CSV出力：人名行のみ（名前＋全シフトデータ）
         csv_other = other_df.to_csv(index=False, header=False).encode('utf-8-sig')
         st.download_button("other_daily_shift.csv をダウンロード", csv_other, "other_daily_shift.csv", "text/csv")
 
-    # --- ③ time_schedule ---
+    # --- 4. ③ time_schedule (ソースの表) ---
     st.header("③ time_schedule (ソースの表)")
     if found_key in st.session_state.data_dict:
         st.write(f"勤務地: {found_key}")
