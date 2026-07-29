@@ -6,19 +6,40 @@ st.title("人名抽出テスト")
 uploaded_pdf = st.file_uploader("PDFをアップロード", type="pdf")
 
 if uploaded_pdf:
-# [2]〈2〉①～③を実装する処理フロー
     with pdfplumber.open(uploaded_pdf) as pdf:
         page = pdf.pages[0]
         
         # ① アンカーから表の開始位置を整理
-        t1_word = next(w for w in page.extract_words() if "T1" in w["text"])
+        t1_word = next((w for w in page.extract_words() if "T1" in w["text"]), None)
+        if not t1_word:
+            st.error("T1が見つかりませんでした")
+            st.stop()
+            
         bbox = (0, t1_word["bottom"], page.width, page.height)
-        df_pdf = pd.DataFrame(page.crop(bbox).extract_table())
-    
-        # ② 列の役割を整理して特定
-        # 3列目以降に日付が並んでいる前提で、その左を人名列と判定
-        date_col_idx = 3 # 3列目から日付が始まる場合
-        name_col_idx = date_col_idx - 1 
+        # テーブル抽出設定を強化（罫線ベースで抽出）
+        table = page.crop(bbox).extract_table(table_settings={"vertical_strategy": "lines"})
+        df_pdf = pd.DataFrame(table)
         
-        # ③ 整理されたロジックで抽出実行
-        all_staff_names = df_pdf.iloc[2:, name_col_idx].dropna().tolist()
+        # ② 列の役割を整理して特定
+        # 以前のコードでは name_col_idx = 2 (date_col_idx 3 - 1) でしたが、
+        # PDFのデータを見ると名前が「列2」または「列1」に散らばっているため、
+        # 複数の列を候補として探すように変更します
+        
+        all_staff_names = []
+        # 列1と列2の両方をチェックして抽出する
+        for col_idx in [1, 2]:
+            names = df_pdf.iloc[2:, col_idx].dropna().unique()
+            for name in names:
+                name = str(name).strip()
+                # 名前の長さや文字制限を緩和して抽出
+                if len(name) >= 2 and "休" not in name and "0.5" not in name:
+                    if name not in all_staff_names:
+                        all_staff_names.append(name)
+        
+        # 結果を表示
+        st.write("### 抽出された人名リスト")
+        st.write(all_staff_names)
+        
+        # デバッグ用：テーブル全体を表示
+        st.write("### 抽出されたテーブル")
+        st.dataframe(df_pdf)
