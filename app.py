@@ -118,3 +118,50 @@ if uploaded_pdf:
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
+        
+# --- [設定] 対象スタッフ ---
+target_staff_list = ["西村 文宏"]  # ここにあなたの名前を設定してください
+
+# --- [1] 辞書への登録と振り分け ---
+# final_data の初期構造
+final_data = {
+    identified_key: {
+        "my_daily_shift": {},
+        "other_daily_shift": {},
+        "time_schedule": "取得済みデータ" # 必要に応じて実際のデータを格納
+    }
+}
+
+# PDF抽出済みデータ (df_pdf) から名前行を特定して辞書登録
+for row in range(2, df_pdf.shape[0]):
+    name = str(df_pdf.iloc[row, 1]).strip() # 2列目を名前と仮定
+    
+    # 無効な名前行をスキップ（適宜調整してください）
+    if name == "None" or len(name) < 2:
+        continue
+        
+    shifts = df_pdf.iloc[row, 3:3+last_day_num].tolist() # シフト部分の抽出
+    
+    # target_staff かどうかで振り分け
+    if name in target_staff_list:
+        final_data[identified_key]["my_daily_shift"][name] = shifts
+    else:
+        final_data[identified_key]["other_daily_shift"][name] = shifts
+
+# --- [2] 結果の表示 ---
+st.write("---")
+st.header(f"解析結果: {identified_key}")
+
+# 1. my_daily_shift 表示
+st.subheader("1. my_daily_shift (Target Staff)")
+df_my = pd.DataFrame.from_dict(final_data[identified_key]["my_daily_shift"], orient='index')
+st.dataframe(df_my)
+
+# 2. other_daily_shift 表示
+st.subheader("2. other_daily_shift (Others)")
+df_other = pd.DataFrame.from_dict(final_data[identified_key]["other_daily_shift"], orient='index')
+st.dataframe(df_other)
+
+# 3. time_schedule 表示
+st.subheader("3. time_schedule")
+st.write(final_data[identified_key]["time_schedule"])
