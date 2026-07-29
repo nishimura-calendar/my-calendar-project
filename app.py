@@ -41,20 +41,31 @@ def process_data(df):
 
 @st.cache_data(ttl=3600)
 def load_and_process_data():
-    creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(**creds_dict)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    service = build('drive', 'v3', credentials=creds)
-    file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
-    request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    while not downloader.next_chunk()[1]: pass
-    fh.seek(0)
-    df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
-    return process_data(df)
-
+    try:
+        creds_dict = st.secrets["google_oauth_credentials"]
+        creds = Credentials(**creds_dict)
+        
+        # 認証切れ対策コード
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        
+        service = build('drive', 'v3', credentials=creds)
+        file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
+        request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        while not downloader.next_chunk()[1]: pass
+        fh.seek(0)
+        df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
+        return process_data(df)
+        
+    except Exception as e:
+        # ここでキャッチすることで、アプリ全体のクラッシュを防ぎます
+        st.error("Google認証情報の期限が切れています。")
+        st.write("StreamlitのSecrets設定を更新してください。")
+        st.exception(e) # 詳細なエラーを表示
+        st.stop() # 処理を止める
+        
 # --- [2] PDF解析・整合性判定 ---
 st.title("シフト表解析システム")
 
