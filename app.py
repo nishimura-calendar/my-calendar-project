@@ -2,17 +2,27 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 
-st.title("シフト表解析アプリ（0列目抽出版）")
+st.title("人名リスト抽出アプリ")
 
-uploaded_pdf = st.file_uploader("シフト表PDFをアップロードしてください", type="pdf")
+# 1. アップロードボタン
+uploaded_pdf = st.file_uploader("シフト表PDFをアップロード", type="pdf")
 
-def find_key_position(df):
-    for row_idx in range(df.shape[0]):
-        for col_idx in range(df.shape[1]):
-            val = str(df.iloc[row_idx, col_idx])
-            if "T1" in val or "T2" in val:
-                return row_idx, col_idx
-    return None, None
+def get_clean_names(df):
+    """0列目から名前だけを抽出し、クリーニングしてリストを返す"""
+    raw_names = df.iloc[:, 0].dropna().astype(str).tolist()
+    clean_names = []
+    
+    for item in raw_names:
+        # キー（T1など）はスキップ
+        if "T1" in item or "T2" in item:
+            continue
+        # 改行コードがある場合はその前までを取得
+        name = item.split('\n')[0].strip()
+        # 空文字や短すぎる文字列を除外
+        if len(name) >= 2 and name not in clean_names:
+            clean_names.append(name)
+            
+    return clean_names
 
 if uploaded_pdf:
     with pdfplumber.open(uploaded_pdf) as pdf:
@@ -21,26 +31,15 @@ if uploaded_pdf:
         
         if table:
             df_pdf = pd.DataFrame(table)
-            row, col = find_key_position(df_pdf)
             
-            if row is not None:
-                # 1. キー行の次からデータを取得
-                df_data = df_pdf.iloc[row+1:, :].reset_index(drop=True)
-                
-                # 2. 【重要】0列目だけを抽出（他の列はすべて破棄）
-                df_names = df_data.iloc[:, [0]]
-                
-                # 3. Noneや空文字を除去して表示
-                df_clean = df_names.dropna().replace("", pd.NA).dropna()
-                
-                st.write("### 抽出された0列目（人名リスト等）")
-                st.dataframe(df_clean)
-                
-                # 必要であればリスト化して表示
-                st.write("### リスト表示")
-                st.write(df_clean.iloc[:, 0].tolist())
-                
+            # 人名リスト作成
+            clean_names = get_clean_names(df_pdf)
+            
+            # 2. 人名選択メニューの表示
+            if clean_names:
+                selected_name = st.selectbox("シフトを確認する人を選択してください", clean_names)
+                st.write(f"選択された人: **{selected_name}**")
             else:
-                st.error("PDF内に 'T1' または 'T2' が見つかりませんでした。")
+                st.warning("人名が抽出できませんでした。")
         else:
-            st.error("PDFから表を読み込めませんでした。")
+            st.error("表データが見つかりませんでした。")
