@@ -123,39 +123,42 @@ if uploaded_pdf:
     # ---------------------------------------------------------
     st.divider()
 
-    # --- 人名とデータの抽出処理 ---
-    # Key行の特定（Key行と思われる行をスキップする判定）
-    # ※Key行は文字列が含まれ、名前行よりも特定のルールがある場合はここでフィルタリング
+    # --- インデックスと人名の抽出 ---
     staff_data = []
+    # 偶数行を名前行として走査
     for idx in range(0, df_pdf.shape[0], 2):
-        # 1. Key行の場合は2行スキップ(判定ロジック)
-        if str(df_pdf.iloc[idx, 0]) in st.session_state.data_dict.keys():
+        name_val = str(df_pdf.iloc[idx, 0])
+        # Key行スキップの判定
+        if name_val in st.session_state.data_dict.keys():
             continue
         
-        # 2. 人名抽出（改行まで）
-        raw_name = str(df_pdf.iloc[idx, 0])
-        clean_name = raw_name.split('\n')[0] if raw_name != 'None' else "該当なし"
+        # 名前行のクレンジング
+        clean_name = name_val.split('\n')[0] if name_val != 'None' else "該当なし"
         staff_data.append((idx, clean_name))
 
     # コンボボックス
-    target_staff_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
-    target_idx = [s[0] for s in staff_data if s[1] == target_staff_name][0]
+    target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
+    target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
-    # --- ① my_daily_shift ---
+    # --- ① my_daily_shift (本人) ---
     st.header("① my_daily_shift")
-    # 本人行とその下の行を表示（データ行は空白という要件ですが、確認のためそのまま表示）
-    my_df = df_pdf.iloc[target_idx : target_idx + 2, :]
+    my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
+    # データ行は空白にする要件を適用
+    my_df.iloc[1, :] = None 
     st.dataframe(my_df)
 
-    # --- ② other_daily_shift ---
-    st.header("② other_daily_shift (人名行のみ一覧)")
-    other_names = [s[1] for s in staff_data if s[1] != target_staff_name]
-    st.write(other_names)
+    # --- ② other_daily_shift (他人リストをCSVで) ---
+    st.header("② other_daily_shift")
+    # 本人以外の人名行のみ抽出
+    other_df = pd.DataFrame([s[1] for s in staff_data if s[1] != target_name], columns=["Other_Staff_Names"])
+    
+    # CSVダウンロードボタン
+    csv = other_df.to_csv(index=False).encode('utf-8')
+    st.download_button("other_daily_shift.csv をダウンロード", csv, "other_daily_shift.csv", "text/csv")
+    st.dataframe(other_df)
 
-    # --- ③ time_schedule (csv形式での表示) ---
-    st.header("③ time_schedule (CSV形式)")
-    # 現在の選択スタッフのデータをCSV形式として表示
-    csv_buffer = io.StringIO()
-    my_df.to_csv(csv_buffer, index=False)
-    st.download_button("my_daily_shift.csv をダウンロード", csv_buffer.getvalue(), "my_daily_shift.csv")
-    st.code(my_df.to_csv(index=False), language='csv')
+    # --- ③ time_schedule (ソースの表) ---
+    st.header("③ time_schedule")
+    if found_key in st.session_state.data_dict:
+        st.write(f"勤務地: {found_key}")
+        st.table(st.session_state.data_dict[found_key])
