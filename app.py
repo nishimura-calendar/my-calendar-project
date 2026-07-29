@@ -6,34 +6,19 @@ st.title("人名抽出テスト")
 uploaded_pdf = st.file_uploader("PDFをアップロード", type="pdf")
 
 if uploaded_pdf:
+# [2]〈2〉①～③を実装する処理フロー
     with pdfplumber.open(uploaded_pdf) as pdf:
-        # 1ページ目を読み込み
         page = pdf.pages[0]
-        # 表を抽出
-        table = page.extract_table()
         
-        if table:
-            df = pd.DataFrame(table)
-            
-            # --- 人名抽出のロジック ---
-            # 2列目（index 1）に名前があるはずなので、そこを抽出します
-            name_column = df.iloc[:, 1] 
-            
-            # リスト化して整形
-            name_list = []
-            for val in name_column:
-                # 文字列に変換し、空白を除去
-                name = str(val).strip()
-                # Noneや空文字、短すぎる文字列を除外
-                if name != "None" and len(name) >= 2:
-                    name_list.append(name)
-            
-            # 結果を表示
-            st.write("### 抽出された人名リスト")
-            st.write(name_list)
-            
-            # デバッグ用に元データも表示
-            st.write("### (参考) 読み込んだテーブルデータの一部")
-            st.dataframe(df.head(10))
-        else:
-            st.error("表が抽出できませんでした。")
+        # ① アンカーから表の開始位置を整理
+        t1_word = next(w for w in page.extract_words() if "T1" in w["text"])
+        bbox = (0, t1_word["bottom"], page.width, page.height)
+        df_pdf = pd.DataFrame(page.crop(bbox).extract_table())
+    
+        # ② 列の役割を整理して特定
+        # 3列目以降に日付が並んでいる前提で、その左を人名列と判定
+        date_col_idx = 3 # 3列目から日付が始まる場合
+        name_col_idx = date_col_idx - 1 
+        
+        # ③ 整理されたロジックで抽出実行
+        all_staff_names = df_pdf.iloc[2:, name_col_idx].dropna().tolist()
