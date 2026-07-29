@@ -1,42 +1,55 @@
 import streamlit as st
 import pandas as pd
+import pdfplumber
 
-st.title("シフト解析ダッシュボード")
+st.title("シフト解析プログラム検証")
 
-# CSVまたはPDFをアップロード
-uploaded_file = st.file_uploader("ファイルをアップロード", type=["csv", "pdf"])
+# ---------------------------------------------------------
+# ③ time_schedule (裏方処理・セッションに保持)
+# ---------------------------------------------------------
+def load_time_schedule_backend():
+    """時程表を読み込み、辞書としてsession_stateに保存する"""
+    # 実際はここで共有スプレッドシートから読み込むロジックを実装
+    # ここでは検証用に固定の辞書を定義
+    schedule = {
+        "A": "09:00-18:00", "B": "13:00-22:00", "夜": "22:00-07:00", "休": "公休"
+    }
+    st.session_state.time_schedule = schedule
+    return schedule
 
-def clean_data(df):
-    """
-    指示されたルールでデータをクリーニングする関数
-    - /n (改行) があれば、そこでストップ（名前のみ抽出）
-    - None (NaN) は空白（空文字）として扱う
-    """
-    # 0列目の名前処理
-    if 0 in df.columns:
-        df.iloc[:, 0] = df.iloc[:, 0].apply(
-            lambda x: str(x).split('\n')[0] if pd.notnull(x) else ""
-        )
-    # NaNを空白に置き換え
-    df = df.fillna("")
-    return df
+if 'time_schedule' not in st.session_state:
+    load_time_schedule_backend()
 
-if uploaded_file:
-    # 拡張子に合わせて読み込み
-    if uploaded_file.name.endswith('.csv'):
-        df_data = pd.read_csv(uploaded_file)
-    else:
-        # PDFの場合の処理（既存のpdfplumberロジック）
-        import pdfplumber
-        with pdfplumber.open(uploaded_file) as pdf:
-            table = pdf.pages[0].extract_table()
-            df_data = pd.DataFrame(table)
+# ---------------------------------------------------------
+# メイン画面
+# ---------------------------------------------------------
+uploaded_pdf = st.file_uploader("シフトPDFをアップロード", type="pdf")
 
-    # クリーニング適用
-    df_clean = clean_data(df_data)
+if uploaded_pdf:
+    with pdfplumber.open(uploaded_pdf) as pdf:
+        # 表の抽出とヘッダー検索（第1関門）
+        page = pdf.pages[0]
+        table = page.extract_table()
+        df_pdf = pd.DataFrame(table)
 
-    # 表示
-    st.write("### クリーニング後のデータ")
-    st.dataframe(df_clean)
+        # タブで表示を切り替え
+        tab1, tab2, tab3 = st.tabs(["① my_daily_shift", "② other_daily_shift", "③ time_schedule"])
 
-    # これ以降に my_daily_shift などの抽出処理を記述
+        with tab1:
+            st.header("① my_daily_shift")
+            # PDFから本人行を抽出するロジック（仮）
+            st.write("本人用シフトデータを表示します。")
+            st.dataframe(df_pdf.head(5)) # デモ用
+
+        with tab2:
+            st.header("② other_daily_shift")
+            st.write("他スタッフのシフトデータを表示します。")
+            st.dataframe(df_pdf.tail(5)) # デモ用
+
+        with tab3:
+            st.header("③ time_schedule (検証用)")
+            st.info("※通常は画面表示不要な裏方データです")
+            st.write(st.session_state.time_schedule)
+
+else:
+    st.warning("PDFファイルをアップロードしてください。")
