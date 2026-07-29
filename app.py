@@ -119,15 +119,21 @@ if uploaded_pdf:
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
 # ---------------------------------------------------------
-    # 第2関門突破後の処理 (実装済みコードの後半を以下に置換)
+    # 第2関門突破後の表示ロジック
     # ---------------------------------------------------------
     st.divider()
 
-    # --- 人名リストの作成 (改行カット処理) ---
+    # --- 人名とデータの抽出処理 ---
+    # Key行の特定（Key行と思われる行をスキップする判定）
+    # ※Key行は文字列が含まれ、名前行よりも特定のルールがある場合はここでフィルタリング
     staff_data = []
     for idx in range(0, df_pdf.shape[0], 2):
+        # 1. Key行の場合は2行スキップ(判定ロジック)
+        if str(df_pdf.iloc[idx, 0]) in st.session_state.data_dict.keys():
+            continue
+        
+        # 2. 人名抽出（改行まで）
         raw_name = str(df_pdf.iloc[idx, 0])
-        # 改行文字が含まれる場合はその前までを抽出
         clean_name = raw_name.split('\n')[0] if raw_name != 'None' else "該当なし"
         staff_data.append((idx, clean_name))
 
@@ -137,25 +143,19 @@ if uploaded_pdf:
 
     # --- ① my_daily_shift ---
     st.header("① my_daily_shift")
+    # 本人行とその下の行を表示（データ行は空白という要件ですが、確認のためそのまま表示）
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :]
     st.dataframe(my_df)
 
     # --- ② other_daily_shift ---
-    st.header("② other_daily_shift")
-    # target_idx 以外のすべてのインデックスを抽出
-    other_indices = [s[0] for s in staff_data if s[0] != target_idx]
-    # 対象行を抽出（名前行とデータ行をペアで）
-    other_rows = []
-    for idx in other_indices:
-        other_rows.append(df_pdf.iloc[idx : idx + 2, :])
-    
-    other_df = pd.concat(other_rows)
-    st.dataframe(other_df)
+    st.header("② other_daily_shift (人名行のみ一覧)")
+    other_names = [s[1] for s in staff_data if s[1] != target_staff_name]
+    st.write(other_names)
 
-    # --- ③ time_schedule ---
-    st.header("③ time_schedule")
-    if found_key in st.session_state.data_dict:
-        st.write(f"勤務地（Key）: {found_key}")
-        st.table(st.session_state.data_dict[found_key])
-    else:
-        st.warning("該当するKeyの時程表データが見つかりません。")
+    # --- ③ time_schedule (csv形式での表示) ---
+    st.header("③ time_schedule (CSV形式)")
+    # 現在の選択スタッフのデータをCSV形式として表示
+    csv_buffer = io.StringIO()
+    my_df.to_csv(csv_buffer, index=False)
+    st.download_button("my_daily_shift.csv をダウンロード", csv_buffer.getvalue(), "my_daily_shift.csv")
+    st.code(my_df.to_csv(index=False), language='csv')
