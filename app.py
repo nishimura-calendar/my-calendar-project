@@ -2,54 +2,45 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 
-st.title("シフト解析プログラム検証")
+st.title("シフト解析プログラム")
 
-# ---------------------------------------------------------
-# ③ time_schedule (裏方処理・セッションに保持)
-# ---------------------------------------------------------
-def load_time_schedule_backend():
-    """時程表を読み込み、辞書としてsession_stateに保存する"""
-    # 実際はここで共有スプレッドシートから読み込むロジックを実装
-    # ここでは検証用に固定の辞書を定義
-    schedule = {
-        "A": "09:00-18:00", "B": "13:00-22:00", "夜": "22:00-07:00", "休": "公休"
-    }
-    st.session_state.time_schedule = schedule
-    return schedule
-
+# --- 初期化・裏方処理 ---
 if 'time_schedule' not in st.session_state:
-    load_time_schedule_backend()
+    # ③ time_schedule の元となる辞書
+    st.session_state.time_schedule = {"A": "09:00-18:00", "B": "13:00-22:00", "夜": "22:00-07:00", "休": "公休"}
 
-# ---------------------------------------------------------
-# メイン画面
-# ---------------------------------------------------------
-uploaded_pdf = st.file_uploader("シフトPDFをアップロード", type="pdf")
+# --- PDFアップロード ---
+uploaded_pdf = st.file_uploader("シフト表PDFをアップロード", type="pdf")
 
 if uploaded_pdf:
     with pdfplumber.open(uploaded_pdf) as pdf:
-        # 表の抽出とヘッダー検索（第1関門）
-        page = pdf.pages[0]
-        table = page.extract_table()
-        df_pdf = pd.DataFrame(table)
+        df_pdf = pd.DataFrame(pdf.pages[0].extract_table())
 
-        # タブで表示を切り替え
-        tab1, tab2, tab3 = st.tabs(["① my_daily_shift", "② other_daily_shift", "③ time_schedule"])
+    # 人名リストの作成ロジック
+    # 偶数行を名前行とみなし、リストを作成
+    all_indices = range(0, len(df_pdf), 2)
+    staff_list = []
+    for idx in all_indices:
+        name = str(df_pdf.iloc[idx, 0])
+        staff_list.append((idx, name if name != 'None' else "該当なし"))
 
-        with tab1:
-            st.header("① my_daily_shift")
-            # PDFから本人行を抽出するロジック（仮）
-            st.write("本人用シフトデータを表示します。")
-            st.dataframe(df_pdf.head(5)) # デモ用
+    # ① コンボボックス（セレクトボックス）
+    target_staff = st.selectbox("スタッフを選択", [s[1] for s in staff_list])
+    target_idx = [s[0] for s in staff_list if s[1] == target_staff][0]
 
-        with tab2:
-            st.header("② other_daily_shift")
-            st.write("他スタッフのシフトデータを表示します。")
-            st.dataframe(df_pdf.tail(5)) # デモ用
+    # --- 3つの表示 ---
 
-        with tab3:
-            st.header("③ time_schedule (検証用)")
-            st.info("※通常は画面表示不要な裏方データです")
-            st.write(st.session_state.time_schedule)
+    # ① my_daily_shift
+    st.header("① my_daily_shift")
+    my_df = df_pdf.iloc[target_idx : target_idx + 2, :]
+    st.dataframe(my_df)
 
-else:
-    st.warning("PDFファイルをアップロードしてください。")
+    # ② other_daily_shift
+    st.header("② other_daily_shift")
+    others = [s for s in staff_list if s[1] != target_staff]
+    other_names = [s[1] for s in others]
+    st.write(other_names) # 名前リストを表示
+
+    # ③ time_schedule (ソースの元表を表示)
+    st.header("③ time_schedule (Key別一覧)")
+    st.table(pd.DataFrame(list(st.session_state.time_schedule.items()), columns=["Key", "内容"]))
