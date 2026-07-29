@@ -107,15 +107,18 @@ if uploaded_pdf:
         if not st.button("年月確定"):
             st.stop()
     
-    # (3)④〜⑦ 整合性判定
     _, last_day_num = calendar.monthrange(y, m)
     
-    # --- [修正箇所] ここから下をすべてインデントの内側に入れました ---
-    
-    # --- [設定] 対象スタッフ ---
-    target_staff_list = ["西村 文宏"]
+    # --- [1] 人名リストの作成と選択 ---
+    all_staff_names = []
+    for row in range(2, df_pdf.shape[0] - 1):
+        name = str(df_pdf.iloc[row, 1]).strip()
+        if name != "None" and len(name) >= 2:
+            all_staff_names.append(name)
+            
+    selected_name = st.selectbox("対象の本人（Target Staff）を選択してください", all_staff_names)
 
-    # --- [1] 辞書への登録と振り分け ---
+    # --- [2] 辞書への登録と振り分け ---
     final_data = {
         found_key: {
             "my_daily_shift": {},
@@ -124,16 +127,13 @@ if uploaded_pdf:
         }
     }
 
-    # PDF抽出済みデータ (df_pdf) から名前行を特定して辞書登録
+    # PDF抽出済みデータからループして振り分け
     for row in range(2, df_pdf.shape[0] - 1): 
         name = str(df_pdf.iloc[row, 1]).strip()
-        
-        # 無効な名前行をスキップ
-        if name == "None" or len(name) < 2:
-            continue
+        if name == "None" or len(name) < 2: continue
             
-        if name in target_staff_list:
-            # target_staff の場合: その行と下段1行（計2行）を抽出
+        if name == selected_name:
+            # 本人の場合: 本人行＋下段1行
             my_shifts = [
                 df_pdf.iloc[row, 3:3+last_day_num].tolist(),    # 本人行
                 df_pdf.iloc[row+1, 3:3+last_day_num].tolist()   # 下段1行
@@ -144,29 +144,21 @@ if uploaded_pdf:
             shifts = df_pdf.iloc[row, 3:3+last_day_num].tolist()
             final_data[found_key]["other_daily_shift"][name] = shifts
 
-    # --- [2] 結果の表示 ---
+    # --- [3] 結果の表示 ---
     st.write("---")
     st.header(f"解析結果: {found_key}")
 
     # 1. my_daily_shift 表示
-    st.subheader("1. my_daily_shift (Target Staff)")
-    my_data = final_data[found_key]["my_daily_shift"]
-    for name, shifts_list in my_data.items():
-        st.write(f"対象スタッフ: {name}")
-        df_my_display = pd.DataFrame(shifts_list, index=["本人行", "下段1行"])
-        st.dataframe(df_my_display)
+    st.subheader("1. my_daily_shift (本人)")
+    st.write(f"選択された本人: {selected_name}")
+    st.dataframe(pd.DataFrame(final_data[found_key]["my_daily_shift"][selected_name], index=["本人行", "下段1行"]))
 
     # 2. other_daily_shift 表示
-    st.subheader("2. other_daily_shift (Others)")
+    st.subheader("2. other_daily_shift (他スタッフ)")
     if final_data[found_key]["other_daily_shift"]:
         df_other = pd.DataFrame.from_dict(final_data[found_key]["other_daily_shift"], orient='index')
         st.dataframe(df_other)
-    else:
-        st.write("該当なし")
 
     # 3. time_schedule 表示
     st.subheader("3. time_schedule")
-    if final_data[found_key]["time_schedule"] is not None:
-        st.dataframe(final_data[found_key]["time_schedule"])
-    else:
-        st.write("基本時程表データなし")
+    st.dataframe(final_data[found_key]["time_schedule"])
