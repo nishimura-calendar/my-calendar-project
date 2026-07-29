@@ -1,45 +1,41 @@
 import pdfplumber
-import pandas as pd
 import streamlit as st
+import re
 
-st.title("人名抽出テスト")
+st.title("人名抽出テスト（テキスト直接解析）")
 uploaded_pdf = st.file_uploader("PDFをアップロード", type="pdf")
 
 if uploaded_pdf:
     with pdfplumber.open(uploaded_pdf) as pdf:
         page = pdf.pages[0]
+        # 1. ページ内のすべてのテキストを取得
+        full_text = page.extract_text()
         
-        # ① アンカーから表の開始位置を整理
-        t1_word = next((w for w in page.extract_words() if "T1" in w["text"]), None)
-        if not t1_word:
-            st.error("T1が見つかりませんでした")
-            st.stop()
+        # 2. テキストを行ごとに分割
+        lines = full_text.split('\n')
+        
+        candidates = []
+        # 3. 各行から名前っぽいものを探す
+        # ここでは「漢字が含まれ、シフトコード(休,J,A...)を含まない」ものを抽出
+        for line in lines:
+            # シフトや不要な文字が含まれる行はスキップ
+            if any(char in line for char in ["休", "A", "B", "C", "D", "E", "F", "G", "H", "J"]):
+                continue
             
-        bbox = (0, t1_word["bottom"], page.width, page.height)
-        # テーブル抽出設定を強化（罫線ベースで抽出）
-        table = page.crop(bbox).extract_table(table_settings={"vertical_strategy": "lines"})
-        df_pdf = pd.DataFrame(table)
+            # 2〜6文字程度の漢字・かな文字列を探す（名前のパターン）
+            # 氏名の間にあるスペースは許容
+            match = re.search(r'([^\d\W]{2,6})', line.replace(" ", ""))
+            if match:
+                name = match.group(1)
+                # 勤務予定表など不要な文字列を除外
+                if "勤務予定表" not in name and "関空" not in name and "株式会社" not in name:
+                    candidates.append(name)
+
+        # 重複を除去
+        all_staff_names = sorted(list(set(candidates)))
         
-        # ② 列の役割を整理して特定
-        # 以前のコードでは name_col_idx = 2 (date_col_idx 3 - 1) でしたが、
-        # PDFのデータを見ると名前が「列2」または「列1」に散らばっているため、
-        # 複数の列を候補として探すように変更します
-        
-        all_staff_names = []
-        # 列1と列2の両方をチェックして抽出する
-        for col_idx in [1, 2]:
-            names = df_pdf.iloc[2:, col_idx].dropna().unique()
-            for name in names:
-                name = str(name).strip()
-                # 名前の長さや文字制限を緩和して抽出
-                if len(name) >= 2 and "休" not in name and "0.5" not in name:
-                    if name not in all_staff_names:
-                        all_staff_names.append(name)
-        
-        # 結果を表示
         st.write("### 抽出された人名リスト")
         st.write(all_staff_names)
         
-        # デバッグ用：テーブル全体を表示
-        st.write("### 抽出されたテーブル")
-        st.dataframe(df_pdf)
+        st.write("### (参考) 取得したテキストの最初の200文字")
+        st.write(full_text[:200])
