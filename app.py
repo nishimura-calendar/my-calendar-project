@@ -24,20 +24,14 @@ if uploaded_pdf:
         if table:
             df_pdf = pd.DataFrame(table)
             
-            # 2. キー（T1/T2）の位置を自動特定
-            row, col = find_key_position(df_pdf)
-            
-            if row is not None:
-                st.success(f"キー '{df_pdf.iloc[row, col]}' を {row}行目, {col}列目で発見しました！")
+# 0列目（人名や管理情報が入っているはずの列）を抽出
+                column_zero = df_data.iloc[:, 0]
                 
-                # キーの行を基準にデータを整理
-                df_data = df_pdf.iloc[row+1:, :].reset_index(drop=True)
+                st.write("### 0列目の全データ")
+                # ストリームライトでリストとして表示
+                st.write(column_zero.tolist())
                 
-                st.write("### 抽出されたデータ（キー以降）")
-                st.dataframe(df_data)
-                
-                # ここに今後の人名抽出やシフト解析の処理を追加していきます
-            else:
-                st.error("PDF内に 'T1' または 'T2' が見つかりませんでした。")
-        else:
-            st.error("PDFから表を読み込めませんでした。")
+                # デバッグ用にデータフレーム形式で表示（空文字などを除外して確認）
+                st.write("### 0列目の詳細（クリーン版）")
+                cleaned_zero = column_zero.dropna()
+                st.dataframe(cleaned_zero)
