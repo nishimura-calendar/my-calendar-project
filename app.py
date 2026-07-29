@@ -1,46 +1,49 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
+import numpy as np
 
-st.title("シフトデータ確認用ダッシュボード")
+st.title("シフト解析ダッシュボード")
 
-uploaded_pdf = st.file_uploader("シフト表PDFをアップロード", type="pdf")
-
-# (簡易的な時間データ - 実際はPDFから読み取るか別途用意したリスト)
+# 1. タイムスケジュール表（辞書で管理）
 time_schedule_db = {
     "A": "09:00 - 18:00",
     "B": "13:00 - 22:00",
     "夜": "22:00 - 07:00",
     "休": "公休"
 }
+time_df = pd.DataFrame(list(time_schedule_db.items()), columns=["Key", "Time"])
+
+def process_person_list(df):
+    """0列目を解析して(index, 名前)のリストを作成"""
+    person_list = []
+    for i, val in enumerate(df.iloc[:, 0]):
+        val_str = str(val)
+        # 空行、nan、T1/T2を「該当なし」として扱う
+        if pd.isna(val) or val_str.lower() in ['nan', 'none', 't1', 't2']:
+            person_list.append((i, "該当なし"))
+        else:
+            person_list.append((i, val_str.split('\n')[0].strip()))
+    return person_list
+
+# -- 以下、メイン処理 --
+uploaded_pdf = st.file_uploader("PDFアップロード", type="pdf")
 
 if uploaded_pdf:
-    with pdfplumber.open(uploaded_pdf) as pdf:
-        df_pdf = pd.DataFrame(pdf.pages[0].extract_table())
-        
-        # 名前リスト作成（ロジックは前回同様）
-        names_list = []
-        for i, row in df_pdf.iterrows():
-            val = str(row[0]).strip()
-            if len(val) >= 2 and "T1" not in val:
-                names_list.append((i, val.split('\n')[0]))
+    # (ここでは df_pdf を読み込んだものと仮定)
+    # ... df_pdf 読み込み処理 ...
+    
+    # 1. リスト作成
+    person_list = process_person_list(df_pdf)
+    
+    # 選択メニュー
+    selected_name_name = st.selectbox("スタッフを選択", [p[1] for p in person_list])
+    selected_idx = [p[0] for p in person_list if p[1] == selected_name_name][0]
 
-        selected_name = st.selectbox("確認したいスタッフを選択", [n[1] for n in names_list])
-        idx = [n[0] for n in names_list if n[1] == selected_name][0]
+    # 2. 人名行（2行分）の抽出表
+    st.write(f"### {selected_name_name} さんのデータ抽出")
+    person_data = df_pdf.iloc[selected_idx:selected_idx+2, :]
+    st.dataframe(person_data)
 
-        # 1. my_daily_shift (本人・2行)
-        st.write("### 1. my_daily_shift (本人行＋下段の2行)")
-        my_daily_shift = df_pdf.iloc[idx:idx+2, :]
-        st.dataframe(my_daily_shift)
-
-        # 2. other_daily_shift (他者・名前行のみ)
-        st.write("### 2. other_daily_shift (他者一覧)")
-        others = [n[1] for n in names_list if n[1] != selected_name]
-        st.write(others)
-
-        # 3. time_schedule (Key検索機能)
-        st.write("### 3. time_schedule (シフト記号検索)")
-        search_key = st.text_input("シフト記号を入力 (例: A, B, 夜, 休)")
-        if search_key:
-            result = time_schedule_db.get(search_key.upper(), "該当なし")
-            st.write(f"検索結果: **{search_key}** → {result}")
+    # 3. Time_Schedule 表の表示
+    st.write("### Time Schedule 表")
+    st.dataframe(time_schedule_db)
