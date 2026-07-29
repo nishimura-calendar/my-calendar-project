@@ -91,9 +91,31 @@ if uploaded_pdf:
                 if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
                     A_date, A_day = int(val_up), val_down
         
-        # 最終日付・曜日の表示
-        if A_date:
-            st.write(f"### 解析結果")
-            st.success(f"PDF上の最終日付: {A_date}日 / 最終曜日: {A_day}曜日")
+filename = uploaded_pdf.name
+        year_match = re.search(r'(\d{4})', filename)
+        month_match = re.search(r'(\d{1,2})月', filename)
+        
+        if year_match and month_match:
+            y, m = int(year_match.group(1)), int(month_match.group(1))
+            st.info(f"ファイルから算出: {y}年{m}月")
         else:
-            st.error("日付と曜日が抽出できませんでした。")
+            st.warning("ファイル名から年月を特定できませんでした。")
+            y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026)
+            m = st.number_input("月を手動入力", min_value=1, max_value=12, value=7)
+            if not st.button("年月確定"):
+                st.stop()
+        
+        # --- (3)④ 期待される最終日付・曜日の計算 ---
+        _, last_day_num = calendar.monthrange(y, m)
+        last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
+        
+        # --- (3)⑤⑥⑦ 整合性比較と条件分岐 ---
+        if A_date == last_day_num and A_day == last_day_w:
+            # ⑥ 整合時：成功表示
+            st.success("整合性確認完了：シフト表の年月は正しいです。")
+        else:
+            # ⑦ 不整合時：エラー表示と停止
+            st.error(f"整合性エラーが発生しました。")
+            st.write(f"PDF上の最終日: {A_date}日 ({A_day}曜日)")
+            st.write(f"期待される最終日: {last_day_num}日 ({last_day_w}曜日)")
+            st.stop()
