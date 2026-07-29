@@ -119,19 +119,19 @@ if uploaded_pdf:
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
 # ---------------------------------------------------------
-    # 第2関門突破後の処理: ①~③の表示
+    # 第2関門突破後の処理 (実装済みコードの後半を以下に置換)
     # ---------------------------------------------------------
     st.divider()
 
-    # --- 人名リストの作成 ---
-    # 名前は表の0列目にあると仮定。偶数行を名前行、奇数行をデータ行とする
-    staff_indices = range(0, df_pdf.shape[0], 2)
+    # --- 人名リストの作成 (改行カット処理) ---
     staff_data = []
-    for idx in staff_indices:
-        name = str(df_pdf.iloc[idx, 0])
-        staff_data.append((idx, name if name != 'None' else "該当なし"))
+    for idx in range(0, df_pdf.shape[0], 2):
+        raw_name = str(df_pdf.iloc[idx, 0])
+        # 改行文字が含まれる場合はその前までを抽出
+        clean_name = raw_name.split('\n')[0] if raw_name != 'None' else "該当なし"
+        staff_data.append((idx, clean_name))
 
-    # ① コンボボックス
+    # コンボボックス
     target_staff_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_staff_name][0]
 
@@ -142,13 +142,18 @@ if uploaded_pdf:
 
     # --- ② other_daily_shift ---
     st.header("② other_daily_shift")
-    # 本人を除いたスタッフ名をリスト表示
-    other_staff = [s[1] for s in staff_data if s[1] != target_staff_name]
-    st.write(other_staff)
+    # target_idx 以外のすべてのインデックスを抽出
+    other_indices = [s[0] for s in staff_data if s[0] != target_idx]
+    # 対象行を抽出（名前行とデータ行をペアで）
+    other_rows = []
+    for idx in other_indices:
+        other_rows.append(df_pdf.iloc[idx : idx + 2, :])
+    
+    other_df = pd.concat(other_rows)
+    st.dataframe(other_df)
 
     # --- ③ time_schedule ---
     st.header("③ time_schedule")
-    # 第1関門で特定したKeyに該当する、読み込み済みの時程表を表示
     if found_key in st.session_state.data_dict:
         st.write(f"勤務地（Key）: {found_key}")
         st.table(st.session_state.data_dict[found_key])
