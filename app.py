@@ -72,10 +72,22 @@ if uploaded_pdf:
                 found_key = key
                 break
     
+    # (2)① Keyの特定が完了した後
+    # すでに found_key に "T2" 等が代入されている状態です。
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
         st.stop()
     
+    # 【ここが重要】特定された found_key を使って time_schedule を登録します
+    # 他のロジックを介さず、辞書から直接取得します
+    try:
+        time_schedule = st.session_state.data_dict[found_key]
+        st.write(f"使用する勤務地データ: {found_key}")
+    except KeyError:
+        st.error(f"エラー: 辞書内にキー '{found_key}' が存在しません。")
+        st.write("登録されているキー一覧:", list(st.session_state.data_dict.keys()))
+        st.stop()
+        
     # (3)② 整合性データの抽出（表構造解析）
     with pdfplumber.open(uploaded_pdf) as pdf:
         tables = pdf.pages[0].extract_tables()
