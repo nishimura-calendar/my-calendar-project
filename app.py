@@ -210,7 +210,8 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                             condition = (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != "")
                             if t_col >= 3 and condition.any():
                                 handing_over_department = "(交代)"
-                                mask_handing_codes = time_shift.loc[condition, time_shift.columns[1]]        condition = (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != "")
+                                mask_handing_codes = time_shift.loc[condition, time_shift.columns[1]]        
+                                condition = (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != "")
                                 mask_handing_codes = time_shift.loc[condition, time_shift.columns[1]]
                         else:
                             final_rows[-1][4] = time_shift.iloc[0, t_col] 
