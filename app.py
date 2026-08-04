@@ -63,31 +63,27 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
-    # (2)① Keyの特定
-    found_key = None
+    # (2)① PDFからキーを検索し、最初に出現するキー（最上部のキー）を判定対象とする
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
+        
+        matched_keys = []
         for key in st.session_state.data_dict.keys():
-            if str(key) in text:
-                found_key = key
-                break
+            pos = text.find(str(key))
+            if pos != -1:
+                matched_keys.append((key, pos))
+        
+        if matched_keys:
+            # 出現位置（インデックス）が小さい順（上から順）にソートして先頭を取得
+            matched_keys.sort(key=lambda x: x[1])
+            found_key = matched_keys[0][0]
+        else:
+            found_key = None
     
-    # (2)① Keyの特定が完了した後
-    # すでに found_key に "T2" 等が代入されている状態です。
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
         st.stop()
     
-    # 【ここが重要】特定された found_key を使って time_schedule を登録します
-    # 他のロジックを介さず、辞書から直接取得します
-    try:
-        time_schedule = st.session_state.data_dict[found_key]
-        st.write(f"使用する勤務地データ: {found_key}")
-    except KeyError:
-        st.error(f"エラー: 辞書内にキー '{found_key}' が存在しません。")
-        st.write("登録されているキー一覧:", list(st.session_state.data_dict.keys()))
-        st.stop()
-        
     # (3)② 整合性データの抽出（表構造解析）
     with pdfplumber.open(uploaded_pdf) as pdf:
         tables = pdf.pages[0].extract_tables()
@@ -130,7 +126,8 @@ if uploaded_pdf:
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
-# ---------------------------------------------------------
+
+    # ---------------------------------------------------------
     # 第2関門突破後の表示ロジック (最終統合版)
     # ---------------------------------------------------------
     st.divider()
@@ -139,23 +136,18 @@ if uploaded_pdf:
     staff_data = []
     for idx in range(0, df_pdf.shape[0], 2):
         name_val = str(df_pdf.iloc[idx, 0])
-        # Key行(勤務地)はスキップ
         if name_val in st.session_state.data_dict.keys():
             continue
         
-        # 名前は改行までとする
         clean_name = name_val.split('\n')[0] if name_val != 'None' else "該当なし"
         staff_data.append((idx, clean_name))
 
-    # コンボボックス
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
     # --- 2. ① my_daily_shift (本人) ---
     st.header("① my_daily_shift")
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
-    
-    # データ行（2行目）の「人名列（0列目）」のみ空白にする
     my_df.iloc[1, 0] = "" 
     st.dataframe(my_df)
     
@@ -168,7 +160,6 @@ if uploaded_pdf:
     other_rows = []
     for idx, name in staff_data:
         if name != target_name:
-            # 人名行(idx)のみを抽出して名前をクレンジング
             row = df_pdf.iloc[idx : idx+1].copy()
             row.iloc[0, 0] = name
             other_rows.append(row)
@@ -177,12 +168,11 @@ if uploaded_pdf:
         other_df = pd.concat(other_rows)
         st.dataframe(other_df)
         
-        # CSV出力：人名行のみ（名前＋全シフトデータ）
         csv_other = other_df.to_csv(index=False, header=False).encode('utf-8-sig')
         st.download_button("other_daily_shift.csv をダウンロード", csv_other, "other_daily_shift.csv", "text/csv")
 
     # --- 4. ③ time_schedule (ソースの表) ---
     st.header("③ time_schedule (ソースの表)")
     if found_key in st.session_state.data_dict:
-        st.write(f"勤務地: {found_key}")
+        st.write(f"勤務地: {found_key} (※PDF内で最初に見つかったキー)")
         st.table(st.session_state.data_dict[found_key])
