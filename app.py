@@ -105,7 +105,7 @@ if uploaded_pdf:
             st.error("日付と曜日が抽出できませんでした。")
             st.stop()
 
-    # (3)③ 年月の特定（ファイル名から取得できない場合はsession_stateで保持）
+    # (3)③ 年月の特定
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
@@ -149,15 +149,23 @@ if uploaded_pdf:
     # ---------------------------------------------------------
     st.divider()
 
-    # --- 1. インデックスと人名の抽出 ---
+    # =========================================================
+    # ▼【修正箇所】インデックスと人名の抽出（改行以降を削除）
+    # =========================================================
     staff_data = []
     for idx in range(0, df_pdf.shape[0], 2):
         name_val = str(df_pdf.iloc[idx, 0])
         if name_val in st.session_state.data_dict.keys():
             continue
         
-        clean_name = name_val.split('\n')[0] if name_val != 'None' else "該当なし"
+        # 改行（\n）が含まれている場合、最初の行（人名部分）だけを抽出して前後の空白を削除
+        if name_val != 'None':
+            clean_name = name_val.split('\n')[0].strip()
+        else:
+            clean_name = "該当なし"
+            
         staff_data.append((idx, clean_name))
+    # =========================================================
 
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
