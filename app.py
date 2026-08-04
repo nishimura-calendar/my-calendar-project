@@ -63,6 +63,11 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
+    # ファイルが変更されたら手動確定状態をリセット
+    if 'last_uploaded_filename' not in st.session_state or st.session_state.last_uploaded_filename != uploaded_pdf.name:
+        st.session_state.last_uploaded_filename = uploaded_pdf.name
+        st.session_state.ym_confirmed = False
+
     # (2)① PDFからキーを検索し、最初に出現するキー（最上部のキー）を判定対象とする
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -74,7 +79,6 @@ if uploaded_pdf:
                 matched_keys.append((key, pos))
         
         if matched_keys:
-            # 出現位置（インデックス）が小さい順（上から順）にソートして先頭を取得
             matched_keys.sort(key=lambda x: x[1])
             found_key = matched_keys[0][0]
         else:
@@ -101,7 +105,7 @@ if uploaded_pdf:
             st.error("日付と曜日が抽出できませんでした。")
             st.stop()
 
-    # (3)③ 年月の特定
+    # (3)③ 年月の特定（ファイル名から取得できない場合はsession_stateで保持）
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
@@ -109,11 +113,24 @@ if uploaded_pdf:
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
     else:
-        st.warning("ファイル名から年月を特定できませんでした。")
-        y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026)
-        m = st.number_input("月を手動入力", min_value=1, max_value=12, value=7)
-        if not st.button("年月確定"):
+        if 'manual_y' not in st.session_state:
+            st.session_state.manual_y = 2026
+        if 'manual_m' not in st.session_state:
+            st.session_state.manual_m = 2
+        if 'ym_confirmed' not in st.session_state:
+            st.session_state.ym_confirmed = False
+
+        if not st.session_state.ym_confirmed:
+            st.warning("ファイル名から年月を特定できませんでした。下記を入力して「年月確定」を押してください。")
+            st.session_state.manual_y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=st.session_state.manual_y)
+            st.session_state.manual_m = st.number_input("月を手動入力", min_value=1, max_value=12, value=st.session_state.manual_m)
+            if st.button("年月確定"):
+                st.session_state.ym_confirmed = True
+                st.rerun()
             st.stop()
+        else:
+            y = st.session_state.manual_y
+            m = st.session_state.manual_m
     
     # (3)④〜⑦ 整合性判定
     _, last_day_num = calendar.monthrange(y, m)
