@@ -149,7 +149,7 @@ if uploaded_pdf:
     # ---------------------------------------------------------
     st.divider()
 
-    # --- 1. インデックスと人名の抽出（強力版クレンジング） ---
+    # --- 1. インデックスと人名の抽出 ---
     staff_data = []
     for idx in range(0, df_pdf.shape[0], 2):
         name_val = str(df_pdf.iloc[idx, 0])
@@ -170,7 +170,11 @@ if uploaded_pdf:
     # --- 2. ① my_daily_shift (本人) ---
     st.header("① my_daily_shift")
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
+    
+    # ▼【修正】本人の表の先頭セル（人名部分）からも資格を排除してきれいに置き換える
+    my_df.iloc[0, 0] = target_name
     my_df.iloc[1, 0] = "" 
+    
     st.dataframe(my_df)
     
     csv_my = my_df.to_csv(index=False, header=False).encode('utf-8-sig')
