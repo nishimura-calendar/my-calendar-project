@@ -149,23 +149,20 @@ if uploaded_pdf:
     # ---------------------------------------------------------
     st.divider()
 
-    # =========================================================
-    # ▼【修正箇所】インデックスと人名の抽出（改行以降を削除）
-    # =========================================================
+    # --- 1. インデックスと人名の抽出（強力版クレンジング） ---
     staff_data = []
     for idx in range(0, df_pdf.shape[0], 2):
         name_val = str(df_pdf.iloc[idx, 0])
         if name_val in st.session_state.data_dict.keys():
             continue
         
-        # 改行（\n）が含まれている場合、最初の行（人名部分）だけを抽出して前後の空白を削除
         if name_val != 'None':
-            clean_name = name_val.split('\n')[0].strip()
+            base_name = name_val.split('\n')[0]
+            clean_name = re.split(r'[\s ]+(施設|空保|警備|級|研修)|(施設|空保|警備|級|研修)', base_name)[0].strip()
         else:
             clean_name = "該当なし"
             
         staff_data.append((idx, clean_name))
-    # =========================================================
 
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
