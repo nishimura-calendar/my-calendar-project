@@ -203,7 +203,7 @@ if uploaded_pdf:
         st.write(f"勤務地: {found_key} (※PDF内で最初に見つかったキー)")
         st.table(st.session_state.data_dict[found_key])
 # ---------------------------------------------------------
-    # [3] カレンダー登録データの生成（CSV構造対応版）
+    # [3] カレンダー登録データの生成（条件判定修正版）
     # ---------------------------------------------------------
     st.divider()
     st.header("③ カレンダー登録データ生成 ([3])")
@@ -247,10 +247,11 @@ if uploaded_pdf:
                             mask_handing_codes = []
                             if prev_val == "": 
                                 handing_over_department = ""
-                                if t_col >= 3 and (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != ""):
-                                    handing_over_department = "(交代)"
-                                    condition = (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != "")
-                                    mask_handing_codes = time_shift.loc[condition, time_shift.columns[1]]
+                                if t_col >= 3:
+                                    cond = (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != "")
+                                    if cond.any():
+                                        handing_over_department = "(交代)"
+                                        mask_handing_codes = time_shift.loc[cond, time_shift.columns[1]]
                             else:
                                 if final_rows:
                                     final_rows[-1][4] = time_shift.iloc[0, t_col] # 前の予定の終了時間をセット                        
