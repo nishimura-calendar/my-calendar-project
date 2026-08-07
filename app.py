@@ -203,7 +203,7 @@ if uploaded_pdf:
         st.write(f"勤務地: {found_key} (※PDF内で最初に見つかったキー)")
         st.table(st.session_state.data_dict[found_key])
 # ---------------------------------------------------------
-    # [3] カレンダー登録データの生成（ご提示の要件に基づく統合処理）
+    # [3] カレンダー登録データの生成（CSV構造対応版）
     # ---------------------------------------------------------
     st.divider()
     st.header("③ カレンダー登録データ生成 ([3])")
@@ -222,7 +222,7 @@ if uploaded_pdf:
         ])
 
     def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-        """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する関数 (consideration.py 準拠)"""
+        """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する関数"""
         time_shift = time_schedule.fillna("").astype(str)
         if (time_shift.iloc[:, 1] == shift_info).any():
             my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
@@ -252,7 +252,8 @@ if uploaded_pdf:
                                     condition = (time_shift.iloc[:, t_col] == "") & (time_shift.iloc[:, t_col-1] != "")
                                     mask_handing_codes = time_shift.loc[condition, time_shift.columns[1]]
                             else:
-                                final_rows[-1][4] = time_shift.iloc[0, t_col] # 前の予定の終了時間をセット                        
+                                if final_rows:
+                                    final_rows[-1][4] = time_shift.iloc[0, t_col] # 前の予定の終了時間をセット                        
                                 handing_over_department = f"({prev_val})" 
                                 mask_handing_department = time_shift.iloc[:, t_col] == prev_val
                                 mask_handing_codes = time_shift.loc[mask_handing_department, time_shift.columns[1]]
@@ -272,9 +273,10 @@ if uploaded_pdf:
                             else:
                                 taking_over_department = "" 
 
-                            subject = final_rows[-1][0]
-                            final_rows[-1][0] = subject + taking_over_department                                      
-                            final_rows[-1][4] = time_shift.iloc[0, t_col]    
+                            if final_rows:
+                                subject = final_rows[-1][0]
+                                final_rows[-1][0] = subject + taking_over_department                                      
+                                final_rows[-1][4] = time_shift.iloc[0, t_col]    
                                     
                     prev_val = current_val
 
@@ -284,24 +286,22 @@ if uploaded_pdf:
         time_schedule_df = st.session_state.data_dict[found_key]
         time_shift_check = time_schedule_df.fillna("").astype(str)
 
-        # my_daily_shift の 1列目から最終日まで走査
-        for col in range(1, my_df.shape[1]):
-            day_val = my_df.iloc[0, col] # 日付行
-            if pd.isna(day_val) or str(day_val).strip() == "":
-                continue
-            
-            try:
-                target_date = f"{y}/{m:02d}/{int(float(day_val)):02d}"
-            except ValueError:
-                continue
+        _, last_day_num = calendar.monthrange(y, m)
 
-            schedule_val = str(my_df.iloc[1, col]).strip() # シフト・予定値行
+        # my_df の列 1 から last_day_num までを走査（1日〜31日）
+        for col in range(1, min(my_df.shape[1], last_day_num + 1)):
+            day_num = col
+            target_date = f"{y}/{m:02d}/{day_num:02d}"
+            
+            schedule_val = str(my_df.iloc[0, col]).strip()
+            sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
+
             if not schedule_val or schedule_val == "nan":
                 continue
 
             # (1) time_scheduleの1列目に含まれるか（勤務地シフト）
             if (time_shift_check.iloc[:, 1] == schedule_val).any():
-                # 終日予定（青系）
+                # 終日予定
                 final_rows.append([
                     f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key
                 ])
@@ -317,19 +317,14 @@ if uploaded_pdf:
                     final_rows=final_rows
                 )
             else:
-                # (2) 勤務地シフト以外のとき
-                # 休日判定（赤）
+                # (2) 勤務地シフト以外のとき（休日・本町などのイベント）
                 if any(kw in schedule_val for kw in holiday_keywords):
                     final_rows.append([
                         schedule_val, target_date, "", target_date, "", "True", "", ""
                     ])
                 else:
-                    # イベント（黄色 / 「本町」など）
-                    # my_daily_shift の2行目（インデックス2または必要に応じた行）に時間情報（例: 9①14）がある場合をチェック
-                    sub_val = str(my_df.iloc[2, col]).strip() if my_df.shape[0] > 2 else ""
-                    
-                    if schedule_val == "本町" or "本町" in sub_val:
-                        # 終日または時間指定の判定（例として sub_val に "9①14" のような形式がある場合パースする例）
+                    # イベント（本町など）の時間指定チェック
+                    if schedule_val == "本町" or "本町" in sub_val or "本町" in schedule_val:
                         time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
                         if time_match:
                             start_t = f"{time_match.group(1)}:00"
@@ -352,4 +347,4 @@ if uploaded_pdf:
             csv_cal = df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
         else:
-            st.warning("生成対象のデータがありませんでした。")
+            st.warning("生成対象のデータがありませんでした。スタッフの選択やシフトデータをご確認ください。")
