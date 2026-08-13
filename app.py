@@ -313,7 +313,8 @@ if uploaded_pdf:
                             takeover=f"frm {','.join(takeover_staff)}【{current_val}】"
     
                             subject=start+change+takeover+handover
-                          
+                            
+                            final_rows[0][0] = start_time
                             final_rows[0][2] = start_time
                             
                         else:
@@ -348,9 +349,8 @@ if uploaded_pdf:
     
                             # 最終行の不定項目をセット
                             subject=subject+break_change+end
-                            
                             end_time=time_shift.iloc[0, t_col]
-    
+                            
                             final_rows[0][4] = end_time                            
                         
                         final_rows[0][0] = subject   
