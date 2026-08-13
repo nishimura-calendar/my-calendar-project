@@ -351,10 +351,9 @@ if uploaded_pdf:
                             subject=subject+break_change+end
                             end_time=time_shift.iloc[0, t_col]
                             
-                            final_rows[-1][4] = end_time                            
+                            final_rows[0][0] = subject   
+                            final_rows[0][4] = end_time                            
                         
-                            final_rows[-1][0] = subject   
-    
                     prev_val = current_val
                     
     if st.button("カレンダー登録用データを生成"):
