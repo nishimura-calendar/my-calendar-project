@@ -314,7 +314,7 @@ if uploaded_pdf:
     
                             subject=start+change+takeover+handover
                             
-                            final_rows[0][0] = start_time
+                            final_rows[0][0] = subject
                             final_rows[0][2] = start_time
                             
                         else:
@@ -353,7 +353,7 @@ if uploaded_pdf:
                             
                             final_rows[0][4] = end_time                            
                         
-                        final_rows[0][0] = subject   
+                            final_rows[0][0] = subject   
     
                     prev_val = current_val
                     
