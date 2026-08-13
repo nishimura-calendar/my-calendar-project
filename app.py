@@ -311,8 +311,9 @@ if uploaded_pdf:
                             mask_takeover_codes=other_staff_shift.iloc[:, col].isin(takeover_codes)
                             takeover_staff=other_staff_shift[mask_takeover_codes].iloc[:, 0].tolist()
                             takeover=f"frm {','.join(takeover_staff)}【{current_val}】"
-                          
+    
                             subject=start+change+takeover+handover
+                          
                             final_rows[0][2] = start_time
                             
                         else:
@@ -349,12 +350,11 @@ if uploaded_pdf:
                             subject=subject+break_change+end
                             
                             end_time=time_shift.iloc[0, t_col]
-                            
-                            final_rows[0][4] = end_time                            
-                            
-                        final_rows[0][0] = subject
     
-                                     
+                            final_rows[0][4] = end_time                            
+                        
+                        final_rows[0][0] = subject   
+    
                     prev_val = current_val
                     
     if st.button("カレンダー登録用データを生成"):
