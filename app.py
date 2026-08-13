@@ -334,7 +334,7 @@ if uploaded_pdf:
                             end_time=time_shift.iloc[0, t_col]
     
                             # 最終行の不定項目をセット
-                        　　subject=subject+break_change+end
+                            subject=subject+break_change+end
     
                         final_rows.append([
                             subject, 
