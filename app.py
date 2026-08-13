@@ -276,14 +276,14 @@ if uploaded_pdf:
                             # 勤務_交代：まとめてカンマ区切りにする
                             change_formatted  = ",".join(paired_staff)
                             # 勤務_交代
-                            change=f"{change_formatted }▷"
+                            change=f"{change_formatted }▷" if change_formatted else ""
                             
                             # 巡回_引継
                             mask_takeover=time_shift.iloc[:,t_col-1] == current_val
                             takeover_codes=time_shift.loc[mask_takeover, time_shift.columns[1]]
                             mask_takeover_codes=other_staff_shift.iloc[:, col].isin(takeover_codes)
                             takeover_staff=other_staff_shift[mask_takeover_codes].iloc[:, 0].tolist()
-                            takeover=f"frm {','.join(takeover_staff)}【{current_val}】"
+                            takeover=f"frm {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
                             
                             if prev_val!="":
                                 
