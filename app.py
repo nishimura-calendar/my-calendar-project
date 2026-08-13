@@ -336,16 +336,16 @@ if uploaded_pdf:
                             # 最終行の不定項目をセット
                             subject=subject+break_change+end
     
-                    final_rows.append([
-                        subject, 
-                        target_date, 
-                        start_time, 
-                        target_date, 
-                        end_time, 
-                        "False", 
-                        "", 
-                        ""
-                    ])
+                        final_rows.append([
+                            subject, 
+                            target_date, 
+                            start_time, 
+                            target_date, 
+                            end_time, 
+                            "False", 
+                            "", 
+                            ""
+                        ])
                                      
                     prev_val = current_val
                     
