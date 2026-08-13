@@ -297,8 +297,8 @@ if uploaded_pdf:
                                 handover_staff=other_staff_shift[mask_handover_codes].iloc[:, 0].tolist()
                                 handover=f"to {','.join(handover_staff)}"
     
-                                subject=start+change+takeover
-                                start_time=time_shift.iloc[0, t_col] 
+                            subject=start+change+takeover
+                            start_time=time_shift.iloc[0, t_col] 
                             
                         else:
                             # 休憩_交代
