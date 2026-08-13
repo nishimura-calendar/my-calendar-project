@@ -247,7 +247,20 @@ if uploaded_pdf:
                   
                     if current_val != prev_val:
                         if current_val != "": 
-    
+                           
+                            final_rows.append([
+                                "", 
+                                target_date, 
+                                "", 
+                                target_date, 
+                                "", 
+                                "False", 
+                                "", 
+                                ""
+                            ])
+                            
+                            start_time=time_shift.iloc[0, t_col]
+                            
                             start=""
                             # 3列目から t_col の1つ手前までの間が全て””なら　start="(出勤):"
                             if (my_time_shift.iloc[0, 3:t_col] == "").all():
@@ -300,18 +313,7 @@ if uploaded_pdf:
                             takeover=f"frm {','.join(takeover_staff)}【{current_val}】"
                           
                             subject=start+change+takeover+handover
-                            start_time=time_shift.iloc[0, t_col] 
-                            
-                            final_rows.append([
-                                "", 
-                                target_date, 
-                                start_time, 
-                                target_date, 
-                                "", 
-                                "False", 
-                                "", 
-                                ""
-                            ])
+                            final_rows[0][2] = start_time
                             
                         else:
                             # 休憩_交代
@@ -348,10 +350,11 @@ if uploaded_pdf:
                             
                             end_time=time_shift.iloc[0, t_col]
                             
-                            final_rows[0][4] = time_shift.iloc[0, t_col]                             
+                            final_rows[0][4] = end_time                            
                             
-                    final_rows[0][0] = subject
+                        final_rows[0][0] = subject
     
+                                     
                     prev_val = current_val
                     
     if st.button("カレンダー登録用データを生成"):
