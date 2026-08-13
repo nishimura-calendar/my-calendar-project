@@ -227,31 +227,29 @@ if uploaded_pdf:
         if (time_shift.iloc[:, 1] == shift_info).any():
            
             my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
-
+    
             if not my_time_shift.empty:
                 prev_val = ""
                 for t_col in range(3, my_time_shift.shape[1]):
                     current_val = my_time_shift.iloc[0, t_col]
                     
+                    # ▼【修正】ここに到達した時点で、まず全ての変数を必ず空文字で定義（初期化）する
+                    start = ""
+                    change = ""
+                    takeover = ""
+                    handover = ""
+                    break_change = ""
+                    end = ""
+                    
                     if current_val != prev_val:
-                        # まずすべての変数を空文字で初期化しておく
-                        start = ""
-                        change = ""
-                        takeover = ""
-                        handover = ""
-                        break_change = ""
-                        end = ""                    
-                        
                         if current_val != "": 
-
-                            start = ""
                             # 3列目から t_col の1つ手前までの間が全て””なら start="(出勤):"
                             if (my_time_shift.iloc[0, 3:t_col] == "").all():
                                 start = "(出勤)："           
-
+    
                             # 勤務_交代
                             mask_change = (time_shift.iloc[:, t_col - 1] != "") & (time_shift.iloc[:, t_col] == "")
-
+    
                             paired_staff = []
                             for idx in time_shift.index[mask_change]:
                                 places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
@@ -264,14 +262,14 @@ if uploaded_pdf:
                                     paired_staff.append(f"{name}({places})")       
      
                             change_formatted = ",".join(paired_staff)
-                            change = f"{change_formatted}▷"
+                            change = f"{change_formatted}▷" if change_formatted else ""
                             
                             # 巡回_引継
                             mask_takeover = time_shift.iloc[:, t_col - 1] == current_val
                             takeover_codes = time_shift.loc[mask_takeover, time_shift.columns[1]]
                             mask_takeover_codes = other_staff_shift.iloc[:, col].isin(takeover_codes)
                             takeover_staff = other_staff_shift[mask_takeover_codes].iloc[:, 0].tolist()
-                            takeover = f"frm {','.join(takeover_staff)}【{current_val}】"
+                            takeover = f"frm {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
                             
                             if prev_val != "":
                                 # 前の予定の終了時間をセット
@@ -282,7 +280,7 @@ if uploaded_pdf:
                                 handover_codes = time_shift.loc[mask_handover, time_shift.columns[1]]
                                 mask_handover_codes = other_staff_shift.iloc[:, col].isin(handover_codes)
                                 handover_staff = other_staff_shift[mask_handover_codes].iloc[:, 0].tolist()
-                                handover = f"to {','.join(handover_staff)}"
+                                handover = f"to {','.join(handover_staff)}" if handover_staff else ""
                                 
                         else:
                             # 休憩_交代
@@ -300,27 +298,29 @@ if uploaded_pdf:
                                     paired_staff.append(f"{name}({places})")
             
                             break_formatted = ",".join(paired_staff)
-                            break_change = f"▷{break_formatted}"
+                            break_change = f"▷{break_formatted}" if break_formatted else ""
                                                     
                             if (my_time_shift.iloc[0, t_col:] == "").all():
                                 # 以降に業務がない場合は「退勤」扱い
                                 end = "(退勤)"
                         
-                    subject = start + change + takeover + handover + break_change + end
-                    
-                    final_rows.append([
-                        subject, 
-                        target_date, 
-                        time_shift.iloc[0, t_col], 
-                        target_date, 
-                        "", 
-                        "False", 
-                        "", 
-                        ""
-                    ])
-                                                        
+                        # 変数が確実に定義された状態で結合して追加
+                        subject = start + change + takeover + handover + break_change + end
+                        
+                        if subject.strip(): # 空っぽでなければ追加
+                            final_rows.append([
+                                subject, 
+                                target_date, 
+                                time_shift.iloc[0, t_col], 
+                                target_date, 
+                                "", 
+                                "False", 
+                                "", 
+                                ""
+                            ])
+                                                            
                     prev_val = current_val
-
+                    
     if st.button("カレンダー登録用データを生成"):
         final_rows = []
         holiday_keywords = ["休", "休日", "公休", "有休", "有給"]
