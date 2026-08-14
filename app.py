@@ -342,11 +342,11 @@ if uploaded_pdf:
                                 end = "(退勤)"
                             end_time=time_shift.iloc[0, t_col]
     
-                        # 最終行の不定項目をセット
-                        subject=subject+break_change+end
+                            # 最終行の不定項目をセット
+                            subject=subject+break_change+end
     
-                        final_rows[0][0] = subject   
-                        final_rows[0][4] = end_time                            
+                            final_rows[0][0] = subject   
+                            final_rows[0][4] = end_time                            
                         
                     prev_val = current_val
                     
