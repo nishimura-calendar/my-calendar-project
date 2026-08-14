@@ -243,6 +243,7 @@ if uploaded_pdf:
                     
                     if current_val != prev_val:
                         if current_val != "": 
+                            start_time=time_shift.iloc[0, t_col]
                             # 3列目から t_col の1つ手前までの間が全て””なら start="(出勤):"
                             if (my_time_shift.iloc[0, 3:t_col] == "").all():
                                 start = "(出勤)："           
@@ -283,6 +284,7 @@ if uploaded_pdf:
                                 handover = f"to {','.join(handover_staff)}" if handover_staff else ""
                                 
                         else:
+                            end_time=time_shift.iloc[0, t_col]
                             # 休憩_交代
                             mask_break = (time_shift.iloc[:, t_col - 1] == "") & (time_shift.iloc[:, t_col] != "")
                             
@@ -311,9 +313,9 @@ if uploaded_pdf:
                             final_rows.append([
                                 subject, 
                                 target_date, 
-                                time_shift.iloc[0, t_col], 
+                                start_time, 
                                 target_date, 
-                                "", 
+                                end_time, 
                                 "False", 
                                 "", 
                                 ""
