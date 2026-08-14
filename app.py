@@ -250,7 +250,6 @@ if uploaded_pdf:
                             
                             start_time=time_shift.iloc[0, t_col]
                             
-                            start=""
                             # 3列目から t_col の1つ手前までの間が全て””なら　start="(出勤):"
                             if (my_time_shift.iloc[0, 3:t_col] == "").all():
                                 start="(出勤)："
@@ -304,7 +303,7 @@ if uploaded_pdf:
                             subject=start+change+takeover+handover
                            
                             final_rows.append([
-                                "", 
+                                subject, 
                                 target_date, 
                                 start_time, 
                                 target_date, 
