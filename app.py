@@ -315,7 +315,7 @@ if uploaded_pdf:
                                 target_date, 
                                 start_time, 
                                 target_date, 
-                                end_time, 
+                                "", 
                                 "False", 
                                 "", 
                                 ""
