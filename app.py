@@ -236,8 +236,6 @@ if uploaded_pdf:
     
                     # まずすべての変数を空文字で初期化しておく
                     subject=""
-                    start_time=""
-                    end_time=""
                     start = ""
                     change = ""
                     takeover = ""
@@ -347,8 +345,8 @@ if uploaded_pdf:
                         # 最終行の不定項目をセット
                         subject=subject+break_change+end
     
-                        final_rows[-1][0] = subject   
-                        final_rows[-1][4] = end_time                            
+                        final_rows[0][0] = subject   
+                        final_rows[0][4] = end_time                            
                         
                     prev_val = current_val
                     
