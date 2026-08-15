@@ -226,103 +226,122 @@ if uploaded_pdf:
         time_shift = time_schedule.fillna("").astype(str)
         if (time_shift.iloc[:, 1] == shift_info).any():
            
+            # my_time_shift は time_shift(時程表) の1列目がshift_infoと等しい行の抽出結果。
             my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
     
             if not my_time_shift.empty:
                 prev_val = ""
                 for t_col in range(3, my_time_shift.shape[1]):
                     current_val = my_time_shift.iloc[0, t_col]
-                    
-                    # ▼【修正】ここに到達した時点で、まず全ての変数を必ず空文字で定義（初期化）する
+    
+                    # まずすべての変数を空文字で初期化しておく
+                    subject = ""
+                    start_time = ""
+                    end_time = ""
                     start = ""
                     change = ""
                     takeover = ""
                     handover = ""
                     break_change = ""
-                    end = ""
-                    
+                    end = ""                    
+                  
                     if current_val != prev_val:
                         if current_val != "": 
-                            start_time=time_shift.iloc[0, t_col]
-                            # 3列目から t_col の1つ手前までの間が全て””なら start="(出勤):"
-                            if (my_time_shift.iloc[0, 3:t_col] == "").all():
-                                start = "(出勤)："           
-    
-                            # 勤務_交代
-                            mask_change = (time_shift.iloc[:, t_col - 1] != "") & (time_shift.iloc[:, t_col] == "")
-    
-                            paired_staff = []
-                            for idx in time_shift.index[mask_change]:
-                                places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
-                                codes = time_shift.loc[idx, time_shift.columns[1]]
-        
-                                mask_codes = other_staff_shift.iloc[:, col] == codes
-                                staff = other_staff_shift.loc[mask_codes, other_staff_shift.columns[0]].tolist()
-        
-                                for name in staff:
-                                    paired_staff.append(f"{name}({places})")       
-     
-                            change_formatted = ",".join(paired_staff)
-                            change = f"{change_formatted}▷" if change_formatted else ""
                             
-                            # 巡回_引継
-                            mask_takeover = time_shift.iloc[:, t_col - 1] == current_val
-                            takeover_codes = time_shift.loc[mask_takeover, time_shift.columns[1]]
-                            mask_takeover_codes = other_staff_shift.iloc[:, col].isin(takeover_codes)
-                            takeover_staff = other_staff_shift[mask_takeover_codes].iloc[:, 0].tolist()
-                            takeover = f"frm {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
-                            
-                            if prev_val != "":
-                                # 前の予定の終了時間をセット
-                                final_rows[-1][4] = time_shift.iloc[0, t_col]                             
-                            
-                                # 巡回_引渡
-                                mask_handover = time_shift.iloc[:, t_col] == prev_val
-                                handover_codes = time_shift.loc[mask_handover, time_shift.columns[1]]
-                                mask_handover_codes = other_staff_shift.iloc[:, col].isin(handover_codes)
-                                handover_staff = other_staff_shift[mask_handover_codes].iloc[:, 0].tolist()
-                                handover = f"to {','.join(handover_staff)}" if handover_staff else ""
-                                
-                        else:
-                            end_time=time_shift.iloc[0, t_col]
-                            # 休憩_交代
-                            mask_break = (time_shift.iloc[:, t_col - 1] == "") & (time_shift.iloc[:, t_col] != "")
-                            
-                            paired_staff = []
-                            for idx in time_shift.index[mask_break]:
-                                places = time_shift.loc[idx, time_shift.columns[t_col]]
-                                codes = time_shift.loc[idx, time_shift.columns[1]]
-        
-                                mask_codes = other_staff_shift.iloc[:, col] == codes
-                                staff = other_staff_shift.loc[mask_codes, other_staff_shift.columns[0]].tolist()
-        
-                                for name in staff:
-                                    paired_staff.append(f"{name}({places})")
-            
-                            break_formatted = ",".join(paired_staff)
-                            break_change = f"▷{break_formatted}" if break_formatted else ""
-                                                    
-                            if (my_time_shift.iloc[0, t_col:] == "").all():
-                                # 以降に業務がない場合は「退勤」扱い
-                                end = "(退勤)"
-                        
-                        # 変数が確実に定義された状態で結合して追加
-                        subject = start + change + takeover + handover + break_change + end
-                        
-                        if subject.strip(): # 空っぽでなければ追加
+                            # ▼ 【ご要望の箇所】current_val != "" の時点で新しい行を追加する
                             final_rows.append([
-                                subject, 
+                                "", 
                                 target_date, 
-                                start_time, 
+                                "", 
                                 target_date, 
                                 "", 
                                 "False", 
                                 "", 
                                 ""
                             ])
-                                                            
-                    prev_val = current_val
-                    
+                            
+                            start_time = time_shift.iloc[0, t_col]
+                            
+                            start = ""
+                            # 3列目から t_col の1つ手前までの間が全て””なら start="(出勤):"
+                            if (my_time_shift.iloc[0, 3:t_col] == "").all():
+                                start = "(出勤)："
+                                
+                            if my_time_shift.iloc[0, t_col - 1] == "":              
+    
+                                # 勤務_交代
+                                mask_change = (time_shift.iloc[:, t_col - 1] != "") & (time_shift.iloc[:, t_col] == "")
+    
+                                # 勤務_交代：マスクにヒットした行ごとに処理する
+                                paired_staff = []
+                                for idx in time_shift.index[mask_change]:
+                                    places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
+                                    codes = time_shift.loc[idx, time_shift.columns[1]]
+                                    mask_codes = other_staff_shift.iloc[:, col] == codes
+                                    staff = other_staff_shift.loc[mask_codes, other_staff_shift.columns[0]].tolist()
+                                    
+                                    for name in staff:
+                                        paired_staff.append(f"{name}({places})")       
+        
+                                change_formatted = ",".join(paired_staff)
+                                change = f"{change_formatted}▷"
+                                
+                            else:
+                                # 前の予定の終了時間をセット
+                                if final_rows:
+                                    final_rows[-1][4] = time_shift.iloc[0, t_col]                             
+                            
+                                # 巡回_引渡
+                                mask_handover = time_shift.iloc[:, t_col] == prev_val
+                                handover_codes = time_shift.loc[mask_handover, time_shift.columns[1]]
+                                mask_handover_codes = other_staff_shift.iloc[:, col].isin(handover_codes)
+                                handover_staff = other_staff_shift[mask_handover_codes].iloc[:, 0].tolist()
+                                handover = f"to {','.join(handover_staff)}"
+                            
+                            # 巡回_引継
+                            mask_takeover = time_shift.iloc[:, t_col - 1] == current_val
+                            takeover_codes = time_shift.loc[mask_takeover, time_shift.columns[1]]
+                            mask_takeover_codes = other_staff_shift.iloc[:, col].isin(takeover_codes)
+                            takeover_staff = other_staff_shift[mask_takeover_codes].iloc[:, 0].tolist()
+                            takeover = f"frm {','.join(takeover_staff)}【{current_val}】"
+    
+                            subject = start + change + takeover + handover
+                            
+                            if final_rows:
+                                final_rows[-1][0] = subject
+                                final_rows[-1][2] = start_time
+                            
+                        else:
+                            # 休憩_交代（else以下）の処理
+                            mask_break = (time_shift.iloc[:, t_col - 1] == "") & (time_shift.iloc[:, t_col] != "")
+                            
+                            paired_staff = []
+                            for idx in time_shift.index[mask_break]:
+                                places = time_shift.loc[idx, time_shift.columns[t_col]]
+                                codes = time_shift.loc[idx, time_shift.columns[1]]
+                                mask_codes = other_staff_shift.iloc[:, col] == codes
+                                staff = other_staff_shift.loc[mask_codes, other_staff_shift.columns[0]].tolist()
+                                
+                                for name in staff:
+                                    paired_staff.append(f"{name}({places})")
+            
+                            break_formatted = ",".join(paired_staff)
+                            break_change = f"▷{break_formatted}"
+                                                    
+                            if (my_time_shift.iloc[0, t_col:] == "").all():
+                                end = "(退勤)"
+    
+                            # 直前の行が存在する場合、そこに休憩・退勤情報を反映する
+                            if final_rows:
+                                current_subject = final_rows[-1][0]
+                                subject = current_subject + break_change + end
+                                end_time = time_shift.iloc[0, t_col]
+                                
+                                final_rows[-1][4] = end_time                            
+                                final_rows[-1][0] = subject   
+    
+                    prev_val = current_val 
+                
     if st.button("カレンダー登録用データを生成"):
         final_rows = []
         holiday_keywords = ["休", "休日", "公休", "有休", "有給"]
