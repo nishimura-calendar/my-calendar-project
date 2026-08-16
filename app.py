@@ -289,7 +289,7 @@ if uploaded_pdf:
                             else:
                                 # 前の予定の終了時間をセット
                                 if final_rows:
-                                    final_rows[-1][4] = time_shift.iloc[0, t_col]                             
+                                    final_rows[-2][4] = time_shift.iloc[0, t_col]                             
                             
                                 # 巡回_引渡
                                 mask_handover = time_shift.iloc[:, t_col] == prev_val
