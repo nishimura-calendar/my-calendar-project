@@ -262,7 +262,6 @@ if uploaded_pdf:
                             
                             start_time = time_shift.iloc[0, t_col]
                             
-                            start = ""
                             # 3列目から t_col の1つ手前までの間が全て””なら start="(出勤):"
                             if (my_time_shift.iloc[0, 3:t_col] == "").all():
                                 start = "(出勤)："
@@ -329,7 +328,7 @@ if uploaded_pdf:
                             break_change = f"▷{break_formatted}"
                                                     
                             if (my_time_shift.iloc[0, t_col:] == "").all():
-                                end = "(退勤)"
+                                end = ":(退勤)"
     
                             # 直前の行が存在する場合、そこに休憩・退勤情報を反映する
                             if final_rows:
