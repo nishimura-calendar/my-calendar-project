@@ -296,6 +296,8 @@ if uploaded_pdf:
                                 mask_handover_codes = other_staff_shift.iloc[:, col].isin(handover_codes)
                                 handover_staff = other_staff_shift[mask_handover_codes].iloc[:, 0].tolist()
                                 handover = f"通過-to {','.join(handover_staff)}"
+                                subject=final_rows[-1][0]+handover
+                                final_rows[-2][0]=subject
                             
                             # 巡回_引継
                             mask_takeover = time_shift.iloc[:, t_col - 1] == current_val
