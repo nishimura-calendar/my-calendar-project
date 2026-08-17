@@ -272,7 +272,7 @@ if uploaded_pdf:
                                 paired_staff.append(f"{name}({places})")       
                         
                         change_formatted = ",".join(paired_staff)
-                        change = f"{change_formatted}▷"
+                        change = f"{change_formatted}▷" if change_formatted else ""
                     else:
                         # 前の予定の終了時間をセット
                         final_rows[-2][4] = time_shift.iloc[0, t_col]                             
@@ -286,7 +286,7 @@ if uploaded_pdf:
                     # 巡回_引継
                     takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1] == current_val, time_shift.columns[1]]
                     takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                    takeover = f"frm {','.join(takeover_staff)}【{current_val}】"
+                    takeover = f"frm {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
     
                     subject = start + change + takeover
                     final_rows[-1][0] = subject
@@ -305,7 +305,7 @@ if uploaded_pdf:
     
                     
                     break_formatted = ",".join(paired_staff)
-                    break_change = f"▷{break_formatted}"
+                    break_change = f"▷{break_formatted}" if break_formatted else ""
                                             
                     if (row_data[t_col:] == "").all():
                         end = "(退勤)"
