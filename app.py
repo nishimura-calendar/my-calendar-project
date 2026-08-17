@@ -306,7 +306,7 @@ if uploaded_pdf:
                             takeover_staff = other_staff_shift[mask_takeover_codes].iloc[:, 0].tolist()
                             takeover = f"frm {','.join(takeover_staff)}【{current_val}】"
     
-                            subject = start + change + takeover + handover
+                            subject = start + change + takeover 
                             
                             if final_rows:
                                 final_rows[-1][0] = subject
