@@ -308,7 +308,7 @@ if uploaded_pdf:
                     break_change = f"▷{break_formatted}" if break_formatted else ""
                                             
                     if (row_data[t_col:] == "").all():
-                        end = "(退勤)"
+                        end = "：(退勤)"
                     end_time = time_shift.iloc[0, t_col]
                     
                     # 巡回_引渡
