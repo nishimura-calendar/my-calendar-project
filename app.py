@@ -322,66 +322,59 @@ if uploaded_pdf:
             prev_val = current_val
         
     if st.button("カレンダー登録用データを生成"):
-        final_rows = []
-        holiday_keywords = ["休", "休日", "公休", "有休", "有給"]
-        time_schedule_df = st.session_state.data_dict[found_key]
-        time_shift_check = time_schedule_df.fillna("").astype(str)
-
-        _, last_day_num = calendar.monthrange(y, m)
-
-        for col in range(1, min(my_df.shape[1], last_day_num + 1)):
-            day_num = col
-            target_date = f"{y}/{m:02d}/{day_num:02d}"
-            
-            schedule_val = str(my_df.iloc[0, col]).strip()
-            sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
-
-            if not schedule_val or schedule_val == "nan":
-                continue
-
-            if (time_shift_check.iloc[:, 1] == schedule_val).any():
-                # 終日予定
-                final_rows.append([
-                    f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key
-                ])
-                # 時間詳細（shift_cal）
-                shift_cal(
-                    key=found_key,
-                    target_date=target_date,
-                    col=col,
-                    shift_info=schedule_val,
-                    my_daily_shift=my_df,
-                    other_staff_shift=other_df,
-                    time_schedule=time_schedule_df,
-                    final_rows=final_rows
-                )
-            else:
-                if any(kw in schedule_val for kw in holiday_keywords):
+            final_rows = []
+            time_schedule_df = st.session_state.data_dict[found_key]
+            time_shift_check = time_schedule_df.fillna("").astype(str)
+    
+            _, last_day_num = calendar.monthrange(y, m)
+    
+            for col in range(1, min(my_df.shape[1], last_day_num + 1)):
+                day_num = col
+                target_date = f"{y}/{m:02d}/{day_num:02d}"
+                
+                schedule_val = str(my_df.iloc[0, col]).strip()
+                sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
+    
+                if not schedule_val or schedule_val == "nan":
+                    continue
+    
+                if (time_shift_check.iloc[:, 1] == schedule_val).any():
+                    # 終日予定
+                    final_rows.append([
+                        f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key
+                    ])
+                    # 時間詳細（shift_cal）
+                    shift_cal(
+                        key=found_key,
+                        target_date=target_date,
+                        col=col,
+                        shift_info=schedule_val,
+                        my_daily_shift=my_df,
+                        other_staff_shift=other_df,
+                        time_schedule=time_schedule_df,
+                        final_rows=final_rows
+                    )
+                else:
+                    # まず通常通り終日予定として追加
                     final_rows.append([
                         schedule_val, target_date, "", target_date, "", "True", "", ""
                     ])
-                else:
-                    if schedule_val == "本町" or "本町" in sub_val or "本町" in schedule_val:
-                        time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
-                        if time_match:
-                            start_t = f"{time_match.group(1)}:00"
-                            end_t = f"{time_match.group(2)}:00"
-                            officeschedule("本町", start_t, end_t, target_date, final_rows, location_val="本町")
-                        else:
-                            final_rows.append([
-                                schedule_val, target_date, "", target_date, "", "True", "", schedule_val
-                            ])
-                    else:
+                    # 下段（sub_val）などに時間情報（例: 時間の数字やパターン）が含まれている場合の追加処理
+                    time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
+                    if time_match:
+                        start_t = f"{time_match.group(1)}:00"
+                        end_t = f"{time_match.group(2)}:00"
+                        
                         final_rows.append([
-                            schedule_val, target_date, "", target_date, "", "True", "", ""
+                            schedule_val, target_date, start_t, target_date, end_t, "False", "", schedule_val
                         ])
-
-        if final_rows:
-            df_calendar = pd.DataFrame(final_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
-            st.success(f"カレンダー登録データの生成が完了しました（計 {len(df_calendar)} 件）")
-            st.dataframe(df_calendar)
-            
-            csv_cal = df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-            st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
-        else:
-            st.warning("生成対象のデータがありませんでした。スタッフの選択やシフトデータをご確認ください。")
+    
+            if final_rows:
+                df_calendar = pd.DataFrame(final_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
+                st.success(f"カレンダー登録データの生成が完了しました（計 {len(df_calendar)} 件）")
+                st.dataframe(df_calendar)
+                
+                csv_cal = df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
+            else:
+                st.warning("生成対象のデータがありませんでした。スタッフの選択やシフトデータをご確認ください。")
