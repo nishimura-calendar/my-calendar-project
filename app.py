@@ -247,7 +247,7 @@ if uploaded_pdf:
                         
                         if current_val != "":
                             final_rows.append([
-                                subject, 
+                                "", 
                                 target_date, 
                                 "", 
                                 target_date, 
@@ -312,7 +312,9 @@ if uploaded_pdf:
                             takeover=f"frm {','.join(takeover_staff)}【{current_val}】"
     
                             subject=start+change+takeover
-                           
+
+                            final_rows[-1][0]=subject
+                            final_rows[-1][2]=start_time
                            
                         else:
                             # 休憩_交代
