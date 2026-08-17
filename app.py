@@ -254,7 +254,7 @@ if uploaded_pdf:
             if current_val != prev_val:
                 if current_val != "":
                     final_rows.append([subject, target_date, "", target_date, "", "False", "", ""])
-                    start_time = row_data[t_col]
+                    start_time = time_shift.iloc[0, t_col]
                 
                     # 3列目から t_col の1つ手前までの間が全て""なら start="(出勤)："
                     if (row_data[3:t_col] == "").all():
@@ -275,7 +275,7 @@ if uploaded_pdf:
                         change = f"{change_formatted}▷"
                     else:
                         # 前の予定の終了時間をセット
-                        final_rows[-2][4] = row_data[t_col]                             
+                        final_rows[-2][4] = time_shift.iloc[0, t_col]                             
                     
                         # 巡回_引渡
                         handover_codes = time_shift.loc[time_shift.iloc[:, t_col] == prev_val, time_shift.columns[1]]
@@ -309,7 +309,7 @@ if uploaded_pdf:
                                             
                     if (row_data[t_col:] == "").all():
                         end = "(退勤)"
-                    end_time = row_data[t_col]
+                    end_time = time_shift.iloc[0, t_col]
                     
                     # 巡回_引渡
                     handover_codes = time_shift.loc[time_shift.iloc[:, t_col] == prev_val, time_shift.columns[1]]
