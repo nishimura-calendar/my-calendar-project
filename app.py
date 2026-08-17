@@ -316,8 +316,7 @@ if uploaded_pdf:
                     handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
                     handover = f"to {','.join(handover_staff)}"                   
     
-                    subject = final_rows[-1][0] + handover+ break_change  + end
-                    final_rows[-1][0] = subject   
+                    final_rows[-1][0] +=handover+ break_change  + end   
                     final_rows[-1][4] = end_time                            
                 
             prev_val = current_val
