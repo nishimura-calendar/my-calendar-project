@@ -286,7 +286,7 @@ if uploaded_pdf:
                     # 巡回_引継
                     takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1] == current_val, time_shift.columns[1]]
                     takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                    takeover = f"frm {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
+                    takeover = f"from {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
     
                     subject = start + change + takeover
                     final_rows[-1][0] = subject
