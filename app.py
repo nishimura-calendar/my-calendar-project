@@ -355,7 +355,7 @@ if uploaded_pdf:
                             handover=f"to {','.join(handover_staff)}"                   
     
                             # 最終行の不定項目をセット
-                            subject=final_rows[-1][0]+break_change+handover+end
+                            subject=final_rows[-1][0]+handover+break_change+end
     
                             final_rows[-1][0] = subject   
                             final_rows[-1][4] = end_time                            
