@@ -357,7 +357,7 @@ if uploaded_pdf:
                 else:
                     # まず通常通り終日予定として追加
                     final_rows.append([
-                        schedule_val, target_date, "", target_date, "", "True", "", ""
+                        schedule_val, target_date, "", target_date, "", "True", "", schedule_val
                     ])
                     # 下段（sub_val）などに時間情報（例: 時間の数字やパターン）が含まれている場合の追加処理
                     time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
@@ -366,7 +366,7 @@ if uploaded_pdf:
                         end_t = f"{time_match.group(2)}:00"
                         
                         final_rows.append([
-                            schedule_val, target_date, start_t, target_date, end_t, "False", "", schedule_val
+                            schedule_val, target_date, start_t, target_date, end_t, "False", "", ""
                         ])
     
             if final_rows:
