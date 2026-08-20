@@ -157,13 +157,13 @@ if uploaded_pdf:
             continue
         
         if name_val != 'None':
-            base_name = name_val.split('\n')[0]
-            clean_name = re.split(r'[\s ]+(施設|空保|警備|級|研修)|(施設|空保|警備|級|研修)', base_name)[0].strip()
-        else:
-            clean_name = "該当なし"
-            
-        staff_data.append((idx, clean_name))
-
+                    # 最初の改行（\n）以降を削除し、前後の空白を取り除く
+                    clean_name = name_val.split('\n')[0].strip()
+                else:
+                    clean_name = "該当なし"
+                    
+                staff_data.append((idx, clean_name))
+        
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
