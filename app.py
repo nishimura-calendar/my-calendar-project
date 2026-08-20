@@ -375,5 +375,46 @@ if uploaded_pdf:
                 
                 csv_cal = df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
+                # --- 追加: Googleカレンダー登録用処理 ---
+                if st.button("Googleカレンダーに登録"):
+                    # 認証スコープを追加 (カレンダー書き込み権限)
+                    SCOPES = ['https://www.googleapis.com/auth/calendar']
+                    creds_dict = st.secrets["google_oauth_credentials"]
+                    # 既存のクレデンシャルからスコープを更新して再作成
+                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                    
+                    service = build('calendar', 'v3', credentials=creds)
+                    
+                    # 登録実行
+                    success_count = 0
+                    for _, row in df_calendar.iterrows():
+                        event = {
+                            'summary': row['Subject'],
+                            'location': row['Location'],
+                            'description': row['Description'],
+                            'start': {
+                                'dateTime': f"{row['StartDate']}T{row['StartTime']}:00" if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}",
+                                'date': None if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}",
+                            },
+                            'end': {
+                                'dateTime': f"{row['EndDate']}T{row['EndTime']}:00" if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}",
+                                'date': None if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}",
+                            },
+                        }
+                        # 全日予定のフラグ調整
+                        if row['AllDayEvent'] == "True":
+                            event['start'] = {'date': row['StartDate'].replace('/', '-')}
+                            event['end'] = {'date': row['EndDate'].replace('/', '-')}
+                            del event['start']['dateTime']
+                            del event['end']['dateTime']
+                
+                        try:
+                            service.events().insert(calendarId='primary', body=event).execute()
+                            success_count += 1
+                        except Exception as e:
+                            st.error(f"登録エラー: {row['Subject']} - {e}")
+                            
+                    st.success(f"{success_count} 件のイベントをGoogleカレンダーに登録しました！")
+    
             else:
                 st.warning("生成対象のデータがありませんでした。スタッフの選択やシフトデータをご確認ください。")
