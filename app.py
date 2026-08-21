@@ -152,7 +152,13 @@ if uploaded_pdf:
 
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
     my_df.iloc[0, 0] = target_name
-    other_rows = [df_pdf.iloc[idx:idx+1].assign(**{0: name}) for idx, name in staff_data if name != target_name]
+
+    other_rows = []
+    for idx, name in staff_data:
+        if name != target_name:
+            row = df_pdf.iloc[idx:idx+1].copy()
+            row.iloc[0, 0] = name
+            other_rows.append(row)
     other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
 
     def get_staff_names(codes, other_staff_shift, col):
