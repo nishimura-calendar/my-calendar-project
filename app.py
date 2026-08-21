@@ -363,22 +363,23 @@ if uploaded_pdf:
         csv_cal = st.session_state.df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
 
-        # 登録ボタン
-        if st.button("Googleカレンダーに登録"):
+        # ---------------------------------------------------------
+        # カレンダー操作ボタン群
+        # ---------------------------------------------------------
+        
+        # 1. 削除専用ボタン（新しい予定を入れず、指定月の該当スタッフ予定だけを完全に消去する）
+        if st.button("🗑️ 指定月のシフトをすべて削除（クリア）"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # 1. 削除対象の期間（対象月の1日〜末日）
                 import calendar
                 last_day = calendar.monthrange(y, m)[1]
-                # タイムゾーンのズレを防ぐため、時刻を広くカバーする
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
                 max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 
-                # 2. 対象期間の予定をすべて取得
                 events_result = service.events().list(
                     calendarId='primary', 
                     timeMin=min_date, 
@@ -386,24 +387,52 @@ if uploaded_pdf:
                     singleEvents=True
                 ).execute()
                 
-                items = events_result.get('items', [])
-                
-                # 3. 該当スタッフに関連する予定をすべて削除
                 deleted_count = 0
-                for event in items:
+                for event in events_result.get('items', []):
                     summary = event.get('summary', '')
                     location = event.get('location', '')
                     description = event.get('description', '')
                     
-                    # 条件：件名、場所、説明文のいずれかに「スタッフ名(found_key)」が含まれているか、
-                    # またはシフト関連のキーワードが含まれている場合は削除対象にする
                     if (found_key in summary) or (found_key == location) or (found_key in str(description)):
                         service.events().delete(calendarId='primary', eventId=event['id']).execute()
                         deleted_count += 1
                 
-                st.info(f"既存の予定から {deleted_count} 件を削除しました。")
+                st.success(f"{y}年{m}月分の「{found_key}」の予定を {deleted_count} 件すべて削除しました！")
+            except Exception as e:
+                st.error(f"削除エラー: {e}")
 
-                # 4. 新規登録処理
+        st.divider()
+
+        # 2. 通常の登録ボタン（これまで通りの削除＋新規登録）
+        if st.button("Googleカレンダーに登録（上書き保存）"):
+            try:
+                SCOPES = ['https://www.googleapis.com/auth/calendar']
+                creds_dict = st.secrets["google_oauth_credentials"]
+                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                service = build('calendar', 'v3', credentials=creds)
+                
+                import calendar
+                last_day = calendar.monthrange(y, m)[1]
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+                
+                events_result = service.events().list(
+                    calendarId='primary', 
+                    timeMin=min_date, 
+                    timeMax=max_date,
+                    singleEvents=True
+                ).execute()
+                
+                deleted_count = 0
+                for event in events_result.get('items', []):
+                    summary = event.get('summary', '')
+                    location = event.get('location', '')
+                    description = event.get('description', '')
+                    
+                    if (found_key in summary) or (found_key == location) or (found_key in str(description)):
+                        service.events().delete(calendarId='primary', eventId=event['id']).execute()
+                        deleted_count += 1
+
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
                     is_all_day = (str(row['AllDayEvent']) == "True")
