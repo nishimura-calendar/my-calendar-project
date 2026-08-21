@@ -73,14 +73,15 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 2. key関連のシフト、または found_key が含まれるものは確実に青系（7）にする
-    if found_key and found_key in shift_code_str:
+    # 2. 勤務地（found_key）に関連するものはすべて青系（7）にする
+    if found_key and (found_key in shift_code_str or found_key == shift_code_str):
         return "7"
     if time_shift_check is not None and not time_shift_check.empty:
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
             return "7"
             
-    if shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str:
+    # シフト名や時間割関連の文字列（出勤、退勤、引き継ぎなど `shift_cal` で生成されるものも含める）
+    if any(k in shift_code_str for k in ["出勤", "退勤", "frm", "to", "▷", "【"]) or shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str:
         return "7"
     
     # 3. その他イベント（黄色：5）
@@ -264,7 +265,7 @@ if uploaded_pdf:
           
             if current_val != prev_val:
                 if current_val != "":
-                    final_rows.append([subject, target_date, "", target_date, "", "False", "", ""])
+                    final_rows.append([subject, target_date, "", target_date, "", "False", "", found_key])
                     start_time = time_shift.iloc[0, t_col]
                 
                     if (row_data[3:t_col] == "").all():
@@ -338,7 +339,6 @@ if uploaded_pdf:
             if not schedule_val or schedule_val == "nan": continue
 
             if (time_shift_check.iloc[:, 1] == schedule_val).any():
-                # キーに一致する場合は found_key_シフト名 となり、青系対象になります
                 final_rows.append([f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key])
                 shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
             else:
@@ -425,7 +425,7 @@ if uploaded_pdf:
                     service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
                     deleted_count += 1
 
-                # データの登録（色別 colorId の付与：該当部分も確実に青系(7)を適用）
+                # データの登録（色別 colorId の付与）
                 success_count = 0
                 time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
                 time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
@@ -435,7 +435,6 @@ if uploaded_pdf:
                     start_date = str(row['StartDate']).replace('/', '-')
                     end_date = str(row['EndDate']).replace('/', '-')
                     
-                    # カラーIDの取得（found_keyのプレフィックスや時程表合致により、確実に "7"（青系）が返るよう判定）
                     c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
                     
                     if is_all_day:
