@@ -77,11 +77,9 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7" # デフォルトは水色系
     if found_key:
-        # キーワードのハッシュ値を利用して、勤務地ごとに自動で色を固定・分散させる
         hash_val = sum(ord(c) for c in str(found_key))
         assigned_blue = blue_palette[hash_val % len(blue_palette)]
 
-    # シフトコードに特定のキーワード（T1, T2, H1, K2など）が含まれる場合
     blue_patterns = ["T1", "T2", "H1", "K2", "A", "B", "C", "D"]
     if any(pattern in shift_code_str for pattern in blue_patterns):
         return assigned_blue
@@ -113,7 +111,7 @@ if uploaded_pdf:
     if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
         st.session_state.last_file_bytes = file_bytes
         st.session_state.ym_confirmed = False
-        for key in ['manual_y', 'manual_m', 'df_calendar']:
+        for key in ['manual_y', 'manual_m', 'df_calendar', 'show_conflict_options']:
             if key in st.session_state:
                 del st.session_state[key]
 
@@ -163,7 +161,7 @@ if uploaded_pdf:
         with col_reset1:
             if st.button("🔄 年月入力をやり直す"):
                 st.session_state.ym_confirmed = False
-                for key in ['manual_y', 'manual_m', 'df_calendar']:
+                for key in ['manual_y', 'manual_m', 'df_calendar', 'show_conflict_options']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
@@ -377,8 +375,8 @@ if uploaded_pdf:
         st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
         st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
 
-        # 1. 削除（クリア）ボタン
-        if st.button(f"⚠️ {found_key} カレンダーの指定月をクリアする", key="unique_clear_key_button"):
+        # 新規登録ボタンクリック時の重複確認ロジック
+        if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
@@ -398,79 +396,85 @@ if uploaded_pdf:
                     singleEvents=True
                 ).execute()
                 
-                items = events_result.get('items', [])
-                deleted_count = 0
-                
-                for event in items:
-                    service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
-                    deleted_count += 1
-                
-                st.success(f"「{found_key}」カレンダーの {y}年{m}月分の予定を **{deleted_count} 件** すべて削除しました！")
+                existing_items = events_result.get('items', [])
+                st.session_state.existing_count = len(existing_items)
+                st.session_state.show_conflict_options = True
             except Exception as e:
-                st.error(f"削除エラー: {e}")
+                st.error(f"事前確認エラー: {e}")
 
-        st.divider()
-
-        # 2. 新規登録（または刷新）ボタン
-        if st.button(f"🚀 {found_key} カレンダーへ新規登録する（色別対応）", key="unique_register_key_button"):
-            try:
-                SCOPES = ['https://www.googleapis.com/auth/calendar']
-                creds_dict = st.secrets["google_oauth_credentials"]
-                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
-                service = build('calendar', 'v3', credentials=creds)
-                
-                target_cal_id = get_or_create_calendar(service, found_key)
-                
-                last_day = calendar.monthrange(y, m)[1]
-                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
-                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
-                
-                events_result = service.events().list(
-                    calendarId=target_cal_id, 
-                    timeMin=min_date, 
-                    timeMax=max_date,
-                    singleEvents=True
-                ).execute()
-                
-                deleted_count = 0
-                for event in events_result.get('items', []):
-                    service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
-                    deleted_count += 1
-
-                # データの登録（色別 colorId の付与）
-                success_count = 0
-                time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
-                time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
-
-                for _, row in st.session_state.df_calendar.iterrows():
-                    is_all_day = (str(row['AllDayEvent']) == "True")
-                    start_date = str(row['StartDate']).replace('/', '-')
-                    end_date = str(row['EndDate']).replace('/', '-')
+        # 既存データが見つかった場合、または重複オプション表示フラグが立っている場合
+        if st.session_state.get('show_conflict_options', False):
+            count = st.session_state.get('existing_count', 0)
+            st.warning(f"⚠️ 登録済みデータが **{count}件** あります。どうしますか？")
+            
+            conflict_action = st.radio(
+                "処理方法を選択してください",
+                ["全て削除後新たにデータを登録する", "既存のデータに重複表示する（そのまま追加）"],
+                key="conflict_action_radio"
+            )
+            
+            if st.button("実行する", key="execute_conflict_action_btn"):
+                try:
+                    SCOPES = ['https://www.googleapis.com/auth/calendar']
+                    creds_dict = st.secrets["google_oauth_credentials"]
+                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                    service = build('calendar', 'v3', credentials=creds)
+                    target_cal_id = get_or_create_calendar(service, found_key)
                     
-                    c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                    last_day = calendar.monthrange(y, m)[1]
+                    min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                    max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                     
-                    if is_all_day:
-                        event_body = {
-                            'summary': row['Subject'], 
-                            'location': row['Location'], 
-                            'start': {'date': start_date}, 
-                            'end': {'date': end_date},
-                            'colorId': c_id
-                        }
+                    deleted_count = 0
+                    if "全て削除" in conflict_action:
+                        events_result = service.events().list(
+                            calendarId=target_cal_id, 
+                            timeMin=min_date, 
+                            timeMax=max_date,
+                            singleEvents=True
+                        ).execute()
+                        for event in events_result.get('items', []):
+                            service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
+                            deleted_count += 1
+
+                    # データの登録（色別 colorId の付与）
+                    success_count = 0
+                    time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
+                    time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
+
+                    for _, row in st.session_state.df_calendar.iterrows():
+                        is_all_day = (str(row['AllDayEvent']) == "True")
+                        start_date = str(row['StartDate']).replace('/', '-')
+                        end_date = str(row['EndDate']).replace('/', '-')
+                        
+                        c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        
+                        if is_all_day:
+                            event_body = {
+                                'summary': row['Subject'], 
+                                'location': row['Location'], 
+                                'start': {'date': start_date}, 
+                                'end': {'date': end_date},
+                                'colorId': c_id
+                            }
+                        else:
+                            start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {
+                                'summary': row['Subject'], 
+                                'location': row['Location'],
+                                'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
+                                'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'},
+                                'colorId': c_id
+                            }
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        success_count += 1
+                    
+                    st.session_state.show_conflict_options = False
+                    if "全て削除" in conflict_action:
+                        st.success(f"「{found_key}」カレンダーを刷新しました！（削除: {deleted_count}件 / 新規登録: {success_count}件）")
                     else:
-                        start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                        end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                        event_body = {
-                            'summary': row['Subject'], 
-                            'location': row['Location'],
-                            'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
-                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'},
-                            'colorId': c_id
-                        }
-                    
-                    service.events().insert(calendarId=target_cal_id, body=event_body).execute()
-                    success_count += 1
-                
-                st.success(f"「{found_key}」カレンダーを更新しました！（クリア: {deleted_count}件 / 登録: {success_count}件）")
-            except Exception as e:
-                st.error(f"登録エラー: {e}")
+                        st.success(f"「{found_key}」カレンダーにデータを追加しました！（重複登録: {success_count}件）")
+                except Exception as e:
+                    st.error(f"登録実行エラー: {e}")
