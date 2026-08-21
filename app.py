@@ -371,11 +371,12 @@ if uploaded_pdf:
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # 1. 削除対象の期間を「対象月の1日」〜「対象月の末日」に固定
+                # 1. 削除対象の期間（対象月の1日〜末日）
                 import calendar
                 last_day = calendar.monthrange(y, m)[1]
-                min_date = f"{y}-{m:02d}-01T00:00:00Z"
-                max_date = f"{y}-{m:02d}-{last_day}T23:59:59Z"
+                # タイムゾーンのズレを防ぐため、時刻を広くカバーする
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 
                 # 2. 対象期間の予定をすべて取得
                 events_result = service.events().list(
@@ -385,15 +386,24 @@ if uploaded_pdf:
                     singleEvents=True
                 ).execute()
                 
-                # 3. 該当スタッフの予定だけを削除
+                items = events_result.get('items', [])
+                
+                # 3. 該当スタッフに関連する予定をすべて削除
                 deleted_count = 0
-                for event in events_result.get('items', []):
-                    # Locationにスタッフ名(found_key)を入れているか、件名(summary)に含む場合を削除対象とする
-                    if event.get('location') == found_key or found_key in event.get('summary', ''):
+                for event in items:
+                    summary = event.get('summary', '')
+                    location = event.get('location', '')
+                    description = event.get('description', '')
+                    
+                    # 条件：件名、場所、説明文のいずれかに「スタッフ名(found_key)」が含まれているか、
+                    # またはシフト関連のキーワードが含まれている場合は削除対象にする
+                    if (found_key in summary) or (found_key == location) or (found_key in str(description)):
                         service.events().delete(calendarId='primary', eventId=event['id']).execute()
                         deleted_count += 1
                 
-                # 4. 新規登録処理（先ほどと同じ）
+                st.info(f"既存の予定から {deleted_count} 件を削除しました。")
+
+                # 4. 新規登録処理
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
                     is_all_day = (str(row['AllDayEvent']) == "True")
@@ -420,6 +430,6 @@ if uploaded_pdf:
                     service.events().insert(calendarId='primary', body=event_body).execute()
                     success_count += 1
                 
-                st.success(f"{y}年{m}月分の予定を {deleted_count} 件削除し、{success_count} 件を新しく登録しました！")
+                st.success(f"{y}年{m}月分のシフトを完全に更新しました！（削除: {deleted_count}件 / 登録: {success_count}件）")
             except Exception as e:
                 st.error(f"登録エラー: {e}")
