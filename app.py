@@ -367,52 +367,17 @@ if uploaded_pdf:
         # カレンダー操作ボタン群
         # ---------------------------------------------------------
         
-        # 1. 削除専用ボタン（新しい予定を入れず、指定月の該当スタッフ予定だけを完全に消去する）
-        if st.button("🗑️ 指定月のシフトをすべて削除（クリア）"):
+        # カレンダー一覧を確認するボタン
+        if st.button("自分のGoogleカレンダー一覧を表示する"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                import calendar
-                last_day = calendar.monthrange(y, m)[1]
-                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
-                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
-                
-                events_result = service.events().list(
-                    calendarId='primary', 
-                    timeMin=min_date, 
-                    timeMax=max_date,
-                    singleEvents=True
-                ).execute()
-                
-                deleted_count = 0
-                for event in events_result.get('items', []):
-                    summary = event.get('summary', '')
-                    location = event.get('location', '')
-                    description = event.get('description', '')
-                    
-                    if (found_key in summary) or (found_key == location) or (found_key in str(description)):
-                        service.events().delete(calendarId='primary', eventId=event['id']).execute()
-                        deleted_count += 1
-                
-                st.success(f"{y}年{m}月分の「{found_key}」の予定を {deleted_count} 件すべて削除しました！")
+                calendar_list = service.calendarList().list().execute()
+                st.write("### 利用可能なカレンダー一覧:")
+                for cal in calendar_list.get('items', []):
+                    st.write(f"- **名前:** {cal.get('summary')} ／ **ID:** `{cal.get('id')}`")
             except Exception as e:
-                st.error(f"削除エラー: {e}")
-
-        st.divider()
-
-        if st.button("自分のGoogleカレンダー一覧を表示する"):
-    try:
-        SCOPES = ['https://www.googleapis.com/auth/calendar']
-        creds_dict = st.secrets["google_oauth_credentials"]
-        creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
-        service = build('calendar', 'v3', credentials=creds)
-        
-        calendar_list = service.calendarList().list().execute()
-        st.write("### 利用可能なカレンダー一覧:")
-        for cal in calendar_list.get('items', []):
-            st.write(f"- **名前:** {cal.get('summary')} ／ **ID:** `{cal.get('id')}`")
-    except Exception as e:
-        st.error(f"エラー: {e}")
+                st.error(f"エラー: {e}")
