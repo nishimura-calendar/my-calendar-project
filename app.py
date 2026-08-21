@@ -320,101 +320,78 @@ if uploaded_pdf:
                 
             prev_val = current_val
         
+    # ---------------------------------------------------------
+    # [3] カレンダー登録データの生成（修正版）
+    # ---------------------------------------------------------
+    # ※既にヘッダーなどを表示している場合は、ここは不要なら削除しても構いません
+
+    # 1. 生成ボタン
     if st.button("カレンダー登録用データを生成"):
-            final_rows = []
-            time_schedule_df = st.session_state.data_dict[found_key]
-            time_shift_check = time_schedule_df.fillna("").astype(str)
-    
-            _, last_day_num = calendar.monthrange(y, m)
-    
-            for col in range(1, min(my_df.shape[1], last_day_num + 1)):
-                day_num = col
-                target_date = f"{y}/{m:02d}/{day_num:02d}"
-                
-                schedule_val = str(my_df.iloc[0, col]).strip()
-                sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
-    
-                if not schedule_val or schedule_val == "nan":
-                    continue
-    
-                if (time_shift_check.iloc[:, 1] == schedule_val).any():
-                    # 終日予定
-                    final_rows.append([
-                        f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key
-                    ])
-                    # 時間詳細（shift_cal）
-                    shift_cal(
-                        key=found_key,
-                        target_date=target_date,
-                        col=col,
-                        shift_info=schedule_val,
-                        my_daily_shift=my_df,
-                        other_staff_shift=other_df,
-                        time_schedule=time_schedule_df,
-                        final_rows=final_rows
-                    )
-                else:
-                    # まず通常通り終日予定として追加
-                    final_rows.append([
-                        schedule_val, target_date, "", target_date, "", "True", "", schedule_val
-                    ])
-                    # 下段（sub_val）などに時間情報（例: 時間の数字やパターン）が含まれている場合の追加処理
-                    time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
-                    if time_match:
-                        start_t = f"{time_match.group(1)}:00"
-                        end_t = f"{time_match.group(2)}:00"
-                        
-                        final_rows.append([
-                            schedule_val, target_date, start_t, target_date, end_t, "False", "", ""
-                        ])
-    
-            if final_rows:
-                df_calendar = pd.DataFrame(final_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
-                st.success(f"カレンダー登録データの生成が完了しました（計 {len(df_calendar)} 件）")
-                st.dataframe(df_calendar)
-                
-                csv_cal = df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
-                # --- 追加: Googleカレンダー登録用処理 ---
-                if st.button("Googleカレンダーに登録"):
-                    # 認証スコープを追加 (カレンダー書き込み権限)
-                    SCOPES = ['https://www.googleapis.com/auth/calendar']
-                    creds_dict = st.secrets["google_oauth_credentials"]
-                    # 既存のクレデンシャルからスコープを更新して再作成
-                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
-                    
-                    service = build('calendar', 'v3', credentials=creds)
-                    
-                    # 登録実行
-                    success_count = 0
-                    for _, row in df_calendar.iterrows():
-                        event = {
-                            'summary': row['Subject'],
-                            'location': row['Location'],
-                            'description': row['Description'],
-                            'start': {
-                                'dateTime': f"{row['StartDate']}T{row['StartTime']}:00" if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}",
-                                'date': None if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}",
-                            },
-                            'end': {
-                                'dateTime': f"{row['EndDate']}T{row['EndTime']}:00" if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}",
-                                'date': None if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}",
-                            },
-                        }
-                        # 全日予定のフラグ調整
-                        if row['AllDayEvent'] == "True":
-                            event['start'] = {'date': row['StartDate'].replace('/', '-')}
-                            event['end'] = {'date': row['EndDate'].replace('/', '-')}
-                            del event['start']['dateTime']
-                            del event['end']['dateTime']
-                
-                        try:
-                            service.events().insert(calendarId='primary', body=event).execute()
-                            success_count += 1
-                        except Exception as e:
-                            st.error(f"登録エラー: {row['Subject']} - {e}")
-                            
-                    st.success(f"{success_count} 件のイベントをGoogleカレンダーに登録しました！")
-    
+        final_rows = []
+        time_schedule_df = st.session_state.data_dict[found_key]
+        time_shift_check = time_schedule_df.fillna("").astype(str)
+        _, last_day_num = calendar.monthrange(y, m)
+
+        for col in range(1, min(my_df.shape[1], last_day_num + 1)):
+            day_num = col
+            target_date = f"{y}/{m:02d}/{day_num:02d}"
+            schedule_val = str(my_df.iloc[0, col]).strip()
+            sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
+
+            if not schedule_val or schedule_val == "nan": continue
+
+            if (time_shift_check.iloc[:, 1] == schedule_val).any():
+                final_rows.append([f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key])
+                shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
             else:
-                st.warning("生成対象のデータがありませんでした。スタッフの選択やシフトデータをご確認ください。")
+                final_rows.append([schedule_val, target_date, "", target_date, "", "True", "", schedule_val])
+                time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
+                if time_match:
+                    final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", ""])
+
+        if final_rows:
+            st.session_state.df_calendar = pd.DataFrame(final_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
+            st.success(f"カレンダー登録データの生成が完了しました（計 {len(st.session_state.df_calendar)} 件）")
+        else:
+            st.warning("生成対象のデータがありませんでした。")
+
+    # 2. 生成データがある場合のみ表示・登録ボタンを表示
+    if 'df_calendar' in st.session_state:
+        st.dataframe(st.session_state.df_calendar)
+        
+        # ダウンロードボタン
+        csv_cal = st.session_state.df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+        st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
+
+        # 登録ボタン
+        if st.button("Googleカレンダーに登録"):
+            try:
+                SCOPES = ['https://www.googleapis.com/auth/calendar']
+                creds_dict = st.secrets["google_oauth_credentials"]
+                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                service = build('calendar', 'v3', credentials=creds)
+                
+                success_count = 0
+                for _, row in st.session_state.df_calendar.iterrows():
+                    event = {
+                        'summary': row['Subject'],
+                        'location': row['Location'],
+                        'description': row['Description'],
+                        'start': {'dateTime': f"{row['StartDate']}T{row['StartTime']}:00" if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}", 'date': None if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}"},
+                        'end': {'dateTime': f"{row['EndDate']}T{row['EndTime']}:00" if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}", 'date': None if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}"},
+                    }
+                    if row['AllDayEvent'] == "True":
+                        event['start'] = {'date': row['StartDate'].replace('/', '-')}
+                        event['end'] = {'date': row['EndDate'].replace('/', '-')}
+                        # APIの仕様上、終日予定はdateTimeを削除する必要があります
+                        if 'dateTime' in event['start']: del event['start']['dateTime']
+                        if 'dateTime' in event['end']: del event['end']['dateTime']
+                    
+                    service.events().insert(calendarId='primary', body=event).execute()
+                    success_count += 1
+                
+                st.success(f"{success_count} 件のイベントをGoogleカレンダーに登録しました！")
+                # 完了後にデータをリセットしたい場合は以下を有効化
+                # del st.session_state.df_calendar
+            except Exception as e:
+                st.error(f"登録エラー: {e}")
