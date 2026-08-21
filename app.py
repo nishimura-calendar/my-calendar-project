@@ -5,26 +5,24 @@ import pdfplumber
 import re
 import calendar
 import unicodedata
+import fitz  # PyMuPDF
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
-# --- PDF表示用の補助関数（確実に描画させるためst.download_buttonの併用や表示コンテナを利用） ---
-def display_pdf_preview(file_bytes):
-    # バイナリデータをストリームとして読み込ませることでプレビューを安定させる
-    base64_pdf = io.BytesIO(file_bytes)
-    st.download_button(
-        label="📥 アップロードされたPDFファイルをダウンロードして確認する",
-        data=base64_pdf,
-        file_name="uploaded_shift.pdf",
-        mime="application/pdf"
-    )
-    # ブラウザ組み込みのPDFビューアで確実に表示させるためのHTML埋め込み改善版
-    import base64
-    b64 = base64.b64encode(file_bytes).decode('utf-8')
-    pdf_html = f'<embed src="data:application/pdf;base64,{b64}" width="100%" height="700px" type="application/pdf">'
-    st.markdown(pdf_html, unsafe_allow_html=True)
+# --- PDFを画面に画像として表示する補助関数 ---
+def display_pdf_as_images(file_bytes):
+    try:
+        # PyMuPDFを用いてPDFのバイトデータからページを画像に変換
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=150)  # 解像度調整
+            img_bytes = pix.tobytes("png")
+            st.image(img_bytes, caption=f"PDF プレビュー (ページ {page_num + 1})", use_column_width=True)
+    except Exception as e:
+        st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
 # --- [1] 時程表読み込み ---
 def format_time(val):
@@ -147,10 +145,10 @@ if uploaded_pdf:
         tables = pdf.pages[0].extract_tables()
         df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
 
-    # 1. 勤務地(Key)が特定できない場合 -> PDFファイルをそのままプレビュー表示
+    # 1. 勤務地(Key)が特定できない場合 -> PDFを画像として画面に表示
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
-        display_pdf_preview(file_bytes)
+        display_pdf_as_images(file_bytes)
         st.stop()
     
     A_date, A_day = None, None
@@ -163,7 +161,7 @@ if uploaded_pdf:
     
     if not A_date:
         st.error("日付と曜日が抽出できませんでした。")
-        display_pdf_preview(file_bytes)
+        display_pdf_as_images(file_bytes)
         st.stop()
 
     filename = uploaded_pdf.name
@@ -177,9 +175,9 @@ if uploaded_pdf:
             st.session_state.ym_confirmed = False
 
         if not st.session_state.ym_confirmed:
-            # 2. ファイル名から年月が取得できない場合 -> PDFファイルをそのままプレビュー表示
+            # 2. ファイル名から年月が取得できない場合 -> PDFを画像として画面に表示
             st.warning("ファイル名から年月が取得できませんでした。下記を入力して「年月確定」を押してください。")
-            display_pdf_preview(file_bytes)
+            display_pdf_as_images(file_bytes)
 
             y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026, key="manual_y")
             m = st.number_input("月を手動入力", min_value=1, max_value=12, value=2, key="manual_m")
@@ -200,7 +198,7 @@ if uploaded_pdf:
         st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
-        display_pdf_preview(file_bytes)
+        display_pdf_as_images(file_bytes)
         st.stop()
 
     st.divider()
