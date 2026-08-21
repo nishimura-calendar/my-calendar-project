@@ -74,13 +74,16 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         return "11"
     
     # 2. key関連のシフト（青系：7）
-    if found_key and shift_code_str.startswith(f"{found_key}_"):
+    if found_key and found_key in shift_code_str:
         return "7"
     if time_shift_check is not None and not time_shift_check.empty:
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
             return "7"
-    if shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str:
-        return "7"
+    # 一般的なシフト記号やプレフィックスが含まれる場合も青系にする
+    if shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str or any(alpha in shift_code_str for alpha in ["A", "B", "C", "D", "早", "遅", "日"]):
+        # 休が含まれていない場合の勤務記号
+        if not any(holiday in shift_code_str for holiday in ["休", "休日", "公休"]):
+            return "7"
     
     # 3. その他イベント（黄色：5）
     return "5"
@@ -96,24 +99,12 @@ uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pd
 if uploaded_pdf:
     file_bytes = uploaded_pdf.getvalue()
     
-    # ファイルが変更された、またはサイドバー等の操作でリセットが要求された場合
     if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
         st.session_state.last_file_bytes = file_bytes
         st.session_state.ym_confirmed = False
-        # ウィジェットのキーに紐づく値も含めて完全にクリア
         for key in ['manual_y', 'manual_m', 'df_calendar']:
             if key in st.session_state:
                 del st.session_state[key]
-
-    # 間違えて入力した年月をやり直したいときのクリアボタンを設置
-    col_reset1, col_reset2 = st.columns([1, 4])
-    with col_reset1:
-        if st.button("🔄 年月入力をやり直す"):
-            st.session_state.ym_confirmed = False
-            for key in ['manual_y', 'manual_m', 'df_calendar']:
-                if key in st.session_state:
-                    del st.session_state[key]
-            st.rerun()
 
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -157,6 +148,16 @@ if uploaded_pdf:
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
     else:
+        # ファイル名から年月が取れない場合のみ、やり直しボタンと手動入力を表示
+        col_reset1, col_reset2 = st.columns([1, 4])
+        with col_reset1:
+            if st.button("🔄 年月入力をやり直す"):
+                st.session_state.ym_confirmed = False
+                for key in ['manual_y', 'manual_m', 'df_calendar']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+
         if 'ym_confirmed' not in st.session_state:
             st.session_state.ym_confirmed = False
 
@@ -178,7 +179,7 @@ if uploaded_pdf:
     if A_date == last_day_num and A_day == last_day_w:
         st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
     else:
-        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります（入力された年月またはファイル名を確認してください）。")
+        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
