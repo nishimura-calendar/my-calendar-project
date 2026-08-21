@@ -93,19 +93,27 @@ if 'data_dict' not in st.session_state:
 
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
-# ファイルが変更された、または新しくアップロードされた場合のリセット処理
 if uploaded_pdf:
     file_bytes = uploaded_pdf.getvalue()
+    
+    # ファイルが変更された、またはサイドバー等の操作でリセットが要求された場合
     if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
         st.session_state.last_file_bytes = file_bytes
         st.session_state.ym_confirmed = False
-        # 手動入力の年月や生成データも完全にクリア
-        if 'manual_y' in st.session_state:
-            del st.session_state.manual_y
-        if 'manual_m' in st.session_state:
-            del st.session_state.manual_m
-        if 'df_calendar' in st.session_state:
-            del st.session_state.df_calendar
+        # ウィジェットのキーに紐づく値も含めて完全にクリア
+        for key in ['manual_y', 'manual_m', 'df_calendar']:
+            if key in st.session_state:
+                del st.session_state[key]
+
+    # 間違えて入力した年月をやり直したいときのクリアボタンを設置
+    col_reset1, col_reset2 = st.columns([1, 4])
+    with col_reset1:
+        if st.button("🔄 年月入力をやり直す"):
+            st.session_state.ym_confirmed = False
+            for key in ['manual_y', 'manual_m', 'df_calendar']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
 
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -149,24 +157,20 @@ if uploaded_pdf:
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
     else:
-        if 'manual_y' not in st.session_state:
-            st.session_state.manual_y = 2026
-        if 'manual_m' not in st.session_state:
-            st.session_state.manual_m = 2
         if 'ym_confirmed' not in st.session_state:
             st.session_state.ym_confirmed = False
 
         if not st.session_state.ym_confirmed:
             st.warning("ファイル名から年月を特定できませんでした。下記を入力して「年月確定」を押してください。")
-            st.session_state.manual_y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=st.session_state.manual_y)
-            st.session_state.manual_m = st.number_input("月を手動入力", min_value=1, max_value=12, value=st.session_state.manual_m)
+            y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026, key="manual_y")
+            m = st.number_input("月を手動入力", min_value=1, max_value=12, value=2, key="manual_m")
             if st.button("年月確定"):
                 st.session_state.ym_confirmed = True
                 st.rerun()
             st.stop()
         else:
-            y = st.session_state.manual_y
-            m = st.session_state.manual_m
+            y = st.session_state.get('manual_y', 2026)
+            m = st.session_state.get('manual_m', 2)
     
     _, last_day_num = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
@@ -174,7 +178,7 @@ if uploaded_pdf:
     if A_date == last_day_num and A_day == last_day_w:
         st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
     else:
-        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
+        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります（入力された年月またはファイル名を確認してください）。")
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
