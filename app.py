@@ -174,29 +174,38 @@ if uploaded_pdf:
         st.warning("ファイル名から年月が取得できませんでした。プレビューを確認してください。")
         display_pdf_as_images(file_bytes)
         
-        choice = st.radio("このファイルを使用しますか？", ["はい", "いいえ"], key="use_pdf_choice")
+        choice = st.radio(
+            "このファイルを使用しますか？", 
+            ["選択してください", "はい", "いいえ"], 
+            index=0, 
+            key="use_pdf_choice"
+        )
         
-        if choice == "いいえ":
+        if choice == "選択してください":
+            st.info("👆 上記のプレビューを確認し、「はい」または「いいえ」を選択してください。")
+            st.stop()
+        elif choice == "いいえ":
             st.error("処理を停止しました。別のファイルをアップロードし直してください。")
             if st.button("アップロード状態をリセット"):
-                del st.session_state['last_file_bytes']
+                if 'last_file_bytes' in st.session_state:
+                    del st.session_state['last_file_bytes']
+                if 'use_pdf_choice' in st.session_state:
+                    del st.session_state['use_pdf_choice']
                 st.rerun()
             st.stop()
         else:
             # 「はい」の場合：PDFテキスト等から年(4桁)と月を推定
-            # PDF内の最初の「〇〇年」を探す、または現在年をフォールバックとして利用
             year_text_match = re.search(r'(\d{4})\s*年', pdf_full_text)
             if year_text_match:
                 y = int(year_text_match.group(1))
             else:
-                y = 2026  # デフォルト年
+                y = 2026
             
-            # 月は抽出できた最終日(A_date)などから自動決定は難しいため、PDF内から「〇月」表記を探すかA_dateの月（仮）とする
             month_text_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
             if month_text_match:
                 m = int(month_text_match.group(1))
             else:
-                m = 2  # フォールバック
+                m = 2
     
     _, last_day_num = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
@@ -245,10 +254,9 @@ if uploaded_pdf:
         other_df = pd.DataFrame()
 
     # ---------------------------------------------------------
-    # [3] カレンダー登録データの生成
+    # カレンダー登録データの生成処理（見出し非表示）
     # ---------------------------------------------------------
     st.divider()
-    st.header("③ カレンダー登録データ生成 ([3])")
 
     def get_staff_names(codes, other_staff_shift, col):
         if other_staff_shift.empty:
