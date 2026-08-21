@@ -93,12 +93,17 @@ if 'data_dict' not in st.session_state:
 
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
-# ファイルが新しくアップロードされた（または変更された）場合の前回データリセット処理
+# ファイルが変更された、または新しくアップロードされた場合のリセット処理
 if uploaded_pdf:
-    if 'last_uploaded_filename' not in st.session_state or st.session_state.last_uploaded_filename != uploaded_pdf.name:
-        st.session_state.last_uploaded_filename = uploaded_pdf.name
+    file_bytes = uploaded_pdf.getvalue()
+    if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
+        st.session_state.last_file_bytes = file_bytes
         st.session_state.ym_confirmed = False
-        # 前回のカレンダー生成データや確認状態をクリア
+        # 手動入力の年月や生成データも完全にクリア
+        if 'manual_y' in st.session_state:
+            del st.session_state.manual_y
+        if 'manual_m' in st.session_state:
+            del st.session_state.manual_m
         if 'df_calendar' in st.session_state:
             del st.session_state.df_calendar
 
