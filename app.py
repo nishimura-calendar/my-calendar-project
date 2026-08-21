@@ -73,7 +73,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 2. 勤務地（found_key）に応じて青系の色（7: 水色系, 9: 藍色・濃い青, 1: 薄紫・ブルー系）を動的に変化させる
+    # 2. 勤務地（found_key）に応じて青系の色を動的に変化させる
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7" # デフォルトは水色系
     if found_key:
@@ -130,25 +130,33 @@ if uploaded_pdf:
         else:
             found_key = None
     
-    if not found_key:
-        st.error("勤務地(Key)がPDFから特定できませんでした。")
-        st.stop()
-    
+    # PDFからテーブルを抽出
     with pdfplumber.open(uploaded_pdf) as pdf:
         tables = pdf.pages[0].extract_tables()
-        df_pdf = pd.DataFrame(tables[0])
-        
-        A_date, A_day = None, None
-        for row in range(df_pdf.shape[0] - 1):
-            for col in range(df_pdf.shape[1]):
-                val_up = str(df_pdf.iloc[row, col])
-                val_down = str(df_pdf.iloc[row+1, col])
-                if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
-                    A_date, A_day = int(val_up), val_down
-        
-        if not A_date:
-            st.error("日付と曜日が抽出できませんでした。")
-            st.stop()
+        df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
+
+    # 1. 勤務地(Key)が特定できない場合
+    if not found_key:
+        st.error("勤務地(Key)がPDFから特定できませんでした。")
+        if not df_pdf.empty:
+            st.write("【読み込んだPDFデータ】")
+            st.dataframe(df_pdf)
+        st.stop()
+    
+    A_date, A_day = None, None
+    for row in range(df_pdf.shape[0] - 1):
+        for col in range(df_pdf.shape[1]):
+            val_up = str(df_pdf.iloc[row, col])
+            val_down = str(df_pdf.iloc[row+1, col])
+            if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
+                A_date, A_day = int(val_up), val_down
+    
+    if not A_date:
+        st.error("日付と曜日が抽出できませんでした。")
+        if not df_pdf.empty:
+            st.write("【読み込んだPDFデータ】")
+            st.dataframe(df_pdf)
+        st.stop()
 
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
@@ -161,11 +169,11 @@ if uploaded_pdf:
             st.session_state.ym_confirmed = False
 
         if not st.session_state.ym_confirmed:
-            st.warning("ファイル名から年月を特定できませんでした。下記を入力して「年月確定」を押してください。")
-            
-            # 年月入力を促す際にも抽出されたPDFテーブル（全体）を表示する
-            st.write("【読み込んだPDFデータ】")
-            st.dataframe(df_pdf)
+            # 2. ファイル名から年月が取得できない場合（全く同じ手法でPDFを表示）
+            st.warning("ファイル名から年月が取得できませんでした。下記を入力して「年月確定」を押してください。")
+            if not df_pdf.empty:
+                st.write("【読み込んだPDFデータ】")
+                st.dataframe(df_pdf)
 
             y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026, key="manual_y")
             m = st.number_input("月を手動入力", min_value=1, max_value=12, value=2, key="manual_m")
@@ -181,11 +189,14 @@ if uploaded_pdf:
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
     
     if A_date == last_day_num and A_day == last_day_w:
-        pass # 一致している場合はそのまま進行
+        pass 
     else:
         st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
+        if not df_pdf.empty:
+            st.write("【読み込んだPDFデータ】")
+            st.dataframe(df_pdf)
         st.stop()
 
     st.divider()
@@ -206,7 +217,6 @@ if uploaded_pdf:
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
-    # my_daily_shift、other_daily_shift、time_schedule の画面表示は要望により非表示化（内部処理用データ作成のみ実施）
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
     my_df.iloc[0, 0] = target_name
     my_df.iloc[1, 0] = "" 
