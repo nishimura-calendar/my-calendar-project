@@ -137,49 +137,76 @@ st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
 
-# ファイルの取得方法を選択するラジオボタン
-upload_option = st.radio("PDFの取得方法を選択してください", ["手動アップロード", "Google Driveから選択"], index=0)
+# セッションステートにPDFデータが保持されていない場合初期化
+if 'loaded_pdf_bytes' not in st.session_state:
+    st.session_state.loaded_pdf_bytes = None
+    st.session_state.loaded_pdf_name = None
 
-uploaded_pdf = None
-
-if upload_option == "手動アップロード":
-    uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
-else:
-    try:
-        creds_dict = st.secrets["google_oauth_credentials"]
-        creds_drive = Credentials.from_authorized_user_info(
-            creds_dict, 
-            scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
-        )
-        drive_service = build('drive', 'v3', credentials=creds_drive)
-        
-        files = get_recent_pdfs_from_drive(drive_service)
-        
-        if files:
-            selected_file = st.selectbox(
-                "解析したいファイルを選択してください (過去30日以内)", 
-                files, 
-                format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
-            )
-            if st.button("選択したPDFを読み込む"):
-                uploaded_pdf = download_pdf_from_drive(drive_service, selected_file['id'])
-                uploaded_pdf.name = selected_file['name']
-                st.success(f"「{selected_file['name']}」を読み込みました。")
-        else:
-            st.warning("最近30日以内に保存されたPDFは見つかりませんでした。")
-    except Exception as e:
-        st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
-
-if uploaded_pdf:
-    file_bytes = uploaded_pdf.getvalue()
-    
-    if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
-        st.session_state.last_file_bytes = file_bytes
-        st.session_state.ym_confirmed = False
-        for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
+# サイドバーに「ファイルを選び直す」ボタンを配置（読み込み済みの場合のみ）
+if st.session_state.loaded_pdf_bytes is not None:
+    if st.sidebar.button("📁 別のPDFを選択し直す"):
+        st.session_state.loaded_pdf_bytes = None
+        st.session_state.loaded_pdf_name = None
+        for key in ['last_file_bytes', 'use_pdf_choice', 'df_calendar', 'show_conflict_options']:
             if key in st.session_state:
                 del st.session_state[key]
+        st.rerun()
 
+# まだファイルが読み込まれていない場合、選択画面を表示
+if st.session_state.loaded_pdf_bytes is None:
+    upload_option = st.radio("PDFの取得方法を選択してください", ["手動アップロード", "Google Driveから選択"], index=0)
+
+    uploaded_file_obj = None
+
+    if upload_option == "手動アップロード":
+        uploaded_file_obj = st.file_uploader("PDFシフト表をアップロード", type="pdf")
+        if uploaded_file_obj is not None:
+            st.session_state.loaded_pdf_bytes = uploaded_file_obj.getvalue()
+            st.session_state.loaded_pdf_name = uploaded_file_obj.name
+            st.rerun()
+    else:
+        try:
+            creds_dict = st.secrets["google_oauth_credentials"]
+            creds_drive = Credentials.from_authorized_user_info(
+                creds_dict, 
+                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+            )
+            drive_service = build('drive', 'v3', credentials=creds_drive)
+            
+            files = get_recent_pdfs_from_drive(drive_service)
+            
+            if files:
+                selected_file = st.selectbox(
+                    "解析したいファイルを選択してください (過去30日以内)", 
+                    files, 
+                    format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
+                )
+                if st.button("選択したPDFを読み込む"):
+                    fh = download_pdf_from_drive(drive_service, selected_file['id'])
+                    st.session_state.loaded_pdf_bytes = fh.getvalue()
+                    st.session_state.loaded_pdf_name = selected_file['name']
+                    st.success(f"「{selected_file['name']}」を読み込みました。")
+                    st.rerun()
+            else:
+                st.warning("最近30日以内に保存されたPDFは見つかりませんでした。")
+        except Exception as e:
+            st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
+            
+    st.stop() # ファイルが選択されるまではここで処理を止める
+
+# --- ファイルが選択・保持されたあとの処理（以降の解析コードへ繋がる） ---
+uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
+uploaded_pdf.name = st.session_state.loaded_pdf_name
+
+file_bytes = uploaded_pdf.getvalue()
+
+if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
+    st.session_state.last_file_bytes = file_bytes
+    st.session_state.ym_confirmed = False
+    for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
+        if key in st.session_state:
+            del st.session_state[key]
+            
     with pdfplumber.open(uploaded_pdf) as pdf:
         pdf_full_text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
         
