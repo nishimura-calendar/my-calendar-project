@@ -185,13 +185,10 @@ if uploaded_pdf:
             st.info("👆 上記のプレビューを確認し、「はい」または「いいえ」を選択してください。")
             st.stop()
         elif choice == "いいえ":
-            st.error("処理を停止しました。別のファイルをアップロードし直してください。")
-            if st.button("アップロード状態をリセット"):
-                if 'last_file_bytes' in st.session_state:
-                    del st.session_state['last_file_bytes']
-                if 'use_pdf_choice' in st.session_state:
-                    del st.session_state['use_pdf_choice']
-                st.rerun()
+            st.warning("このファイルの利用がキャンセルされました。別のファイルをアップロードし直すか、下のボタンでプログラムを停止してください。")
+            if st.button("プログラムを停止する"):
+                st.info("プログラムを停止しました。")
+                st.stop()
             st.stop()
         else:
             # 「はい」の場合：PDFテキスト等から年(4桁)と月を推定
