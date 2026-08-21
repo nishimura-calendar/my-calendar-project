@@ -373,7 +373,7 @@ if uploaded_pdf:
                 
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
-                    # 日付のスラッシュをハイフンに変換（必須）
+                    # 日付のスラッシュをハイフンに変換
                     start_date = str(row['StartDate']).replace('/', '-')
                     end_date = str(row['EndDate']).replace('/', '-')
                     
@@ -394,17 +394,21 @@ if uploaded_pdf:
                         end_time = str(row['EndTime'])
                         
                         # "8:30" などの形式を "08:30" に補正
-                        if len(start_time.split(':')[0]) == 1:
-                            start_time = f"0{start_time}"
-                        if len(end_time.split(':')[0]) == 1:
-                            end_time = f"0{end_time}"
+                        if len(start_time.split(':')[0]) == 1: start_time = f"0{start_time}"
+                        if len(end_time.split(':')[0]) == 1: end_time = f"0{end_time}"
                             
                         event = {
                             'summary': row['Subject'],
                             'location': row['Location'],
                             'description': row['Description'],
-                            'start': {'dateTime': f"{start_date}T{start_time}:00"},
-                            'end': {'dateTime': f"{end_date}T{end_time}:00"}
+                            'start': {
+                                'dateTime': f"{start_date}T{start_time}:00",
+                                'timeZone': 'Asia/Tokyo' # ★追加
+                            },
+                            'end': {
+                                'dateTime': f"{end_date}T{end_time}:00",
+                                'timeZone': 'Asia/Tokyo' # ★追加
+                            }
                         }
                     
                     service.events().insert(calendarId='primary', body=event).execute()
