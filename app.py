@@ -6,11 +6,12 @@ import re
 import calendar
 import unicodedata
 from googleapiclient.discovery import build
+from streamlit_pdf_viewer import pdf_viewer
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
-# --- [1] 時程表読み込み ---
+# --- [1] 時程表読み込み（起動時に一度のみ実行） ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -54,7 +55,7 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] メイン処理 ---
+# --- [2] PDF解析・整合性判定 ---
 st.title("シフト表解析システム")
 
 if 'data_dict' not in st.session_state:
@@ -63,26 +64,14 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
-    # ファイルが変更されたら手動確定状態をリセット
-    if 'last_uploaded_filename' not in st.session_state or st.session_state.last_uploaded_filename != uploaded_pdf.name:
-        st.session_state.last_uploaded_filename = uploaded_pdf.name
-        st.session_state.ym_confirmed = False
-
-    # (2)① PDFからキーを検索し、最初に出現するキー（最上部のキー）を判定対象とする
+    # (2)① Keyの特定
+    found_key = None
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
-        
-        matched_keys = []
         for key in st.session_state.data_dict.keys():
-            pos = text.find(str(key))
-            if pos != -1:
-                matched_keys.append((key, pos))
-        
-        if matched_keys:
-            matched_keys.sort(key=lambda x: x[1])
-            found_key = matched_keys[0][0]
-        else:
-            found_key = None
+            if str(key) in text:
+                found_key = key
+                break
     
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
@@ -94,6 +83,7 @@ if uploaded_pdf:
         df_pdf = pd.DataFrame(tables[0])
         
         A_date, A_day = None, None
+        # 表内を走査し、日付と曜日を取得
         for row in range(df_pdf.shape[0] - 1):
             for col in range(df_pdf.shape[1]):
                 val_up = str(df_pdf.iloc[row, col])
@@ -101,104 +91,9 @@ if uploaded_pdf:
                 if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
                     A_date, A_day = int(val_up), val_down
         
-        if not A_date:
+        # 最終日付・曜日の表示
+        if A_date:
+            st.write(f"### 解析結果")
+            st.success(f"PDF上の最終日付: {A_date}日 / 最終曜日: {A_day}曜日")
+        else:
             st.error("日付と曜日が抽出できませんでした。")
-            st.stop()
-
-    # (3)③ 年月の特定
-    filename = uploaded_pdf.name
-    year_match = re.search(r'(\d{4})', filename)
-    month_match = re.search(r'(\d{1,2})月', filename)
-    
-    if year_match and month_match:
-        y, m = int(year_match.group(1)), int(month_match.group(1))
-    else:
-        if 'manual_y' not in st.session_state:
-            st.session_state.manual_y = 2026
-        if 'manual_m' not in st.session_state:
-            st.session_state.manual_m = 2
-        if 'ym_confirmed' not in st.session_state:
-            st.session_state.ym_confirmed = False
-
-        if not st.session_state.ym_confirmed:
-            st.warning("ファイル名から年月を特定できませんでした。下記を入力して「年月確定」を押してください。")
-            st.session_state.manual_y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=st.session_state.manual_y)
-            st.session_state.manual_m = st.number_input("月を手動入力", min_value=1, max_value=12, value=st.session_state.manual_m)
-            if st.button("年月確定"):
-                st.session_state.ym_confirmed = True
-                st.rerun()
-            st.stop()
-        else:
-            y = st.session_state.manual_y
-            m = st.session_state.manual_m
-    
-    # (3)④〜⑦ 整合性判定
-    _, last_day_num = calendar.monthrange(y, m)
-    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
-    
-    if A_date == last_day_num and A_day == last_day_w:
-        st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
-    else:
-        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
-        st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
-        st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
-        st.stop()
-
-    # ---------------------------------------------------------
-    # 第2関門突破後の表示ロジック (最終統合版)
-    # ---------------------------------------------------------
-    st.divider()
-
-    # --- 1. インデックスと人名の抽出 ---
-    staff_data = []
-    for idx in range(0, df_pdf.shape[0], 2):
-        name_val = str(df_pdf.iloc[idx, 0])
-        if name_val in st.session_state.data_dict.keys():
-            continue
-        
-        if name_val != 'None':
-            base_name = name_val.split('\n')[0]
-            clean_name = re.split(r'[\s ]+(施設|空保|警備|級|研修)|(施設|空保|警備|級|研修)', base_name)[0].strip()
-        else:
-            clean_name = "該当なし"
-            
-        staff_data.append((idx, clean_name))
-
-    target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
-    target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
-
-    # --- 2. ① my_daily_shift (本人) ---
-    st.header("① my_daily_shift")
-    my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
-    
-    # ▼【修正】本人の表の先頭セル（人名部分）からも資格を排除してきれいに置き換える
-    my_df.iloc[0, 0] = target_name
-    my_df.iloc[1, 0] = "" 
-    
-    st.dataframe(my_df)
-    
-    csv_my = my_df.to_csv(index=False, header=False).encode('utf-8-sig')
-    st.download_button("my_daily_shift.csv をダウンロード", csv_my, "my_daily_shift.csv", "text/csv")
-
-    # --- 3. ② other_daily_shift (人名行のみ・シフト付) ---
-    st.header("② other_daily_shift")
-    
-    other_rows = []
-    for idx, name in staff_data:
-        if name != target_name:
-            row = df_pdf.iloc[idx : idx+1].copy()
-            row.iloc[0, 0] = name
-            other_rows.append(row)
-    
-    if other_rows:
-        other_df = pd.concat(other_rows)
-        st.dataframe(other_df)
-        
-        csv_other = other_df.to_csv(index=False, header=False).encode('utf-8-sig')
-        st.download_button("other_daily_shift.csv をダウンロード", csv_other, "other_daily_shift.csv", "text/csv")
-
-    # --- 4. ③ time_schedule (ソースの表) ---
-    st.header("③ time_schedule (ソースの表)")
-    if found_key in st.session_state.data_dict:
-        st.write(f"勤務地: {found_key} (※PDF内で最初に見つかったキー)")
-        st.table(st.session_state.data_dict[found_key])
