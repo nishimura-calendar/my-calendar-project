@@ -363,21 +363,109 @@ if uploaded_pdf:
         csv_cal = st.session_state.df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
 
+        # 定数：操作するカレンダーのID（T2）
+        TARGET_CALENDAR_ID = "88f74d05a5477e7e446dc96a62fd52100a909e7583ea2394604770ca8c8c1ba9@group.calendar.google.com"
+
         # ---------------------------------------------------------
-        # カレンダー操作ボタン群
+        # 1. 削除専用ボタン（T2カレンダーの指定月をすべてクリア）
         # ---------------------------------------------------------
-        
-        # カレンダー一覧を確認するボタン
-        if st.button("自分のGoogleカレンダー一覧を表示する"):
+        if st.button("🗑️ T2カレンダーの指定月をすべて削除（クリア）"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                calendar_list = service.calendarList().list().execute()
-                st.write("### 利用可能なカレンダー一覧:")
-                for cal in calendar_list.get('items', []):
-                    st.write(f"- **名前:** {cal.get('summary')} ／ **ID:** `{cal.get('id')}`")
+                import calendar
+                last_day = calendar.monthrange(y, m)[1]
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+                
+                # T2カレンダーから指定期間のイベントを取得
+                events_result = service.events().list(
+                    calendarId=TARGET_CALENDAR_ID, 
+                    timeMin=min_date, 
+                    timeMax=max_date,
+                    singleEvents=True
+                ).execute()
+                
+                deleted_count = 0
+                for event in events_result.get('items', []):
+                    summary = event.get('summary', '')
+                    location = event.get('location', '')
+                    description = event.get('description', '')
+                    
+                    # 該当スタッフの予定を削除
+                    if (found_key in summary) or (found_key == location) or (found_key in str(description)):
+                        service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
+                        deleted_count += 1
+                
+                st.success(f"T2カレンダーの {y}年{m}月分（スタッフ: {found_key}）の予定を {deleted_count} 件すべて削除しました！")
             except Exception as e:
-                st.error(f"エラー: {e}")
+                st.error(f"削除エラー: {e}")
+
+        st.divider()
+
+        # ---------------------------------------------------------
+        # 2. 通常の登録ボタン（T2カレンダーへの削除＋新規登録）
+        # ---------------------------------------------------------
+        if st.button("T2カレンダーに登録（上書き保存）"):
+            try:
+                SCOPES = ['https://www.googleapis.com/auth/calendar']
+                creds_dict = st.secrets["google_oauth_credentials"]
+                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                service = build('calendar', 'v3', credentials=creds)
+                
+                import calendar
+                last_day = calendar.monthrange(y, m)[1]
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+                
+                # 既存の該当スタッフ予定を削除
+                events_result = service.events().list(
+                    calendarId=TARGET_CALENDAR_ID, 
+                    timeMin=min_date, 
+                    timeMax=max_date,
+                    singleEvents=True
+                ).execute()
+                
+                deleted_count = 0
+                for event in events_result.get('items', []):
+                    summary = event.get('summary', '')
+                    location = event.get('location', '')
+                    description = event.get('description', '')
+                    
+                    if (found_key in summary) or (found_key == location) or (found_key in str(description)):
+                        service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
+                        deleted_count += 1
+
+                # 新規登録
+                success_count = 0
+                for _, row in st.session_state.df_calendar.iterrows():
+                    is_all_day = (str(row['AllDayEvent']) == "True")
+                    start_date = str(row['StartDate']).replace('/', '-')
+                    end_date = str(row['EndDate']).replace('/', '-')
+                    
+                    if is_all_day:
+                        event_body = {
+                            'summary': row['Subject'], 
+                            'location': row['Location'], 
+                            'start': {'date': start_date}, 
+                            'end': {'date': end_date}
+                        }
+                    else:
+                        start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                        end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                        event_body = {
+                            'summary': row['Subject'], 
+                            'location': row['Location'],
+                            'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
+                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}
+                        }
+                    
+                    service.events().insert(calendarId=TARGET_CALENDAR_ID, body=event_body).execute()
+                    success_count += 1
+                
+                st.success(f"T2カレンダーを更新しました！（削除: {deleted_count}件 / 登録: {success_count}件）")
+            except Exception as e:
+                st.error(f"登録エラー: {e}")
