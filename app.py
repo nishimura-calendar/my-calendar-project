@@ -373,47 +373,40 @@ if uploaded_pdf:
                 
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
-                    # 日付のスラッシュをハイフンに変換
                     start_date = str(row['StartDate']).replace('/', '-')
                     end_date = str(row['EndDate']).replace('/', '-')
                     
-                    is_all_day = (str(row['AllDayEvent']) == "True")
+                    # 1. 既存予定の検索と削除（同日に同じ件名がある場合）
+                    events = service.events().list(
+                        calendarId='primary', 
+                        timeMin=f"{start_date}T00:00:00Z", 
+                        timeMax=f"{start_date}T23:59:59Z"
+                    ).execute()
                     
+                    for event in events.get('items', []):
+                        if event.get('summary') == row['Subject']:
+                            service.events().delete(calendarId='primary', eventId=event['id']).execute()
+                    
+                    # 2. 新規予定の登録
+                    is_all_day = (str(row['AllDayEvent']) == "True")
                     if is_all_day:
-                        # 終日予定の場合
-                        event = {
+                        event_body = {
                             'summary': row['Subject'],
-                            'location': row['Location'],
-                            'description': row['Description'],
                             'start': {'date': start_date},
                             'end': {'date': end_date}
                         }
                     else:
-                        # 時間指定予定の場合
-                        start_time = str(row['StartTime'])
-                        end_time = str(row['EndTime'])
-                        
-                        # "8:30" などの形式を "08:30" に補正
-                        if len(start_time.split(':')[0]) == 1: start_time = f"0{start_time}"
-                        if len(end_time.split(':')[0]) == 1: end_time = f"0{end_time}"
-                            
-                        event = {
+                        start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                        end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                        event_body = {
                             'summary': row['Subject'],
-                            'location': row['Location'],
-                            'description': row['Description'],
-                            'start': {
-                                'dateTime': f"{start_date}T{start_time}:00",
-                                'timeZone': 'Asia/Tokyo' # ★追加
-                            },
-                            'end': {
-                                'dateTime': f"{end_date}T{end_time}:00",
-                                'timeZone': 'Asia/Tokyo' # ★追加
-                            }
+                            'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
+                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}
                         }
                     
-                    service.events().insert(calendarId='primary', body=event).execute()
+                    service.events().insert(calendarId='primary', body=event_body).execute()
                     success_count += 1
                 
-                st.success(f"{success_count} 件のイベントをGoogleカレンダーに登録しました！")
+                st.success(f"{success_count} 件の予定を更新（削除・再登録）しました！")
             except Exception as e:
                 st.error(f"登録エラー: {e}")
