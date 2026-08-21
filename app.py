@@ -406,8 +406,48 @@ if uploaded_pdf:
 
         st.divider()
 
+        # 定数：操作するカレンダーのID（T2）
+        TARGET_CALENDAR_ID = "88f74d05a5477e7e446dc96a62fd52100a909e7583ea2394604770ca8c8c1ba9@group.calendar.google.com"
+
         # ---------------------------------------------------------
-        # 2. 通常の登録ボタン（T2カレンダーへの削除＋新規登録）
+        # 1. 削除専用ボタン（T2カレンダーの指定月を条件なしですべてクリア）
+        # ---------------------------------------------------------
+        if st.button("🗑️ T2カレンダーの指定月をすべて削除（クリア）"):
+            try:
+                SCOPES = ['https://www.googleapis.com/auth/calendar']
+                creds_dict = st.secrets["google_oauth_credentials"]
+                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                service = build('calendar', 'v3', credentials=creds)
+                
+                import calendar
+                last_day = calendar.monthrange(y, m)[1]
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+                
+                # T2カレンダーから指定期間のイベントをすべて取得
+                events_result = service.events().list(
+                    calendarId=TARGET_CALENDAR_ID, 
+                    timeMin=min_date, 
+                    timeMax=max_date,
+                    singleEvents=True
+                ).execute()
+                
+                items = events_result.get('items', [])
+                deleted_count = 0
+                
+                # ★条件なしで、取得した予定をすべて削除する
+                for event in items:
+                    service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
+                    deleted_count += 1
+                
+                st.success(f"T2カレンダーの {y}年{m}月分の予定を **{deleted_count} 件** すべて削除しました！")
+            except Exception as e:
+                st.error(f"削除エラー: {e}")
+
+        st.divider()
+
+        # ---------------------------------------------------------
+        # 2. 通常の登録ボタン（T2カレンダーの指定月をすべてクリア ＋ 新規登録）
         # ---------------------------------------------------------
         if st.button("T2カレンダーに登録（上書き保存）"):
             try:
@@ -421,7 +461,7 @@ if uploaded_pdf:
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
                 max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 
-                # 既存の該当スタッフ予定を削除
+                # 既存の予定をすべて取得してクリア
                 events_result = service.events().list(
                     calendarId=TARGET_CALENDAR_ID, 
                     timeMin=min_date, 
@@ -431,13 +471,8 @@ if uploaded_pdf:
                 
                 deleted_count = 0
                 for event in events_result.get('items', []):
-                    summary = event.get('summary', '')
-                    location = event.get('location', '')
-                    description = event.get('description', '')
-                    
-                    if (found_key in summary) or (found_key == location) or (found_key in str(description)):
-                        service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
-                        deleted_count += 1
+                    service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
+                    deleted_count += 1
 
                 # 新規登録
                 success_count = 0
