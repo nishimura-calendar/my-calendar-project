@@ -20,10 +20,11 @@ def display_pdf_as_images(file_bytes):
             page = doc[page_num]
             pix = page.get_pixmap(dpi=150)  # 解像度調整
             img_bytes = pix.tobytes("png")
-            st.image(img_bytes, caption=f"PDF プレビュー (ページ {page_num + 1})", use_column_width=True)
+            # use_column_width から use_container_width に修正
+            st.image(img_bytes, caption=f"PDF プレビュー (ページ {page_num + 1})", use_container_width=True)
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
-
+        
 # --- [1] 時程表読み込み ---
 def format_time(val):
     try:
