@@ -54,6 +54,39 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
+# --- 補助関数：カレンダーの自動取得・作成 ---
+def get_or_create_calendar(service, calendar_name):
+    """指定した名前のカレンダーを探し、なければ作成してIDを返す"""
+    calendar_list = service.calendarList().list().execute()
+    for cal in calendar_list.get('items', []):
+        if cal.get('summary') == calendar_name:
+            return cal.get('id')
+    
+    # 見つからない場合は新しく作成
+    new_cal = {'summary': calendar_name}
+    created_cal = service.calendars().insert(body=new_cal).execute()
+    return created_cal.get('id')
+
+# --- 補助関数：シフトコードに応じたカラーIDの取得 ---
+def get_color_id(shift_code):
+    """
+    休[休、休日、公休、有休、有給]：赤 (11)
+    [key]等（シフトコード A, B, C, Dなど）：青系 (7)
+    イベント[休、key以外]：黄色 (5)
+    """
+    shift_code_str = str(shift_code)
+    
+    # 1. 休日の判定（赤：11）
+    if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
+        return "11"
+    
+    # 2. シフトコードの判定（青系：7）
+    if shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str:
+        return "7"
+    
+    # 3. その他イベント（黄色：5）
+    return "5"
+
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
@@ -63,12 +96,10 @@ if 'data_dict' not in st.session_state:
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
 if uploaded_pdf:
-    # ファイルが変更されたら手動確定状態をリセット
     if 'last_uploaded_filename' not in st.session_state or st.session_state.last_uploaded_filename != uploaded_pdf.name:
         st.session_state.last_uploaded_filename = uploaded_pdf.name
         st.session_state.ym_confirmed = False
 
-    # (2)① PDFからキーを検索し、最初に出現するキー（最上部のキー）を判定対象とする
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
         
@@ -88,7 +119,6 @@ if uploaded_pdf:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
         st.stop()
     
-    # (3)② 整合性データの抽出（表構造解析）
     with pdfplumber.open(uploaded_pdf) as pdf:
         tables = pdf.pages[0].extract_tables()
         df_pdf = pd.DataFrame(tables[0])
@@ -105,7 +135,6 @@ if uploaded_pdf:
             st.error("日付と曜日が抽出できませんでした。")
             st.stop()
 
-    # (3)③ 年月の特定
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
     month_match = re.search(r'(\d{1,2})月', filename)
@@ -132,7 +161,6 @@ if uploaded_pdf:
             y = st.session_state.manual_y
             m = st.session_state.manual_m
     
-    # (3)④〜⑦ 整合性判定
     _, last_day_num = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
     
@@ -144,9 +172,6 @@ if uploaded_pdf:
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
         st.stop()
 
-    # ---------------------------------------------------------
-    # 第2関門突破後の表示ロジック (最終統合版)
-    # ---------------------------------------------------------
     st.divider()
 
     # --- 1. インデックスと人名の抽出 ---
@@ -157,7 +182,6 @@ if uploaded_pdf:
             continue
         
         if name_val != 'None':
-            # 最初の改行（\n）以降を削除し、前後の空白を取り除く
             clean_name = name_val.split('\n')[0].strip()
         else:
             clean_name = "該当なし"
@@ -169,18 +193,15 @@ if uploaded_pdf:
     # --- 2. ① my_daily_shift (本人) ---
     st.header("① my_daily_shift")
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
-    
     my_df.iloc[0, 0] = target_name
     my_df.iloc[1, 0] = "" 
-    
     st.dataframe(my_df)
     
     csv_my = my_df.to_csv(index=False, header=False).encode('utf-8-sig')
     st.download_button("my_daily_shift.csv をダウンロード", csv_my, "my_daily_shift.csv", "text/csv")
 
-    # --- 3. ② other_daily_shift (人名行のみ・シフト付) ---
+    # --- 3. ② other_daily_shift ---
     st.header("② other_daily_shift")
-    
     other_rows = []
     for idx, name in staff_data:
         if name != target_name:
@@ -191,42 +212,26 @@ if uploaded_pdf:
     if other_rows:
         other_df = pd.concat(other_rows)
         st.dataframe(other_df)
-        
         csv_other = other_df.to_csv(index=False, header=False).encode('utf-8-sig')
         st.download_button("other_daily_shift.csv をダウンロード", csv_other, "other_daily_shift.csv", "text/csv")
 
-    # --- 4. ③ time_schedule (ソースの表) ---
+    # --- 4. ③ time_schedule ---
     st.header("③ time_schedule (ソースの表)")
     if found_key in st.session_state.data_dict:
-        st.write(f"勤務地: {found_key} (※PDF内で最初に見つかったキー)")
+        st.write(f"勤務地: {found_key}")
         st.table(st.session_state.data_dict[found_key])
 
     # ---------------------------------------------------------
-    # [3] カレンダー登録データの生成（consideration_0.py 統合版）
+    # [3] カレンダー登録データの生成
     # ---------------------------------------------------------
     st.divider()
     st.header("③ カレンダー登録データ生成 ([3])")
 
-    def officeschedule(subject_name, start_t, end_t, target_date, final_rows, location_val=""):
-        """時間指定イベント（本町など）の登録用関数"""
-        final_rows.append([
-            subject_name,    # Subject
-            target_date,     # StartDate
-            start_t,         # StartTime
-            target_date,     # EndDate
-            end_t,           # EndTime
-            "False",         # AllDayEvent
-            "",              # Description
-            location_val     # Location
-        ])
-
     def get_staff_names(codes, other_staff_shift, col):
-        """シフトコードからスタッフ名のリストを取得するヘルパー関数"""
         mask = other_staff_shift.iloc[:, col].isin(codes)
         return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
     
     def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-        """通常シフトの詳細（時間別引き継ぎ）を計算し、final_rowsに格納する"""
         time_shift = time_schedule.fillna("").astype(str)
         if not (time_shift.iloc[:, 1] == shift_info).any():
             return
@@ -240,8 +245,6 @@ if uploaded_pdf:
     
         for t_col in range(3, my_time_shift.shape[1]):
             current_val = row_data[t_col]
-    
-            # 変数の初期化
             subject = ""
             start = ""
             change = ""
@@ -255,12 +258,10 @@ if uploaded_pdf:
                     final_rows.append([subject, target_date, "", target_date, "", "False", "", ""])
                     start_time = time_shift.iloc[0, t_col]
                 
-                    # 3列目から t_col の1つ手前までの間が全て""なら start="(出勤)："
                     if (row_data[3:t_col] == "").all():
                         start = "(出勤)："
                         
                     if row_data[t_col - 1] == "":              
-                        # 勤務_交代
                         mask_change = (time_shift.iloc[:, t_col - 1] != "") & (time_shift.iloc[:, t_col] == "")
                         paired_staff = []
                         for idx in time_shift.index[mask_change]:
@@ -273,16 +274,12 @@ if uploaded_pdf:
                         change_formatted = ",".join(paired_staff)
                         change = f"{change_formatted}▷" if change_formatted else ""
                     else:
-                        # 前の予定の終了時間をセット
                         final_rows[-2][4] = time_shift.iloc[0, t_col]                             
-                    
-                        # 巡回_引渡
                         handover_codes = time_shift.loc[time_shift.iloc[:, t_col] == prev_val, time_shift.columns[1]]
                         handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
                         handover = f"to {','.join(handover_staff)}"
                         final_rows[-2][0] += handover
                     
-                    # 巡回_引継
                     takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1] == current_val, time_shift.columns[1]]
                     takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
                     takeover = f"from {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
@@ -292,7 +289,6 @@ if uploaded_pdf:
                     final_rows[-1][2] = start_time
                    
                 else:
-                    # 休憩_交代
                     mask_break = (time_shift.iloc[:, t_col - 1] == "") & (time_shift.iloc[:, t_col] != "")
                     paired_staff = []
                     for idx in time_shift.index[mask_break]:
@@ -302,7 +298,6 @@ if uploaded_pdf:
                         for name in staff:
                             paired_staff.append(f"{name}({places})")
     
-                    
                     break_formatted = ",".join(paired_staff)
                     break_change = f"▷{break_formatted}" if break_formatted else ""
                                             
@@ -310,22 +305,15 @@ if uploaded_pdf:
                         end = "：(退勤)"
                     end_time = time_shift.iloc[0, t_col]
                     
-                    # 巡回_引渡
                     handover_codes = time_shift.loc[time_shift.iloc[:, t_col] == prev_val, time_shift.columns[1]]
                     handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
                     handover = f"to {','.join(handover_staff)}"                   
     
-                    final_rows[-1][0] += handover+ break_change  + end   
+                    final_rows[-1][0] += handover + break_change + end   
                     final_rows[-1][4] = end_time                            
                 
             prev_val = current_val
-        
-    # ---------------------------------------------------------
-    # [3] カレンダー登録データの生成（修正版）
-    # ---------------------------------------------------------
-    # ※既にヘッダーなどを表示している場合は、ここは不要なら削除しても構いません
 
-    # 1. 生成ボタン
     if st.button("カレンダー登録用データを生成"):
         final_rows = []
         time_schedule_df = st.session_state.data_dict[found_key]
@@ -355,34 +343,35 @@ if uploaded_pdf:
         else:
             st.warning("生成対象のデータがありませんでした。")
 
-    # 2. 生成データがある場合のみ表示・登録ボタンを表示
+    # ---------------------------------------------------------
+    # 各スタッフ専用カレンダーへの登録・管理処理
+    # ---------------------------------------------------------
     if 'df_calendar' in st.session_state:
         st.dataframe(st.session_state.df_calendar)
         
-        # ダウンロードボタン
         csv_cal = st.session_state.df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
 
-        # 定数：操作するカレンダーのID（T2）
-        TARGET_CALENDAR_ID = "88f74d05a5477e7e446dc96a62fd52100a909e7583ea2394604770ca8c8c1ba9@group.calendar.google.com"
+        st.subheader(f"Googleカレンダー連携 (対象スタッフ: {target_name})")
+        st.info(f"※マイカレンダーに「{target_name}」という名前のカレンダーがない場合は自動的に新規作成されます。")
 
-        # ---------------------------------------------------------
-        # 1. 削除専用ボタン（ラベルを変更し、完全に固有のキーを設定）
-        # ---------------------------------------------------------
-        if st.button("⚠️ T2カレンダーの指定月をクリアする", key="unique_clear_t2_button"):
+        # 1. 削除（クリア）ボタン
+        if st.button(f"⚠️ {target_name} カレンダーの指定月をクリアする", key="unique_clear_staff_button"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                import calendar
+                # スタッフ名専用のカレンダーIDを取得（なければ作成）
+                target_cal_id = get_or_create_calendar(service, target_name)
+                
                 last_day = calendar.monthrange(y, m)[1]
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
                 max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 
                 events_result = service.events().list(
-                    calendarId=TARGET_CALENDAR_ID, 
+                    calendarId=target_cal_id, 
                     timeMin=min_date, 
                     timeMax=max_date,
                     singleEvents=True
@@ -392,32 +381,33 @@ if uploaded_pdf:
                 deleted_count = 0
                 
                 for event in items:
-                    service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
+                    service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
                     deleted_count += 1
                 
-                st.success(f"T2カレンダーの {y}年{m}月分の予定を **{deleted_count} 件** すべて削除しました！")
+                st.success(f"「{target_name}」カレンダーの {y}年{m}月分の予定を **{deleted_count} 件** すべて削除しました！")
             except Exception as e:
                 st.error(f"削除エラー: {e}")
 
         st.divider()
 
-        # ---------------------------------------------------------
-        # 2. 通常の登録ボタン（こちらも固有のキーを設定）
-        # ---------------------------------------------------------
-        if st.button("🚀 T2カレンダーへ新規登録する", key="unique_register_t2_button"):
+        # 2. 新規登録（または刷新）ボタン
+        if st.button(f"🚀 {target_name} カレンダーへ新規登録する（色別対応）", key="unique_register_staff_button"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                import calendar
+                # スタッフ名専用のカレンダーIDを取得（なければ自動作成）
+                target_cal_id = get_or_create_calendar(service, target_name)
+                
                 last_day = calendar.monthrange(y, m)[1]
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
                 max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 
+                # 既存データの自動クリア（刷新）
                 events_result = service.events().list(
-                    calendarId=TARGET_CALENDAR_ID, 
+                    calendarId=target_cal_id, 
                     timeMin=min_date, 
                     timeMax=max_date,
                     singleEvents=True
@@ -425,21 +415,26 @@ if uploaded_pdf:
                 
                 deleted_count = 0
                 for event in events_result.get('items', []):
-                    service.events().delete(calendarId=TARGET_CALENDAR_ID, eventId=event['id']).execute()
+                    service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
                     deleted_count += 1
 
+                # データの登録（色別 colorId の付与）
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
                     is_all_day = (str(row['AllDayEvent']) == "True")
                     start_date = str(row['StartDate']).replace('/', '-')
                     end_date = str(row['EndDate']).replace('/', '-')
                     
+                    # シフトコードに応じた色（colorId）を取得
+                    c_id = get_color_id(row['Subject'])
+                    
                     if is_all_day:
                         event_body = {
                             'summary': row['Subject'], 
                             'location': row['Location'], 
                             'start': {'date': start_date}, 
-                            'end': {'date': end_date}
+                            'end': {'date': end_date},
+                            'colorId': c_id
                         }
                     else:
                         start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
@@ -448,12 +443,14 @@ if uploaded_pdf:
                             'summary': row['Subject'], 
                             'location': row['Location'],
                             'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
-                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}
+                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'},
+                            'colorId': c_id
                         }
                     
-                    service.events().insert(calendarId=TARGET_CALENDAR_ID, body=event_body).execute()
+                    service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                     success_count += 1
                 
-                st.success(f"T2カレンダーを更新しました！（削除: {deleted_count}件 / 登録: {success_count}件）")
+                st.success(f"「{target_name}」カレンダーを更新しました！（クリア: {deleted_count}件 / 登録: {success_count}件）")
             except Exception as e:
+            
                 st.error(f"登録エラー: {e}")
