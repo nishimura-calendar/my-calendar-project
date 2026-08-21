@@ -14,17 +14,15 @@ from google.auth.transport.requests import Request
 # --- PDFを画面に画像として表示する補助関数 ---
 def display_pdf_as_images(file_bytes):
     try:
-        # PyMuPDFを用いてPDFのバイトデータからページを画像に変換
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         for page_num in range(len(doc)):
             page = doc[page_num]
-            pix = page.get_pixmap(dpi=150)  # 解像度調整
+            pix = page.get_pixmap(dpi=150)
             img_bytes = pix.tobytes("png")
-            # use_column_width から use_container_width に修正
             st.image(img_bytes, caption=f"PDF プレビュー (ページ {page_num + 1})", use_container_width=True)
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
-        
+
 # --- [1] 時程表読み込み ---
 def format_time(val):
     try:
@@ -123,16 +121,16 @@ if uploaded_pdf:
     if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
         st.session_state.last_file_bytes = file_bytes
         st.session_state.ym_confirmed = False
-        for key in ['manual_y', 'manual_m', 'df_calendar', 'show_conflict_options']:
+        for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
             if key in st.session_state:
                 del st.session_state[key]
 
     with pdfplumber.open(uploaded_pdf) as pdf:
-        text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
+        pdf_full_text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
         
         matched_keys = []
         for key in st.session_state.data_dict.keys():
-            pos = text.find(str(key))
+            pos = pdf_full_text.find(str(key))
             if pos != -1:
                 matched_keys.append((key, pos))
         
@@ -146,7 +144,7 @@ if uploaded_pdf:
         tables = pdf.pages[0].extract_tables()
         df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
 
-    # 1. 勤務地(Key)が特定できない場合 -> PDFを画像として画面に表示
+    # 1. 勤務地(Key)が特定できない場合 -> PDFを画像として表示して停止
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
         display_pdf_as_images(file_bytes)
@@ -172,23 +170,33 @@ if uploaded_pdf:
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
     else:
-        if 'ym_confirmed' not in st.session_state:
-            st.session_state.ym_confirmed = False
-
-        if not st.session_state.ym_confirmed:
-            # 2. ファイル名から年月が取得できない場合 -> PDFを画像として画面に表示
-            st.warning("ファイル名から年月が取得できませんでした。下記を入力して「年月確定」を押してください。")
-            display_pdf_as_images(file_bytes)
-
-            y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026, key="manual_y")
-            m = st.number_input("月を手動入力", min_value=1, max_value=12, value=2, key="manual_m")
-            if st.button("年月確定"):
-                st.session_state.ym_confirmed = True
+        # ファイル名から年月が取得できない場合：PDF表示 ＋ 「このファイルを使用しますか？」
+        st.warning("ファイル名から年月が取得できませんでした。プレビューを確認してください。")
+        display_pdf_as_images(file_bytes)
+        
+        choice = st.radio("このファイルを使用しますか？", ["はい", "いいえ"], key="use_pdf_choice")
+        
+        if choice == "いいえ":
+            st.error("処理を停止しました。別のファイルをアップロードし直してください。")
+            if st.button("アップロード状態をリセット"):
+                del st.session_state['last_file_bytes']
                 st.rerun()
             st.stop()
         else:
-            y = st.session_state.get('manual_y', 2026)
-            m = st.session_state.get('manual_m', 2)
+            # 「はい」の場合：PDFテキスト等から年(4桁)と月を推定
+            # PDF内の最初の「〇〇年」を探す、または現在年をフォールバックとして利用
+            year_text_match = re.search(r'(\d{4})\s*年', pdf_full_text)
+            if year_text_match:
+                y = int(year_text_match.group(1))
+            else:
+                y = 2026  # デフォルト年
+            
+            # 月は抽出できた最終日(A_date)などから自動決定は難しいため、PDF内から「〇月」表記を探すかA_dateの月（仮）とする
+            month_text_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
+            if month_text_match:
+                m = int(month_text_match.group(1))
+            else:
+                m = 2  # フォールバック
     
     _, last_day_num = calendar.monthrange(y, m)
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
