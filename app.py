@@ -371,52 +371,55 @@ if uploaded_pdf:
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # --- [修正] 登録前に、日付とスタッフ（found_key）で既存予定を検索して削除 ---
-                # 処理を重複させないため、処理済みの日付を記録する
-                processed_dates = set()
+                # 1. 削除対象の期間を「対象月の1日」〜「対象月の末日」に固定
+                import calendar
+                last_day = calendar.monthrange(y, m)[1]
+                min_date = f"{y}-{m:02d}-01T00:00:00Z"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59Z"
                 
+                # 2. 対象期間の予定をすべて取得
+                events_result = service.events().list(
+                    calendarId='primary', 
+                    timeMin=min_date, 
+                    timeMax=max_date,
+                    singleEvents=True
+                ).execute()
+                
+                # 3. 該当スタッフの予定だけを削除
+                deleted_count = 0
+                for event in events_result.get('items', []):
+                    # Locationにスタッフ名(found_key)を入れているか、件名(summary)に含む場合を削除対象とする
+                    if event.get('location') == found_key or found_key in event.get('summary', ''):
+                        service.events().delete(calendarId='primary', eventId=event['id']).execute()
+                        deleted_count += 1
+                
+                # 4. 新規登録処理（先ほどと同じ）
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
-                    start_date = str(row['StartDate']).replace('/', '-')
-                    
-                    # その日付をまだ処理していなければ、その日の該当スタッフ予定を全削除
-                    if start_date not in processed_dates:
-                        events = service.events().list(
-                            calendarId='primary', 
-                            timeMin=f"{start_date}T00:00:00Z", 
-                            timeMax=f"{start_date}T23:59:59Z"
-                        ).execute()
-                        
-                        for event in events.get('items', []):
-                            # 「スタッフ名」を含む予定を削除対象にする（Subjectの一致ではなく、DescriptionやLocationで判定）
-                            # 今回のロジックでは Location に found_key (スタッフ名) を入れている前提
-                            if event.get('location') == found_key or found_key in event.get('summary', ''):
-                                service.events().delete(calendarId='primary', eventId=event['id']).execute()
-                        
-                        processed_dates.add(start_date)
-
-                    # --- [新規登録処理] ---
                     is_all_day = (str(row['AllDayEvent']) == "True")
+                    start_date = str(row['StartDate']).replace('/', '-')
+                    end_date = str(row['EndDate']).replace('/', '-')
+                    
                     if is_all_day:
                         event_body = {
-                            'summary': row['Subject'],
-                            'location': row['Location'],
-                            'start': {'date': start_date},
-                            'end': {'date': str(row['EndDate']).replace('/', '-')}
+                            'summary': row['Subject'], 
+                            'location': row['Location'], 
+                            'start': {'date': start_date}, 
+                            'end': {'date': end_date}
                         }
                     else:
                         start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                         end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
                         event_body = {
-                            'summary': row['Subject'],
+                            'summary': row['Subject'], 
                             'location': row['Location'],
                             'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
-                            'end': {'dateTime': f"{str(row['EndDate']).replace('/', '-')}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}
+                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}
                         }
                     
                     service.events().insert(calendarId='primary', body=event_body).execute()
                     success_count += 1
                 
-                st.success(f"{success_count} 件の予定を更新（以前の予定を削除して再登録）しました！")
+                st.success(f"{y}年{m}月分の予定を {deleted_count} 件削除し、{success_count} 件を新しく登録しました！")
             except Exception as e:
                 st.error(f"登録エラー: {e}")
