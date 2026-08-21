@@ -6,12 +6,11 @@ import re
 import calendar
 import unicodedata
 from googleapiclient.discovery import build
-from streamlit_pdf_viewer import pdf_viewer
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
-# --- [1] 時程表読み込み（起動時に一度のみ実行） ---
+# --- [1] 時程表読み込み ---
 def format_time(val):
     try:
         f_val = float(val)
@@ -55,7 +54,7 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
-# --- [2] PDF解析・整合性判定 ---
+# --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
 if 'data_dict' not in st.session_state:
@@ -83,7 +82,6 @@ if uploaded_pdf:
         df_pdf = pd.DataFrame(tables[0])
         
         A_date, A_day = None, None
-        # 表内を走査し、日付と曜日を取得
         for row in range(df_pdf.shape[0] - 1):
             for col in range(df_pdf.shape[1]):
                 val_up = str(df_pdf.iloc[row, col])
@@ -91,9 +89,68 @@ if uploaded_pdf:
                 if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
                     A_date, A_day = int(val_up), val_down
         
-        # 最終日付・曜日の表示
-        if A_date:
-            st.write(f"### 解析結果")
-            st.success(f"PDF上の最終日付: {A_date}日 / 最終曜日: {A_day}曜日")
-        else:
+        if not A_date:
             st.error("日付と曜日が抽出できませんでした。")
+            st.stop()
+
+    # (3)③ 年月の特定
+    filename = uploaded_pdf.name
+    year_match = re.search(r'(\d{4})', filename)
+    month_match = re.search(r'(\d{1,2})月', filename)
+    
+    if year_match and month_match:
+        y, m = int(year_match.group(1)), int(month_match.group(1))
+    else:
+        st.warning("ファイル名から年月を特定できませんでした。")
+        y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026)
+        m = st.number_input("月を手動入力", min_value=1, max_value=12, value=7)
+        if not st.button("年月確定"):
+            st.stop()
+    
+    # (3)④〜⑦ 整合性判定
+    _, last_day_num = calendar.monthrange(y, m)
+    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
+    
+    if A_date == last_day_num and A_day == last_day_w:
+        st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
+    else:
+        st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
+        st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
+        st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
+        st.stop()
+# ---------------------------------------------------------
+    # 第2関門突破後の処理: ①~③の表示
+    # ---------------------------------------------------------
+    st.divider()
+
+    # --- 人名リストの作成 ---
+    # 名前は表の0列目にあると仮定。偶数行を名前行、奇数行をデータ行とする
+    staff_indices = range(0, df_pdf.shape[0], 2)
+    staff_data = []
+    for idx in staff_indices:
+        name = str(df_pdf.iloc[idx, 0])
+        staff_data.append((idx, name if name != 'None' else "該当なし"))
+
+    # ① コンボボックス
+    target_staff_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
+    target_idx = [s[0] for s in staff_data if s[1] == target_staff_name][0]
+
+    # --- ① my_daily_shift ---
+    st.header("① my_daily_shift")
+    my_df = df_pdf.iloc[target_idx : target_idx + 2, :]
+    st.dataframe(my_df)
+
+    # --- ② other_daily_shift ---
+    st.header("② other_daily_shift")
+    # 本人を除いたスタッフ名をリスト表示
+    other_staff = [s[1] for s in staff_data if s[1] != target_staff_name]
+    st.write(other_staff)
+
+    # --- ③ time_schedule ---
+    st.header("③ time_schedule")
+    # 第1関門で特定したKeyに該当する、読み込み済みの時程表を表示
+    if found_key in st.session_state.data_dict:
+        st.write(f"勤務地（Key）: {found_key}")
+        st.table(st.session_state.data_dict[found_key])
+    else:
+        st.warning("該当するKeyの時程表データが見つかりません。")
