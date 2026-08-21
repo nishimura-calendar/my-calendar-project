@@ -6,6 +6,7 @@ import re
 import calendar
 import unicodedata
 import fitz  # PyMuPDF
+import datetime
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
@@ -22,6 +23,29 @@ def display_pdf_as_images(file_bytes):
             st.image(img_bytes, caption=f"PDF プレビュー (ページ {page_num + 1})", use_container_width=True)
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
+
+# --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
+def get_recent_pdfs_from_drive(service):
+    thirty_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).isoformat() + 'Z'
+    query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}'"
+    
+    results = service.files().list(
+        q=query,
+        orderBy="createdTime desc",
+        pageSize=10,
+        fields="files(id, name, createdTime)"
+    ).execute()
+    return results.get('files', [])
+
+def download_pdf_from_drive(service, file_id):
+    request = service.files().get_media(fileId=file_id)
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while done is False:
+        status, done = downloader.next_chunk()
+    fh.seek(0)
+    return fh
 
 # --- [1] 時程表読み込み ---
 def format_time(val):
@@ -113,7 +137,38 @@ st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
 
-uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
+# ファイルの取得方法を選択するラジオボタン
+upload_option = st.radio("PDFの取得方法を選択してください", ["手動アップロード", "Google Driveから選択"], index=0)
+
+uploaded_pdf = None
+
+if upload_option == "手動アップロード":
+    uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
+else:
+    try:
+        creds_dict = st.secrets["google_oauth_credentials"]
+        creds_drive = Credentials.from_authorized_user_info(
+            creds_dict, 
+            scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+        )
+        drive_service = build('drive', 'v3', credentials=creds_drive)
+        
+        files = get_recent_pdfs_from_drive(drive_service)
+        
+        if files:
+            selected_file = st.selectbox(
+                "解析したいファイルを選択してください (過去30日以内)", 
+                files, 
+                format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
+            )
+            if st.button("選択したPDFを読み込む"):
+                uploaded_pdf = download_pdf_from_drive(drive_service, selected_file['id'])
+                uploaded_pdf.name = selected_file['name']
+                st.success(f"「{selected_file['name']}」を読み込みました。")
+        else:
+            st.warning("最近30日以内に保存されたPDFは見つかりませんでした。")
+    except Exception as e:
+        st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
 
 if uploaded_pdf:
     file_bytes = uploaded_pdf.getvalue()
