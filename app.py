@@ -157,15 +157,6 @@ if uploaded_pdf:
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
     else:
-        col_reset1, col_reset2 = st.columns([1, 4])
-        with col_reset1:
-            if st.button("🔄 年月入力をやり直す"):
-                st.session_state.ym_confirmed = False
-                for key in ['manual_y', 'manual_m', 'df_calendar', 'show_conflict_options']:
-                    if key in st.session_state:
-                        del st.session_state[key]
-                st.rerun()
-
         if 'ym_confirmed' not in st.session_state:
             st.session_state.ym_confirmed = False
 
@@ -185,7 +176,7 @@ if uploaded_pdf:
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
     
     if A_date == last_day_num and A_day == last_day_w:
-        st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
+        pass # 一致している場合は成功表示なしでそのまま進行
     else:
         st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
@@ -211,13 +202,17 @@ if uploaded_pdf:
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
     # --- 2. ① my_daily_shift (本人) ---
+    st.header("① my_daily_shift")
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
     my_df.iloc[0, 0] = target_name
     my_df.iloc[1, 0] = "" 
+    st.dataframe(my_df)
     
     csv_my = my_df.to_csv(index=False, header=False).encode('utf-8-sig')
+    st.download_button("my_daily_shift.csv をダウンロード", csv_my, "my_daily_shift.csv", "text/csv")
 
     # --- 3. ② other_daily_shift ---
+    st.header("② other_daily_shift")
     other_rows = []
     for idx, name in staff_data:
         if name != target_name:
@@ -227,9 +222,15 @@ if uploaded_pdf:
     
     if other_rows:
         other_df = pd.concat(other_rows)
+        st.dataframe(other_df)
         csv_other = other_df.to_csv(index=False, header=False).encode('utf-8-sig')
-    else:
-        other_df = pd.DataFrame()
+        st.download_button("other_daily_shift.csv をダウンロード", csv_other, "other_daily_shift.csv", "text/csv")
+
+    # --- 4. ③ time_schedule ---
+    st.header("③ time_schedule (ソースの表)")
+    if found_key in st.session_state.data_dict:
+        st.write(f"勤務地: {found_key}")
+        st.table(st.session_state.data_dict[found_key])
 
     # ---------------------------------------------------------
     # [3] カレンダー登録データの生成
@@ -238,8 +239,6 @@ if uploaded_pdf:
     st.header("③ カレンダー登録データ生成 ([3])")
 
     def get_staff_names(codes, other_staff_shift, col):
-        if other_staff_shift.empty:
-            return []
         mask = other_staff_shift.iloc[:, col].isin(codes)
         return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
     
