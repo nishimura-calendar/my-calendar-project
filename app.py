@@ -56,31 +56,29 @@ def load_and_process_data():
 
 # --- 補助関数：カレンダーの自動取得・作成 ---
 def get_or_create_calendar(service, calendar_name):
-    """指定した名前のカレンダーを探し、なければ作成してIDを返す"""
     calendar_list = service.calendarList().list().execute()
     for cal in calendar_list.get('items', []):
         if cal.get('summary') == calendar_name:
             return cal.get('id')
     
-    # 見つからない場合は新しく作成
     new_cal = {'summary': calendar_name}
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
 
 # --- 補助関数：シフトコードに応じたカラーIDの取得 ---
-def get_color_id(shift_code):
-    """
-    休[休、休日、公休、有休、有給]：赤 (11)
-    [key]等（シフトコード A, B, C, Dなど）：青系 (7)
-    イベント[休、key以外]：黄色 (5)
-    """
+def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     
     # 1. 休日の判定（赤：11）
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 2. シフトコードの判定（青系：7）
+    # 2. key関連のシフト（青系：7）
+    if found_key and shift_code_str.startswith(f"{found_key}_"):
+        return "7"
+    if time_shift_check is not None and not time_shift_check.empty:
+        if (time_shift_check.iloc[:, 1] == shift_code_str).any():
+            return "7"
     if shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str:
         return "7"
     
@@ -95,10 +93,14 @@ if 'data_dict' not in st.session_state:
 
 uploaded_pdf = st.file_uploader("PDFシフト表をアップロード", type="pdf")
 
+# ファイルが新しくアップロードされた（または変更された）場合の前回データリセット処理
 if uploaded_pdf:
     if 'last_uploaded_filename' not in st.session_state or st.session_state.last_uploaded_filename != uploaded_pdf.name:
         st.session_state.last_uploaded_filename = uploaded_pdf.name
         st.session_state.ym_confirmed = False
+        # 前回のカレンダー生成データや確認状態をクリア
+        if 'df_calendar' in st.session_state:
+            del st.session_state.df_calendar
 
     with pdfplumber.open(uploaded_pdf) as pdf:
         text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -363,7 +365,6 @@ if uploaded_pdf:
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # 勤務地（found_key）専用のカレンダーIDを取得（なければ作成）
                 target_cal_id = get_or_create_calendar(service, found_key)
                 
                 last_day = calendar.monthrange(y, m)[1]
@@ -398,14 +399,12 @@ if uploaded_pdf:
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # 勤務地（found_key）専用のカレンダーIDを取得（なければ自動作成）
                 target_cal_id = get_or_create_calendar(service, found_key)
                 
                 last_day = calendar.monthrange(y, m)[1]
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
                 max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 
-                # 既存データの自動クリア（刷新）
                 events_result = service.events().list(
                     calendarId=target_cal_id, 
                     timeMin=min_date, 
@@ -420,13 +419,15 @@ if uploaded_pdf:
 
                 # データの登録（色別 colorId の付与）
                 success_count = 0
+                time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
+                time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
+
                 for _, row in st.session_state.df_calendar.iterrows():
                     is_all_day = (str(row['AllDayEvent']) == "True")
                     start_date = str(row['StartDate']).replace('/', '-')
                     end_date = str(row['EndDate']).replace('/', '-')
                     
-                    # シフトコードに応じた色（colorId）を取得
-                    c_id = get_color_id(row['Subject'])
+                    c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
                     
                     if is_all_day:
                         event_body = {
