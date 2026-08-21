@@ -73,7 +73,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 2. 勤務地（found_key）に応じて青系の色を動的に変化させる
+    # 2. 勤務地（found_key）に応じて青系の色（7: 水色系, 9: 藍色・濃い青, 1: 薄紫・ブルー系）を動的に変化させる
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7" # デフォルトは水色系
     if found_key:
@@ -130,33 +130,25 @@ if uploaded_pdf:
         else:
             found_key = None
     
-    # PDFからテーブルを抽出
-    with pdfplumber.open(uploaded_pdf) as pdf:
-        tables = pdf.pages[0].extract_tables()
-        df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
-
-    # 1. 勤務地(Key)が特定できない場合
     if not found_key:
         st.error("勤務地(Key)がPDFから特定できませんでした。")
-        if not df_pdf.empty:
-            st.write("【読み込んだPDFデータ】")
-            st.dataframe(df_pdf)
         st.stop()
     
-    A_date, A_day = None, None
-    for row in range(df_pdf.shape[0] - 1):
-        for col in range(df_pdf.shape[1]):
-            val_up = str(df_pdf.iloc[row, col])
-            val_down = str(df_pdf.iloc[row+1, col])
-            if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
-                A_date, A_day = int(val_up), val_down
-    
-    if not A_date:
-        st.error("日付と曜日が抽出できませんでした。")
-        if not df_pdf.empty:
-            st.write("【読み込んだPDFデータ】")
-            st.dataframe(df_pdf)
-        st.stop()
+    with pdfplumber.open(uploaded_pdf) as pdf:
+        tables = pdf.pages[0].extract_tables()
+        df_pdf = pd.DataFrame(tables[0])
+        
+        A_date, A_day = None, None
+        for row in range(df_pdf.shape[0] - 1):
+            for col in range(df_pdf.shape[1]):
+                val_up = str(df_pdf.iloc[row, col])
+                val_down = str(df_pdf.iloc[row+1, col])
+                if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
+                    A_date, A_day = int(val_up), val_down
+        
+        if not A_date:
+            st.error("日付と曜日が抽出できませんでした。")
+            st.stop()
 
     filename = uploaded_pdf.name
     year_match = re.search(r'(\d{4})', filename)
@@ -165,16 +157,20 @@ if uploaded_pdf:
     if year_match and month_match:
         y, m = int(year_match.group(1)), int(month_match.group(1))
     else:
+        col_reset1, col_reset2 = st.columns([1, 4])
+        with col_reset1:
+            if st.button("🔄 年月入力をやり直す"):
+                st.session_state.ym_confirmed = False
+                for key in ['manual_y', 'manual_m', 'df_calendar', 'show_conflict_options']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+
         if 'ym_confirmed' not in st.session_state:
             st.session_state.ym_confirmed = False
 
         if not st.session_state.ym_confirmed:
-            # 2. ファイル名から年月が取得できない場合（全く同じ手法でPDFを表示）
-            st.warning("ファイル名から年月が取得できませんでした。下記を入力して「年月確定」を押してください。")
-            if not df_pdf.empty:
-                st.write("【読み込んだPDFデータ】")
-                st.dataframe(df_pdf)
-
+            st.warning("ファイル名から年月を特定できませんでした。下記を入力して「年月確定」を押してください。")
             y = st.number_input("年を手動入力", min_value=2020, max_value=2030, value=2026, key="manual_y")
             m = st.number_input("月を手動入力", min_value=1, max_value=12, value=2, key="manual_m")
             if st.button("年月確定"):
@@ -189,14 +185,11 @@ if uploaded_pdf:
     last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
     
     if A_date == last_day_num and A_day == last_day_w:
-        pass 
+        st.success(f"解析成功: {y}年{m}月 ({A_date}日 {A_day}曜日まで確認済み)")
     else:
         st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
         st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
         st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
-        if not df_pdf.empty:
-            st.write("【読み込んだPDFデータ】")
-            st.dataframe(df_pdf)
         st.stop()
 
     st.divider()
@@ -217,10 +210,18 @@ if uploaded_pdf:
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
+    # --- 2. ① my_daily_shift (本人) ---
+    st.header("① my_daily_shift")
     my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
     my_df.iloc[0, 0] = target_name
     my_df.iloc[1, 0] = "" 
+    st.dataframe(my_df)
+    
+    csv_my = my_df.to_csv(index=False, header=False).encode('utf-8-sig')
+    st.download_button("my_daily_shift.csv をダウンロード", csv_my, "my_daily_shift.csv", "text/csv")
 
+    # --- 3. ② other_daily_shift ---
+    st.header("② other_daily_shift")
     other_rows = []
     for idx, name in staff_data:
         if name != target_name:
@@ -230,8 +231,15 @@ if uploaded_pdf:
     
     if other_rows:
         other_df = pd.concat(other_rows)
-    else:
-        other_df = pd.DataFrame()
+        st.dataframe(other_df)
+        csv_other = other_df.to_csv(index=False, header=False).encode('utf-8-sig')
+        st.download_button("other_daily_shift.csv をダウンロード", csv_other, "other_daily_shift.csv", "text/csv")
+
+    # --- 4. ③ time_schedule ---
+    st.header("③ time_schedule (ソースの表)")
+    if found_key in st.session_state.data_dict:
+        st.write(f"勤務地: {found_key}")
+        st.table(st.session_state.data_dict[found_key])
 
     # ---------------------------------------------------------
     # [3] カレンダー登録データの生成
@@ -240,8 +248,6 @@ if uploaded_pdf:
     st.header("③ カレンダー登録データ生成 ([3])")
 
     def get_staff_names(codes, other_staff_shift, col):
-        if other_staff_shift.empty:
-            return []
         mask = other_staff_shift.iloc[:, col].isin(codes)
         return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
     
@@ -369,6 +375,7 @@ if uploaded_pdf:
         st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
         st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
 
+        # 新規登録ボタンクリック時の重複確認ロジック
         if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
@@ -395,6 +402,7 @@ if uploaded_pdf:
             except Exception as e:
                 st.error(f"事前確認エラー: {e}")
 
+        # 既存データが見つかった場合、または重複オプション表示フラグが立っている場合
         if st.session_state.get('show_conflict_options', False):
             count = st.session_state.get('existing_count', 0)
             st.warning(f"⚠️ 登録済みデータが **{count}件** あります。どうしますか？")
@@ -429,6 +437,7 @@ if uploaded_pdf:
                             service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
                             deleted_count += 1
 
+                    # データの登録（色別 colorId の付与）
                     success_count = 0
                     time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
                     time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
