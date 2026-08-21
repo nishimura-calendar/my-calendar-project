@@ -373,25 +373,43 @@ if uploaded_pdf:
                 
                 success_count = 0
                 for _, row in st.session_state.df_calendar.iterrows():
-                    event = {
-                        'summary': row['Subject'],
-                        'location': row['Location'],
-                        'description': row['Description'],
-                        'start': {'dateTime': f"{row['StartDate']}T{row['StartTime']}:00" if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}", 'date': None if row['StartTime'] else f"{row['StartDate'].replace('/', '-')}"},
-                        'end': {'dateTime': f"{row['EndDate']}T{row['EndTime']}:00" if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}", 'date': None if row['EndTime'] else f"{row['EndDate'].replace('/', '-')}"},
-                    }
-                    if row['AllDayEvent'] == "True":
-                        event['start'] = {'date': row['StartDate'].replace('/', '-')}
-                        event['end'] = {'date': row['EndDate'].replace('/', '-')}
-                        # APIの仕様上、終日予定はdateTimeを削除する必要があります
-                        if 'dateTime' in event['start']: del event['start']['dateTime']
-                        if 'dateTime' in event['end']: del event['end']['dateTime']
+                    # 日付のスラッシュをハイフンに変換（必須）
+                    start_date = str(row['StartDate']).replace('/', '-')
+                    end_date = str(row['EndDate']).replace('/', '-')
+                    
+                    is_all_day = (str(row['AllDayEvent']) == "True")
+                    
+                    if is_all_day:
+                        # 終日予定の場合
+                        event = {
+                            'summary': row['Subject'],
+                            'location': row['Location'],
+                            'description': row['Description'],
+                            'start': {'date': start_date},
+                            'end': {'date': end_date}
+                        }
+                    else:
+                        # 時間指定予定の場合
+                        start_time = str(row['StartTime'])
+                        end_time = str(row['EndTime'])
+                        
+                        # "8:30" などの形式を "08:30" に補正
+                        if len(start_time.split(':')[0]) == 1:
+                            start_time = f"0{start_time}"
+                        if len(end_time.split(':')[0]) == 1:
+                            end_time = f"0{end_time}"
+                            
+                        event = {
+                            'summary': row['Subject'],
+                            'location': row['Location'],
+                            'description': row['Description'],
+                            'start': {'dateTime': f"{start_date}T{start_time}:00"},
+                            'end': {'dateTime': f"{end_date}T{end_time}:00"}
+                        }
                     
                     service.events().insert(calendarId='primary', body=event).execute()
                     success_count += 1
                 
                 st.success(f"{success_count} 件のイベントをGoogleカレンダーに登録しました！")
-                # 完了後にデータをリセットしたい場合は以下を有効化
-                # del st.session_state.df_calendar
             except Exception as e:
                 st.error(f"登録エラー: {e}")
