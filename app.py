@@ -65,7 +65,7 @@ def get_or_create_calendar(service, calendar_name):
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
 
-# --- 補助関数：シフトコードに応じたカラーIDの取得 ---
+# --- 補助関数：keyやシフトコードに応じた青系カラーIDの自動変化 ---
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     
@@ -73,16 +73,28 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 2. 勤務地（found_key）に関連するものはすべて青系（7）にする
+    # 2. 勤務地（found_key）に応じて青系の色（7: 水色系, 9: 藍色・濃い青, 1: 薄紫・ブルー系）を動的に変化させる
+    blue_palette = ["7", "9", "1"]
+    assigned_blue = "7" # デフォルトは水色系
+    if found_key:
+        # キーワードのハッシュ値を利用して、勤務地ごとに自動で色を固定・分散させる
+        hash_val = sum(ord(c) for c in str(found_key))
+        assigned_blue = blue_palette[hash_val % len(blue_palette)]
+
+    # シフトコードに特定のキーワード（T1, T2, H1, K2など）が含まれる場合
+    blue_patterns = ["T1", "T2", "H1", "K2", "A", "B", "C", "D"]
+    if any(pattern in shift_code_str for pattern in blue_patterns):
+        return assigned_blue
+        
     if found_key and (found_key in shift_code_str or found_key == shift_code_str):
-        return "7"
+        return assigned_blue
+        
     if time_shift_check is not None and not time_shift_check.empty:
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
-            return "7"
+            return assigned_blue
             
-    # シフト名や時間割関連の文字列（出勤、退勤、引き継ぎなど `shift_cal` で生成されるものも含める）
-    if any(k in shift_code_str for k in ["出勤", "退勤", "frm", "to", "▷", "【"]) or shift_code_str in ["A", "B", "C", "D"] or "_" in shift_code_str:
-        return "7"
+    if any(k in shift_code_str for k in ["出勤", "退勤", "frm", "to", "▷", "【"]) or "_" in shift_code_str:
+        return assigned_blue
     
     # 3. その他イベント（黄色：5）
     return "5"
