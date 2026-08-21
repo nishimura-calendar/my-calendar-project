@@ -344,7 +344,7 @@ if uploaded_pdf:
             st.warning("生成対象のデータがありませんでした。")
 
     # ---------------------------------------------------------
-    # 各スタッフ専用カレンダーへの登録・管理処理
+    # 勤務地（found_key）専用カレンダーへの登録・管理処理
     # ---------------------------------------------------------
     if 'df_calendar' in st.session_state:
         st.dataframe(st.session_state.df_calendar)
@@ -352,19 +352,19 @@ if uploaded_pdf:
         csv_cal = st.session_state.df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
         st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
 
-        st.subheader(f"Googleカレンダー連携 (対象スタッフ: {target_name})")
-        st.info(f"※マイカレンダーに「{target_name}」という名前のカレンダーがない場合は自動的に新規作成されます。")
+        st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
+        st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
 
         # 1. 削除（クリア）ボタン
-        if st.button(f"⚠️ {target_name} カレンダーの指定月をクリアする", key="unique_clear_staff_button"):
+        if st.button(f"⚠️ {found_key} カレンダーの指定月をクリアする", key="unique_clear_key_button"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # スタッフ名専用のカレンダーIDを取得（なければ作成）
-                target_cal_id = get_or_create_calendar(service, target_name)
+                # 勤務地（found_key）専用のカレンダーIDを取得（なければ作成）
+                target_cal_id = get_or_create_calendar(service, found_key)
                 
                 last_day = calendar.monthrange(y, m)[1]
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
@@ -384,22 +384,22 @@ if uploaded_pdf:
                     service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
                     deleted_count += 1
                 
-                st.success(f"「{target_name}」カレンダーの {y}年{m}月分の予定を **{deleted_count} 件** すべて削除しました！")
+                st.success(f"「{found_key}」カレンダーの {y}年{m}月分の予定を **{deleted_count} 件** すべて削除しました！")
             except Exception as e:
                 st.error(f"削除エラー: {e}")
 
         st.divider()
 
         # 2. 新規登録（または刷新）ボタン
-        if st.button(f"🚀 {target_name} カレンダーへ新規登録する（色別対応）", key="unique_register_staff_button"):
+        if st.button(f"🚀 {found_key} カレンダーへ新規登録する（色別対応）", key="unique_register_key_button"):
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 
-                # スタッフ名専用のカレンダーIDを取得（なければ自動作成）
-                target_cal_id = get_or_create_calendar(service, target_name)
+                # 勤務地（found_key）専用のカレンダーIDを取得（なければ自動作成）
+                target_cal_id = get_or_create_calendar(service, found_key)
                 
                 last_day = calendar.monthrange(y, m)[1]
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
@@ -450,7 +450,6 @@ if uploaded_pdf:
                     service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                     success_count += 1
                 
-                st.success(f"「{target_name}」カレンダーを更新しました！（クリア: {deleted_count}件 / 登録: {success_count}件）")
+                st.success(f"「{found_key}」カレンダーを更新しました！（クリア: {deleted_count}件 / 登録: {success_count}件）")
             except Exception as e:
-            
                 st.error(f"登録エラー: {e}")
