@@ -228,22 +228,24 @@ if st.session_state.loaded_pdf_bytes is None:
             )
             drive_service = build('drive', 'v3', credentials=creds_drive)
             
-            files = get_recent_pdfs_from_drive(drive_service)
+files = get_recent_pdfs_from_drive(drive_service)
             
-            if files:
-                selected_file = st.selectbox(
-                    "解析したいファイルを選択してください (過去30日以内)", 
-                    files, 
-                    format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
-                )
-                if st.button("選択したPDFを読み込む"):
-                    fh = download_pdf_from_drive(drive_service, selected_file['id'])
-                    st.session_state.loaded_pdf_bytes = fh.getvalue()
-                    st.session_state.loaded_pdf_name = selected_file['name']
-                    st.success(f"「{selected_file['name']}」を読み込みました。")
-                    st.rerun()
-            else:
-                st.warning("最近30日以内に保存されたPDFは見つかりませんでした。")
+            if not files:
+                st.error("ドライブ内に読み込むファイルが見当りません。")
+                st.stop()
+                
+            selected_file = st.selectbox(
+                "解析したいファイルを選択してください (過去30日以内)", 
+                files, 
+                format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
+            )
+            if st.button("選択したPDFを読み込む"):
+                fh = download_pdf_from_drive(drive_service, selected_file['id'])
+                st.session_state.loaded_pdf_bytes = fh.getvalue()
+                st.session_state.loaded_pdf_name = selected_file['name']
+                st.success(f"「{selected_file['name']}」を読み込みました。")
+                st.rerun()
+                
         except Exception as e:
             st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
             
