@@ -9,7 +9,7 @@ import fitz  # PyMuPDF
 import datetime
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
@@ -27,7 +27,7 @@ def display_pdf_as_images(file_bytes):
 # --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
 def get_recent_pdfs_from_drive(service):
     thirty_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).isoformat() + 'Z'
-    query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}'"
+    query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}' and trashed = false"
     
     results = service.files().list(
         q=query,
@@ -42,10 +42,53 @@ def download_pdf_from_drive(service, file_id):
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
-    while done is False:
+    while done is not False:
         status, done = downloader.next_chunk()
     fh.seek(0)
     return fh
+
+# --- ★新規追加: アップロードされたPDFをDriveに保存し、前々月データを削除する関数 ---
+def save_pdf_to_drive_and_cleanup(service, file_bytes, file_name):
+    try:
+        # 1. 保存先のフォルダID（必要に応じて特定のフォルダIDに変更してください。ルートの場合はNoneまたは省略）
+        # ここではマイドライブ直下に保存する例としてフォルダ指定なしで実装します
+        
+        # 2. アップロードするファイルの年月を抽出（例: "8月度 2026" や "2026年8月" などから取得）
+        year_match = re.search(r'(\d{4})', file_name)
+        month_match = re.search(r'(\d{1,2})月', file_name)
+        
+        target_y, target_m = None, None
+        if year_match and month_match:
+            target_y = int(year_match.group(1))
+            target_m = int(month_match.group(1))
+            
+            # 前々月の計算
+            # 例: 2026年8月の前々月 = 2026年6月
+            target_date_obj = datetime.date(target_y, target_m, 1) - datetime.timedelta(days=1) # 前月月末
+            prev_prev_date_obj = datetime.date(target_date_obj.year, target_date_obj.month, 1) - datetime.timedelta(days=1) # 前々月月末
+            pp_y, pp_m = prev_prev_date_obj.year, prev_prev_date_obj.month
+            
+            # Google Drive内から前々月のPDFを検索して削除
+            query = f"mimeType='application/pdf' and trashed = false"
+            results = service.files().list(q=query, fields="files(id, name)").execute()
+            
+            for f in results.get('files', []):
+                fname = f['name']
+                if f['id'] == 'some_protected_id': # 必要なら除外IDを設定
+                    continue
+                # ファイル名に前々月の年と月が含まれているか判定
+                if str(pp_y) in fname and (f"{pp_m}月" in fname or f"{pp_m:02d}月" in fname or f"/{pp_m:02d}/" in fname):
+                    service.files().delete(fileId=f['id']).execute()
+                    st.toast(f"🗑️ 古いデータ（前々月: {fname}）を自動削除しました。")
+
+        # 3. 新規ファイルのアップロード
+        media_body = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
+        body = {'name': file_name}
+        service.files().create(body=body, media_body=media_body, fields='id').execute()
+        st.success(f"☁️ 「{file_name}」をGoogle Driveに保存しました。")
+        
+    except Exception as e:
+        st.warning(f"Google Driveへの自動保存/クリーンアップ処理でエラーが発生しました: {e}")
 
 # --- [1] 時程表読み込み ---
 def format_time(val):
@@ -102,10 +145,9 @@ def get_or_create_calendar(service, calendar_name):
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
 
-# --- 補助関数：keyやシフトコードに応じた青系カラーIDの自動変化 ---
+# --- 補助関数：カラーID自動判定 ---
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
-    
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
@@ -137,12 +179,10 @@ st.title("シフト表解析システム")
 if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
 
-# セッションステートにPDFデータが保持されていない場合初期化
 if 'loaded_pdf_bytes' not in st.session_state:
     st.session_state.loaded_pdf_bytes = None
     st.session_state.loaded_pdf_name = None
 
-# サイドバーに「ファイルを選び直す」ボタンを配置（読み込み済みの場合のみ）
 if st.session_state.loaded_pdf_bytes is not None:
     if st.sidebar.button("📁 別のPDFを選択し直す"):
         st.session_state.loaded_pdf_bytes = None
@@ -152,7 +192,6 @@ if st.session_state.loaded_pdf_bytes is not None:
                 del st.session_state[key]
         st.rerun()
 
-# まだファイルが読み込まれていない場合、選択画面を表示
 if st.session_state.loaded_pdf_bytes is None:
     upload_option = st.radio("PDFの取得方法を選択してください", ["手動アップロード", "Google Driveから選択"], index=0)
 
@@ -161,8 +200,24 @@ if st.session_state.loaded_pdf_bytes is None:
     if upload_option == "手動アップロード":
         uploaded_file_obj = st.file_uploader("PDFシフト表をアップロード", type="pdf")
         if uploaded_file_obj is not None:
-            st.session_state.loaded_pdf_bytes = uploaded_file_obj.getvalue()
-            st.session_state.loaded_pdf_name = uploaded_file_obj.name
+            file_bytes_val = uploaded_file_obj.getvalue()
+            file_name_val = uploaded_file_obj.name
+            
+            st.session_state.loaded_pdf_bytes = file_bytes_val
+            st.session_state.loaded_pdf_name = file_name_val
+            
+            # --- 手動アップロード時にDriveへ保存し前々月を削除する処理 ---
+            try:
+                creds_dict = st.secrets["google_oauth_credentials"]
+                creds_drive = Credentials.from_authorized_user_info(
+                    creds_dict, 
+                    scopes=["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.readonly"]
+                )
+                drive_service = build('drive', 'v3', credentials=creds_drive)
+                save_pdf_to_drive_and_cleanup(drive_service, file_bytes_val, file_name_val)
+            except Exception as e:
+                pass # 認証スコープ等の関係で失敗してもアプリ自体は止めない
+                
             st.rerun()
     else:
         try:
@@ -201,7 +256,7 @@ uploaded_pdf.name = st.session_state.loaded_pdf_name
 uploaded_pdf.seek(0)
 file_bytes = uploaded_pdf.getvalue()
 
-if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
+if 'last_file_bytes' not in st.session_state || st.session_state.last_file_bytes != file_bytes:
     st.session_state.last_file_bytes = file_bytes
     st.session_state.ym_confirmed = False
     for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
@@ -229,7 +284,6 @@ with pdfplumber.open(uploaded_pdf) as pdf:
     tables = pdf.pages[0].extract_tables()
     df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
 
-# 1. 勤務地(Key)が特定できない場合 -> PDFを画像として表示して停止
 if not found_key:
     st.error("勤務地(Key)がPDFから特定できませんでした。")
     display_pdf_as_images(file_bytes)
@@ -269,49 +323,32 @@ else:
         st.info("👆 上記のプレビューを確認し、「はい」または「いいえ」を選択してください。")
         st.stop()
     elif choice == "いいえ":
-        st.warning("このファイルの利用がキャンセルされました。別のファイルをアップロードし直すか、下のボタンでプログラムを停止してください。")
-        if st.button("プログラムを停止する"):
-            st.info("プログラムを停止しました。")
-            st.stop()
+        st.warning("このファイルの利用がキャンセルされました。別のファイルをアップロードし直してください。")
         st.stop()
     else:
         year_text_match = re.search(r'(\d{4})\s*年', pdf_full_text)
-        if year_text_match:
-            y = int(year_text_match.group(1))
-        else:
-            y = 2026
+        y = int(year_text_match.group(1)) if year_text_match else 2026
         
         month_text_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
-        if month_text_match:
-            m = int(month_text_match.group(1))
-        else:
-            m = 2
+        m = int(month_text_match.group(1)) if month_text_match else 2
 
 _, last_day_num = calendar.monthrange(y, m)
 last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
 
-if A_date == last_day_num and A_day == last_day_w:
-    pass 
-else:
+if A_date != last_day_num or A_day != last_day_w:
     st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
-    st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
-    st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
     display_pdf_as_images(file_bytes)
     st.stop()
 
 st.divider()
 
-# --- 1. インデックスと人名の抽出 ---
 staff_data = []
 for idx in range(0, df_pdf.shape[0], 2):
     name_val = str(df_pdf.iloc[idx, 0])
     if name_val in st.session_state.data_dict.keys():
         continue
     
-    if name_val != 'None':
-        clean_name = name_val.split('\n')[0].strip()
-    else:
-        clean_name = "該当なし"
+    clean_name = name_val.split('\n')[0].strip() if name_val != 'None' else "該当なし"
     staff_data.append((idx, clean_name))
     
 target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
@@ -328,14 +365,8 @@ for idx, name in staff_data:
         row.iloc[0, 0] = name
         other_rows.append(row)
 
-if other_rows:
-    other_df = pd.concat(other_rows)
-else:
-    other_df = pd.DataFrame()
+other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
 
-# ---------------------------------------------------------
-# カレンダー登録データの生成処理（見出し非表示）
-# ---------------------------------------------------------
 st.divider()
 
 def get_staff_names(codes, other_staff_shift, col):
@@ -358,13 +389,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
 
     for t_col in range(3, my_time_shift.shape[1]):
         current_val = row_data[t_col]
-        subject = ""
-        start = ""
-        change = ""
-        takeover = ""
-        handover = ""
-        break_change = ""
-        end = ""                    
+        subject, start, change, takeover, handover, break_change, end = "", "", "", "", "", "", ""
       
         if current_val != prev_val:
             if current_val != "":
@@ -456,9 +481,6 @@ if st.button("カレンダー登録用データを生成"):
     else:
         st.warning("生成対象のデータがありませんでした。")
 
-# ---------------------------------------------------------
-# 勤務地（found_key）専用カレンダーへの登録・管理処理
-# ---------------------------------------------------------
 if 'df_calendar' in st.session_state:
     st.dataframe(st.session_state.df_calendar)
     
@@ -531,36 +553,51 @@ if 'df_calendar' in st.session_state:
                 success_count = 0
                 time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
                 time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
+                total_rows = len(st.session_state.df_calendar)
 
-                for _, row in st.session_state.df_calendar.iterrows():
-                    is_all_day = (str(row['AllDayEvent']) == "True")
-                    start_date = str(row['StartDate']).replace('/', '-')
-                    end_date = str(row['EndDate']).replace('/', '-')
-                    
-                    c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
-                    
-                    if is_all_day:
-                        event_body = {
-                            'summary': row['Subject'], 
-                            'location': row['Location'], 
-                            'start': {'date': start_date}, 
-                            'end': {'date': end_date},
-                            'colorId': c_id
-                        }
-                    else:
-                        start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                        end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                        event_body = {
-                            'summary': row['Subject'], 
-                            'location': row['Location'],
-                            'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
-                            'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'},
-                            'colorId': c_id
-                        }
-                    
-                    service.events().insert(calendarId=target_cal_id, body=event_body).execute()
-                    success_count += 1
-                
+                # --- ★機能追加①: カレンダー登録時のタイマー（プログレスバー）表示 ---
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                with st.spinner("Googleカレンダーへ登録中です。しばらくお待ちください..."):
+                    for idx, row in st.session_state.df_calendar.iterrows():
+                        is_all_day = (str(row['AllDayEvent']) == "True")
+                        start_date = str(row['StartDate']).replace('/', '-')
+                        end_date = str(row['EndDate']).replace('/', '-')
+                        
+                        c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        
+                        if is_all_day:
+                            event_body = {
+                                'summary': row['Subject'], 
+                                'location': row['Location'], 
+                                'start': {'date': start_date}, 
+                                'end': {'date': end_date},
+                                'colorId': c_id
+                            }
+                        else:
+                            start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {
+                                'summary': row['Subject'], 
+                                'location': row['Location'],
+                                'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
+                                'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'},
+                                'colorId': c_id
+                            }
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        success_count += 1
+                        
+                        # プログレスバーの更新
+                        progress_val = min(success_count / total_rows, 1.0)
+                        progress_bar.progress(progress_val)
+                        status_text.text(f"登録中... ({success_count} / {total_rows} 件完了)")
+
+                # 完了後にプログレスバー等をクリア
+                progress_bar.empty()
+                status_text.empty()
+
                 st.session_state.show_conflict_options = False
                 if "全て削除" in conflict_action:
                     st.success(f"「{found_key}」カレンダーを刷新しました！（削除: {deleted_count}件 / 新規登録: {success_count}件）")
