@@ -1,3 +1,4 @@
+import streamlit as str_module  # Streamlit
 import streamlit as st
 import pandas as pd
 import io
@@ -47,13 +48,9 @@ def download_pdf_from_drive(service, file_id):
     fh.seek(0)
     return fh
 
-# --- ★新規追加: アップロードされたPDFをDriveに保存し、前々月データを削除する関数 ---
+# --- アップロードされたPDFをDriveに保存し、前々月データを削除する関数 ---
 def save_pdf_to_drive_and_cleanup(service, file_bytes, file_name):
     try:
-        # 1. 保存先のフォルダID（必要に応じて特定のフォルダIDに変更してください。ルートの場合はNoneまたは省略）
-        # ここではマイドライブ直下に保存する例としてフォルダ指定なしで実装します
-        
-        # 2. アップロードするファイルの年月を抽出（例: "8月度 2026" や "2026年8月" などから取得）
         year_match = re.search(r'(\d{4})', file_name)
         month_match = re.search(r'(\d{1,2})月', file_name)
         
@@ -62,26 +59,21 @@ def save_pdf_to_drive_and_cleanup(service, file_bytes, file_name):
             target_y = int(year_match.group(1))
             target_m = int(month_match.group(1))
             
-            # 前々月の計算
-            # 例: 2026年8月の前々月 = 2026年6月
-            target_date_obj = datetime.date(target_y, target_m, 1) - datetime.timedelta(days=1) # 前月月末
-            prev_prev_date_obj = datetime.date(target_date_obj.year, target_date_obj.month, 1) - datetime.timedelta(days=1) # 前々月月末
+            target_date_obj = datetime.date(target_y, target_m, 1) - datetime.timedelta(days=1)
+            prev_prev_date_obj = datetime.date(target_date_obj.year, target_date_obj.month, 1) - datetime.timedelta(days=1)
             pp_y, pp_m = prev_prev_date_obj.year, prev_prev_date_obj.month
             
-            # Google Drive内から前々月のPDFを検索して削除
             query = f"mimeType='application/pdf' and trashed = false"
             results = service.files().list(q=query, fields="files(id, name)").execute()
             
             for f in results.get('files', []):
                 fname = f['name']
-                if f['id'] == 'some_protected_id': # 必要なら除外IDを設定
+                if f['id'] == 'some_protected_id':
                     continue
-                # ファイル名に前々月の年と月が含まれているか判定
                 if str(pp_y) in fname and (f"{pp_m}月" in fname or f"{pp_m:02d}月" in fname or f"/{pp_m:02d}/" in fname):
                     service.files().delete(fileId=f['id']).execute()
                     st.toast(f"🗑️ 古いデータ（前々月: {fname}）を自動削除しました。")
 
-        # 3. 新規ファイルのアップロード
         media_body = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
         body = {'name': file_name}
         service.files().create(body=body, media_body=media_body, fields='id').execute()
@@ -206,7 +198,6 @@ if st.session_state.loaded_pdf_bytes is None:
             st.session_state.loaded_pdf_bytes = file_bytes_val
             st.session_state.loaded_pdf_name = file_name_val
             
-            # --- 手動アップロード時にDriveへ保存し前々月を削除する処理 ---
             try:
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds_drive = Credentials.from_authorized_user_info(
@@ -216,10 +207,10 @@ if st.session_state.loaded_pdf_bytes is None:
                 drive_service = build('drive', 'v3', credentials=creds_drive)
                 save_pdf_to_drive_and_cleanup(drive_service, file_bytes_val, file_name_val)
             except Exception as e:
-                pass # 認証スコープ等の関係で失敗してもアプリ自体は止めない
+                pass
                 
             st.rerun()
-else:
+    else:
         try:
             creds_dict = st.secrets["google_oauth_credentials"]
             creds_drive = Credentials.from_authorized_user_info(
@@ -249,6 +240,8 @@ else:
         except Exception as e:
             st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
             st.stop()
+
+    st.stop()
 
 # --- ファイルが選択・保持されたあとの処理 ---
 uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
@@ -556,7 +549,6 @@ if 'df_calendar' in st.session_state:
                 time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
                 total_rows = len(st.session_state.df_calendar)
 
-                # --- ★機能追加①: カレンダー登録時のタイマー（プログレスバー）表示 ---
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
@@ -590,12 +582,10 @@ if 'df_calendar' in st.session_state:
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         success_count += 1
                         
-                        # プログレスバーの更新
                         progress_val = min(success_count / total_rows, 1.0)
                         progress_bar.progress(progress_val)
                         status_text.text(f"登録中... ({success_count} / {total_rows} 件完了)")
 
-                # 完了後にプログレスバー等をクリア
                 progress_bar.empty()
                 status_text.empty()
 
