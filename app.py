@@ -257,6 +257,7 @@ if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes
         if key in st.session_state:
             del st.session_state[key]
 
+# ポインタを確実に先頭に戻す
 uploaded_pdf.seek(0)
 with pdfplumber.open(uploaded_pdf) as pdf:
     pdf_full_text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
@@ -273,6 +274,7 @@ with pdfplumber.open(uploaded_pdf) as pdf:
     else:
         found_key = None
 
+# 再びポインタを先頭に戻してからテーブルを抽出
 uploaded_pdf.seek(0)
 with pdfplumber.open(uploaded_pdf) as pdf:
     tables = pdf.pages[0].extract_tables()
