@@ -219,7 +219,7 @@ if st.session_state.loaded_pdf_bytes is None:
                 pass # 認証スコープ等の関係で失敗してもアプリ自体は止めない
                 
             st.rerun()
-    else:
+else:
         try:
             creds_dict = st.secrets["google_oauth_credentials"]
             creds_drive = Credentials.from_authorized_user_info(
@@ -228,7 +228,7 @@ if st.session_state.loaded_pdf_bytes is None:
             )
             drive_service = build('drive', 'v3', credentials=creds_drive)
             
-files = get_recent_pdfs_from_drive(drive_service)
+            files = get_recent_pdfs_from_drive(drive_service)
             
             if not files:
                 st.error("ドライブ内に読み込むファイルが見当りません。")
@@ -248,8 +248,7 @@ files = get_recent_pdfs_from_drive(drive_service)
                 
         except Exception as e:
             st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
-            
-    st.stop()
+            st.stop()
 
 # --- ファイルが選択・保持されたあとの処理 ---
 uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
