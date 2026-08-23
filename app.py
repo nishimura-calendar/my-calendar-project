@@ -256,7 +256,7 @@ uploaded_pdf.name = st.session_state.loaded_pdf_name
 uploaded_pdf.seek(0)
 file_bytes = uploaded_pdf.getvalue()
 
-if 'last_file_bytes' not in st.session_state || st.session_state.last_file_bytes != file_bytes:
+if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
     st.session_state.last_file_bytes = file_bytes
     st.session_state.ym_confirmed = False
     for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
