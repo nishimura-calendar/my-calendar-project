@@ -2,7 +2,6 @@ import streamlit as str_module  # Streamlit
 import streamlit as st
 import pandas as pd
 import io
-import pdfplumber
 import re
 import calendar
 import unicodedata
@@ -244,45 +243,43 @@ if st.session_state.loaded_pdf_bytes is None:
     st.stop()
 
 # --- ファイルが選択・保持されたあとの処理 ---
-uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
-uploaded_pdf.name = st.session_state.loaded_pdf_name
+uploaded_pdf_bytes = st.session_state.loaded_pdf_bytes
+filename = st.session_state.loaded_pdf_name
 
-uploaded_pdf.seek(0)
-file_bytes = uploaded_pdf.getvalue()
-
-if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
-    st.session_state.last_file_bytes = file_bytes
+if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != uploaded_pdf_bytes:
+    st.session_state.last_file_bytes = uploaded_pdf_bytes
     st.session_state.ym_confirmed = False
     for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
         if key in st.session_state:
             del st.session_state[key]
 
-# ポインタを確実に先頭に戻す
-uploaded_pdf.seek(0)
-with pdfplumber.open(uploaded_pdf) as pdf:
-    pdf_full_text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
+# PyMuPDF (fitz) を使用してテキストとテーブル（表）を安全に抽出
+with fitz.open(stream=uploaded_pdf_bytes, filetype="pdf") as doc:
+    page = doc[0]
+    pdf_full_text = unicodedata.normalize('NFKC', page.get_text())
     
-    matched_keys = []
-    for key in st.session_state.data_dict.keys():
-        pos = pdf_full_text.find(str(key))
-        if pos != -1:
-            matched_keys.append((key, pos))
-    
-    if matched_keys:
-        matched_keys.sort(key=lambda x: x[1])
-        found_key = matched_keys[0][0]
+    # PyMuPDFのテーブル抽出機能を使用
+    tabs = page.find_tables()
+    if tabs.tables:
+        df_pdf = pd.DataFrame(tabs[0].extract())
     else:
-        found_key = None
+        df_pdf = pd.DataFrame()
 
-# 再びポインタを先頭に戻してからテーブルを抽出
-uploaded_pdf.seek(0)
-with pdfplumber.open(uploaded_pdf) as pdf:
-    tables = pdf.pages[0].extract_tables()
-    df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
+matched_keys = []
+for key in st.session_state.data_dict.keys():
+    pos = pdf_full_text.find(str(key))
+    if pos != -1:
+        matched_keys.append((key, pos))
+
+if matched_keys:
+    matched_keys.sort(key=lambda x: x[1])
+    found_key = matched_keys[0][0]
+else:
+    found_key = None
 
 if not found_key:
     st.error("勤務地(Key)がPDFから特定できませんでした。")
-    display_pdf_as_images(file_bytes)
+    display_pdf_as_images(uploaded_pdf_bytes)
     st.stop()
 
 A_date, A_day = None, None
@@ -295,10 +292,9 @@ for row in range(df_pdf.shape[0] - 1):
 
 if not A_date:
     st.error("日付と曜日が抽出できませんでした。")
-    display_pdf_as_images(file_bytes)
+    display_pdf_as_images(uploaded_pdf_bytes)
     st.stop()
 
-filename = uploaded_pdf.name
 year_match = re.search(r'(\d{4})', filename)
 month_match = re.search(r'(\d{1,2})月', filename)
 
@@ -306,7 +302,7 @@ if year_match and month_match:
     y, m = int(year_match.group(1)), int(month_match.group(1))
 else:
     st.warning("ファイル名から年月が取得できませんでした。プレビューを確認してください。")
-    display_pdf_as_images(file_bytes)
+    display_pdf_as_images(uploaded_pdf_bytes)
     
     choice = st.radio(
         "このファイルを使用しますか？", 
@@ -333,7 +329,7 @@ last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(
 
 if A_date != last_day_num or A_day != last_day_w:
     st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
-    display_pdf_as_images(file_bytes)
+    display_pdf_as_images(uploaded_pdf_bytes)
     st.stop()
 
 st.divider()
