@@ -126,7 +126,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
             return assigned_blue
             
-    if any(k in shift_code_str for k in ["出勤", "退勤", "frm", "to", "▷", "【"]) or "_" in shift_code_str:
+    if any(k in shift_code_str for k in ["出勤", "退勤", "from", "to", "▷", "【"]) or "_" in shift_code_str:
         return assigned_blue
     
     return "5"
@@ -395,7 +395,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 
                 takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1] == current_val, time_shift.columns[1]]
                 takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                takeover = f"from {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"frm 【{current_val}】"
+                takeover = f"from {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"from 【{current_val}】"
 
                 subject = start + change + takeover
                 final_rows[-1][0] = subject
