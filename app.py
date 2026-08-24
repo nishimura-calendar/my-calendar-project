@@ -8,9 +8,9 @@ import unicodedata
 import fitz  # PyMuPDF
 import datetime
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
-from google.auth.transport.requests import Request
+ google.oauth2.credentials import Credentials
+ googleapiclient.http import MediaIoBaseDownload
+ google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
 def display_pdf_as_images(file_bytes):
