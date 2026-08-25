@@ -102,7 +102,7 @@ def get_or_create_calendar(service, calendar_name):
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
 
-# --- 補助関数：Keyやシフトコードに応じた青系カラーIDの自動変化（元々のロジック） ---
+# --- 補助関数：Keyやシフトコードに応じた青系カラーIDの自動変化 ---
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     
@@ -110,7 +110,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 勤務地ごとの青系パレットを決定（Keyのハッシュ値によって青の種類が変化）[cite: 1]
+    # 勤務地ごとの青系パレットを決定（Keyのハッシュ値によって青の種類が変化）
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7"
     if found_key:
@@ -125,9 +125,9 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
             return assigned_blue
             
-    # それ以外はデフォルトの色
-    return "5"
- 
+    # それ以外の場合も、keyから算出された青系カラー（assigned_blue）を返す[cite: 1]
+    return assigned_blue
+    
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
