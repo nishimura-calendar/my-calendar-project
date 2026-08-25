@@ -661,8 +661,9 @@ if 'df_calendar' in st.session_state:
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
                 
-                reset_to_initial_state()
-                st.rerun()
-
+                # すぐにリセットする処理（st.rerun()）を削除、またはコメントアウト
+                # reset_to_initial_state()
+                # st.rerun()
+            
             except Exception as e:
                 st.error(f"登録実行エラー: {e}")
