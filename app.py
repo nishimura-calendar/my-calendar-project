@@ -7,6 +7,7 @@ import calendar
 import unicodedata
 import fitz  # PyMuPDF
 import datetime
+import time  # タイムラグを設けるために利用します
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload
@@ -683,6 +684,8 @@ if 'df_calendar' in st.session_state:
 
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
+                # 10秒間のタイムラグを設ける
+                time.sleep(10)
                 
             except Exception as e:
                 st.error(f"登録実行エラー: {e}")
