@@ -91,6 +91,13 @@ def load_and_process_data():
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
 
+# --- 補助関数：ベース値取得（"値_i" から "値" 部分を取り出す） ---
+def get_base_value(val):
+    if not val or pd.isna(val):
+        return ""
+    # "_" で分割し、左側のベース部分を取得する（例: "早番_1" -> "早番"）
+    return str(val).split('_')[0].strip()
+
 # --- 補助関数：カレンダーの自動取得・作成 ---
 def get_or_create_calendar(service, calendar_name):
     calendar_list = service.calendarList().list().execute()
@@ -105,8 +112,9 @@ def get_or_create_calendar(service, calendar_name):
 # --- 補助関数：Keyやシフトコードに応じた青系カラーIDの自動変化 ---
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
+    base_shift_code = get_base_value(shift_code_str)
     
-    if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
+    if any(holiday in base_shift_code for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
     blue_palette = ["7", "9", "1"]
@@ -115,11 +123,13 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         hash_val = sum(ord(c) for c in str(found_key))
         assigned_blue = blue_palette[hash_val % len(blue_palette)]
 
-    if found_key and (found_key in shift_code_str or found_key == shift_code_str):
+    if found_key and (found_key in base_shift_code or found_key == base_shift_code):
         return assigned_blue
         
     if time_shift_check is not None and not time_shift_check.empty:
-        if (time_shift_check.iloc[:, 1] == shift_code_str).any():
+        # ベース値同士で一致確認
+        check_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
+        if (check_bases == base_shift_code).any():
             return assigned_blue
             
     return assigned_blue
@@ -320,35 +330,44 @@ st.divider()
 def get_staff_names(codes, other_staff_shift, col):
     if other_staff_shift.empty:
         return []
-    mask = other_staff_shift.iloc[:, col].isin(codes)
+    # コードのベース部分で比較するため、列データ側のベース値とコードのベース値を合わせる
+    base_codes = [get_base_value(c) for c in codes]
+    col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
+    mask = col_bases.isin(base_codes)
     return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
 
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     time_shift = time_schedule.fillna("").astype(str)
-    if not (time_shift.iloc[:, 1] == shift_info).any():
+    base_shift_info = get_base_value(shift_info)
+    
+    # ベース値が一致する行を抽出
+    time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
+    if not (time_shift_bases == base_shift_info).any():
         return
        
-    my_time_shift = time_shift[time_shift.iloc[:, 1] == shift_info]
+    my_time_shift = time_shift[time_shift_bases == base_shift_info]
     if my_time_shift.empty:
         return
 
-    prev_val = ""
+    prev_val_base = ""
     row_data = my_time_shift.iloc[0]
 
     for t_col in range(3, my_time_shift.shape[1]):
-        current_val = row_data[t_col]
+        raw_current_val = row_data[t_col]
+        current_val_base = get_base_value(raw_current_val)
         subject, start, change, takeover, break_change, end = "", "", "", "", "", ""                    
       
-        if current_val != prev_val:
-            if current_val != "":
+        if current_val_base != prev_val_base:
+            if current_val_base != "":
                 final_rows.append([subject, target_date, "", target_date, "", "False", "", found_key])
                 start_time = time_shift.iloc[0, t_col]
             
                 if (row_data[3:t_col] == "").all():
                     start = "(出勤)："
                     
-                if row_data[t_col - 1] == "":              
-                    mask_change = (time_shift.iloc[:, t_col - 1] != "") & (time_shift.iloc[:, t_col] == "")
+                prev_raw_val = row_data[t_col - 1]
+                if get_base_value(prev_raw_val) == "":              
+                    mask_change = (time_shift.iloc[:, t_col - 1].apply(get_base_value) != "") & (time_shift.iloc[:, t_col].apply(get_base_value) == "")
                     paired_staff = []
                     for idx in time_shift.index[mask_change]:
                         places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
@@ -361,21 +380,22 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     change = f"{change_formatted}▷" if change_formatted else ""
                 else:
                     final_rows[-2][4] = time_shift.iloc[0, t_col]                             
-                    handover_codes = time_shift.loc[time_shift.iloc[:, t_col] == prev_val, time_shift.columns[1]]
+                    handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
                     handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
                     handover = f"to {','.join(handover_staff)}"
                     final_rows[-2][0] += handover
                 
-                takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1] == current_val, time_shift.columns[1]]
+                takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
                 takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                takeover = f"from {','.join(takeover_staff)}【{current_val}】" if takeover_staff else f"from 【{current_val}】"
+                # 表示の際、元の値（付加情報込みの raw_current_val もしくはベース）はお好みで扱えますが、ここでは一貫性のため current_val_base を使用
+                takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
 
                 subject = start + change + takeover
                 final_rows[-1][0] = subject
                 final_rows[-1][2] = start_time
                
             else:
-                mask_break = (time_shift.iloc[:, t_col - 1] == "") & (time_shift.iloc[:, t_col] != "")
+                mask_break = (time_shift.iloc[:, t_col - 1].apply(get_base_value) == "") & (time_shift.iloc[:, t_col].apply(get_base_value) != "")
                 paired_staff = []
                 for idx in time_shift.index[mask_break]:
                     places = time_shift.loc[idx, time_shift.columns[t_col]]
@@ -391,14 +411,14 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     end = "：(退勤)"
                 end_time = time_shift.iloc[0, t_col]
                 
-                handover_codes = time_shift.loc[time_shift.iloc[:, t_col] == prev_val, time_shift.columns[1]]
+                handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
                 handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
                 handover = f"to {','.join(handover_staff)}"                   
 
                 final_rows[-1][0] += handover + break_change + end   
                 final_rows[-1][4] = end_time                            
             
-        prev_val = current_val
+        prev_val_base = current_val_base
 
 if st.button("カレンダー登録用データを生成"):
     final_rows = []
@@ -414,8 +434,12 @@ if st.button("カレンダー登録用データを生成"):
 
         if not schedule_val or schedule_val == "nan": continue
 
-        if (time_shift_check.iloc[:, 1] == schedule_val).any():
-            final_rows.append([f"{found_key}_{schedule_val}", target_date, "", target_date, "", "True", "", found_key])
+        base_schedule_val = get_base_value(schedule_val)
+        time_shift_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
+
+        if (time_shift_bases == base_schedule_val).any():
+            # カレンダー表題や内部処理にはベース値、あるいはそのままのコードを利用可能
+            final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", target_date, "", "True", "", found_key])
             shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
             final_rows.append([schedule_val, target_date, "", target_date, "", "True", "", schedule_val])
@@ -489,7 +513,6 @@ if 'df_calendar' in st.session_state:
                 service = build('calendar', 'v3', credentials=creds)
                 target_cal_id = get_or_create_calendar(service, found_key)
                 
-                # 💡 終日イベントの終了日（翌月1日等）の漏れを防ぐため、翌月5日まで範囲を拡張
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
                 next_year = y if m < 12 else y + 1
                 next_month = m + 1 if m < 12 else 1
@@ -661,9 +684,5 @@ if 'df_calendar' in st.session_state:
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
                 
-                # すぐにリセットする処理（st.rerun()）を削除、またはコメントアウト
-                # reset_to_initial_state()
-                # st.rerun()
-            
             except Exception as e:
                 st.error(f"登録実行エラー: {e}")
