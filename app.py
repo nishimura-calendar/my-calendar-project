@@ -440,193 +440,196 @@ if 'df_calendar' in st.session_state:
 
     target_total_count = len(st.session_state.df_calendar)
 
-    if st.button("実行する", key="execute_conflict_action_btn"):
-                try:
-                    SCOPES = ['https://www.googleapis.com/auth/calendar']
-                    creds_dict = st.secrets["google_oauth_credentials"]
-                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
-                    service = build('calendar', 'v3', credentials=creds)
-                    target_cal_id = get_or_create_calendar(service, found_key)
-                    
-                    # 💡 【修正】終日イベントの終了日（翌月1日等）の漏れを防ぐため、翌月5日まで範囲を拡張
-                    min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
-                    next_year = y if m < 12 else y + 1
-                    next_month = m + 1 if m < 12 else 1
-                    max_date = f"{next_year}-{next_month:02d}-05T23:59:59+09:00"
-                    
-                    deleted_count = 0
-                    added_count = 0
-                    skipped_count = 0
-    
-                    time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
-                    time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
-                    df_cal_to_process = st.session_state.df_calendar
-    
-                    progress_text = "Googleカレンダーと通信中です。しばらくお待ちください..."
-                    my_bar = st.progress(0, text=progress_text)
-                    start_time_exec = datetime.datetime.now()
-    
-                    # --- モード1：パッチ処理 ---
-                    if "1. パッチ処理" in conflict_action:
-                        existing_items = []
-                        page_token = None
-                        while True:
-                            events_result = service.events().list(
-                                calendarId=target_cal_id, 
-                                timeMin=min_date, 
-                                timeMax=max_date, 
-                                singleEvents=True,
-                                pageToken=page_token,
-                                maxResults=250
-                            ).execute()
-                            
-                            # 対象月（y年m月）に実際に含まれるイベント、または終日イベントの開始が当月内のものに絞る
-                            for ev in events_result.get('items', []):
-                                start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
-                                if start_val.startswith(f"{y}-{m:02d}"):
-                                    existing_items.append(ev)
-                                    
-                            page_token = events_result.get('nextPageToken')
-                            if not page_token:
-                                break
-    
-                        total_steps = len(existing_items) + len(df_cal_to_process)
-                        current_step = 0
-    
-                        for event in existing_items:
-                            service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
-                            deleted_count += 1
-                            current_step += 1
-                            if total_steps > 0:
-                                my_bar.progress(min(current_step / total_steps, 1.0), text=f"既存データ削除中... ({deleted_count}/{len(existing_items)})")
-    
-                        for _, row in df_cal_to_process.iterrows():
-                            is_all_day = (str(row['AllDayEvent']) == "True")
-                            start_date = str(row['StartDate']).replace('/', '-')
-                            end_date = str(row['EndDate']).replace('/', '-')
-                            c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
-                            
-                            if is_all_day:
-                                event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
-                            else:
-                                st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                                ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                                event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
-                            
-                            service.events().insert(calendarId=target_cal_id, body=event_body).execute()
-                            added_count += 1
-                            current_step += 1
-                            if total_steps > 0:
-                                my_bar.progress(min(current_step / total_steps, 1.0), text=f"新規登録中... ({added_count}/{len(df_cal_to_process)})")
-    
-                        my_bar.empty()
-                        elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
-                        st.success(f"【パッチ処理完了】(所要時間: 約 {elapsed_sec}秒)\nカレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
-    
-                    # --- モード2：差分処理 ---
-                    elif "2. 差分処理" in conflict_action:
-                        existing_events = []
-                        page_token = None
-                        while True:
-                            events_result = service.events().list(
-                                calendarId=target_cal_id, 
-                                timeMin=min_date, 
-                                timeMax=max_date, 
-                                singleEvents=True, 
-                                pageToken=page_token,
-                                maxResults=250
-                            ).execute()
-                            
-                            for ev in events_result.get('items', []):
-                                start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
-                                if start_val.startswith(f"{y}-{m:02d}"):
-                                    existing_events.append(ev)
-                                    
-                            page_token = events_result.get('nextPageToken')
-                            if not page_token:
-                                break
-                        
-                        existing_dict = {}
-                        for ev in existing_events:
-                            start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
-                            key_signature = (ev.get('summary', ''), start_val)
-                            existing_dict[key_signature] = ev['id']
-    
-                        total_steps = len(df_cal_to_process)
-                        current_step = 0
-    
-                        for _, row in df_cal_to_process.iterrows():
-                            current_step += 1
-                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"差分チェック中... ({current_step}/{total_steps})")
-    
-                            is_all_day = (str(row['AllDayEvent']) == "True")
-                            start_date = str(row['StartDate']).replace('/', '-')
-                            end_date = str(row['EndDate']).replace('/', '-')
-                            subject = row['Subject']
-                            
-                            signature = (subject, start_date)
-                            if signature in existing_dict:
-                                del existing_dict[signature]
-                                skipped_count += 1
-                                continue
-    
-                            c_id = get_color_id(subject, time_shift_check_reg, found_key)
-                            
-                            if is_all_day:
-                                event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
-                            else:
-                                st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                                ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                                event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
-                            
-                            service.events().insert(calendarId=target_cal_id, body=event_body).execute()
-                            added_count += 1
-                        
-                        for signature, ev_id in existing_dict.items():
-                            service.events().delete(calendarId=target_cal_id, eventId=ev_id).execute()
-                            deleted_count += 1
-    
-                        my_bar.empty()
-                        elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
-                        st.success(f"【差分更新完了】(所要時間: 約 {elapsed_sec}秒)\n同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
-    
-                    # --- モード3：重複処理 ---
-                    else:
-                        total_steps = len(df_cal_to_process)
-                        current_step = 0
-    
-                        for _, row in df_cal_to_process.iterrows():
-                            current_step += 1
-                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"重複登録中... ({current_step}/{total_steps})")
-    
-                            is_all_day = (str(row['AllDayEvent']) == "True")
-                            start_date = str(row['StartDate']).replace('/', '-')
-                            end_date = str(row['EndDate']).replace('/', '-')
-                            c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
-                            
-                            if is_all_day:
-                                event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
-                            else:
-                                st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                                ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                                event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
-                            
-                            service.events().insert(calendarId=target_cal_id, body=event_body).execute()
-                            added_count += 1
-    
-                        my_bar.empty()
-                        elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
-                        st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
-    
-                    st.success("🎉 カレンダー登録が終了しました。")
-                    st.balloons()
-                    
-                    reset_to_initial_state()
-                    st.rerun()
-    
-                except Exception as e:
-                    st.error(f"登録実行エラー: {e}")
+    if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
+        try:
+            SCOPES = ['https://www.googleapis.com/auth/calendar']
+            creds_dict = st.secrets["google_oauth_credentials"]
+            creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+            service = build('calendar', 'v3', credentials=creds)
+            
+            target_cal_id = get_or_create_calendar(service, found_key)
+            
+            last_day = calendar.monthrange(y, m)[1]
+            min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+            max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+            
+            events_result = service.events().list(
+                calendarId=target_cal_id, 
+                timeMin=min_date, 
+                timeMax=max_date,
+                singleEvents=True
+            ).execute()
+            
+            existing_items = events_result.get('items', [])
+            st.session_state.existing_count = len(existing_items)
+            st.session_state.show_conflict_options = True
+        except Exception as e:
+            st.error(f"事前確認エラー: {e}")
+
+    if st.session_state.get('show_conflict_options', False):
+        existing_count = st.session_state.get('existing_count', 0)
+        
+        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
+        
+        conflict_action = st.radio(
+            "処理方法の選択",
+            [
+                "1. パッチ処理（全データ削除して新たに登録し直す）",
+                "2. 差分処理 / スマート更新（変更のない日はそのまま維持し、必要な分だけ追加・削除する）",
+                "3. 重複処理（既存データを消さずに、そのまま新しく上乗せして登録する）"
+            ],
+            key="conflict_action_radio"
+        )
+        
+        if st.button("実行する", key="execute_conflict_action_btn"):
+            try:
+                SCOPES = ['https://www.googleapis.com/auth/calendar']
+                creds_dict = st.secrets["google_oauth_credentials"]
+                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                service = build('calendar', 'v3', credentials=creds)
+                target_cal_id = get_or_create_calendar(service, found_key)
                 
+                # 💡 終日イベントの終了日（翌月1日等）の漏れを防ぐため、翌月5日まで範囲を拡張
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                next_year = y if m < 12 else y + 1
+                next_month = m + 1 if m < 12 else 1
+                max_date = f"{next_year}-{next_month:02d}-05T23:59:59+09:00"
+                
+                deleted_count = 0
+                added_count = 0
+                skipped_count = 0
+
+                time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
+                time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
+                df_cal_to_process = st.session_state.df_calendar
+
+                progress_text = "Googleカレンダーと通信中です。しばらくお待ちください..."
+                my_bar = st.progress(0, text=progress_text)
+                start_time_exec = datetime.datetime.now()
+
+                # --- モード1：パッチ処理 ---
+                if "1. パッチ処理" in conflict_action:
+                    existing_items = []
+                    page_token = None
+                    while True:
+                        events_result = service.events().list(
+                            calendarId=target_cal_id, 
+                            timeMin=min_date, 
+                            timeMax=max_date, 
+                            singleEvents=True,
+                            pageToken=page_token,
+                            maxResults=250
+                        ).execute()
+                        
+                        for ev in events_result.get('items', []):
+                            start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
+                            if start_val.startswith(f"{y}-{m:02d}"):
+                                existing_items.append(ev)
+                                
+                        page_token = events_result.get('nextPageToken')
+                        if not page_token:
+                            break
+
+                    total_steps = len(existing_items) + len(df_cal_to_process)
+                    current_step = 0
+
+                    for event in existing_items:
+                        service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
+                        deleted_count += 1
+                        current_step += 1
+                        if total_steps > 0:
+                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"既存データ削除中... ({deleted_count}/{len(existing_items)})")
+
+                    for _, row in df_cal_to_process.iterrows():
+                        is_all_day = (str(row['AllDayEvent']) == "True")
+                        start_date = str(row['StartDate']).replace('/', '-')
+                        end_date = str(row['EndDate']).replace('/', '-')
+                        c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        
+                        if is_all_day:
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                        else:
+                            st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        added_count += 1
+                        current_step += 1
+                        if total_steps > 0:
+                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"新規登録中... ({added_count}/{len(df_cal_to_process)})")
+
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【パッチ処理完了】(所要時間: 約 {elapsed_sec}秒)\nカレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
+
+                # --- モード2：差分処理 ---
+                elif "2. 差分処理" in conflict_action:
+                    existing_events = []
+                    page_token = None
+                    while True:
+                        events_result = service.events().list(
+                            calendarId=target_cal_id, 
+                            timeMin=min_date, 
+                            timeMax=max_date, 
+                            singleEvents=True, 
+                            pageToken=page_token,
+                            maxResults=250
+                        ).execute()
+                        
+                        for ev in events_result.get('items', []):
+                            start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
+                            if start_val.startswith(f"{y}-{m:02d}"):
+                                existing_events.append(ev)
+                                
+                        page_token = events_result.get('nextPageToken')
+                        if not page_token:
+                            break
+                    
+                    existing_dict = {}
+                    for ev in existing_events:
+                        start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
+                        key_signature = (ev.get('summary', ''), start_val)
+                        existing_dict[key_signature] = ev['id']
+
+                    total_steps = len(df_cal_to_process)
+                    current_step = 0
+
+                    for _, row in df_cal_to_process.iterrows():
+                        current_step += 1
+                        my_bar.progress(min(current_step / total_steps, 1.0), text=f"差分チェック中... ({current_step}/{total_steps})")
+
+                        is_all_day = (str(row['AllDayEvent']) == "True")
+                        start_date = str(row['StartDate']).replace('/', '-')
+                        end_date = str(row['EndDate']).replace('/', '-')
+                        subject = row['Subject']
+                        
+                        signature = (subject, start_date)
+                        if signature in existing_dict:
+                            del existing_dict[signature]
+                            skipped_count += 1
+                            continue
+
+                        c_id = get_color_id(subject, time_shift_check_reg, found_key)
+                        
+                        if is_all_day:
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                        else:
+                            st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        added_count += 1
+                    
+                    for signature, ev_id in existing_dict.items():
+                        service.events().delete(calendarId=target_cal_id, eventId=ev_id).execute()
+                        deleted_count += 1
+
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【差分更新完了】(所要時間: 約 {elapsed_sec}秒)\n同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
+
                 # --- モード3：重複処理 ---
                 else:
                     total_steps = len(df_cal_to_process)
@@ -655,14 +658,9 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
-                # ==========================================
-                # 💡 完了メッセージの表示と自動リセット
-                # ==========================================
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
                 
-                # 少しメッセージを見せてからリセットするために数秒待つか、
-                # すぐに初期化したい場合はそのままリセットします
                 reset_to_initial_state()
                 st.rerun()
 
