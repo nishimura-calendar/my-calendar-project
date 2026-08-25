@@ -106,7 +106,7 @@ def get_or_create_calendar(service, calendar_name):
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     
-    # 休日系は専用の色を返す
+    # 休日系は専用の色（赤系: 11）を返す
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
@@ -117,7 +117,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         hash_val = sum(ord(c) for c in str(found_key))
         assigned_blue = blue_palette[hash_val % len(blue_palette)]
 
-    # 勤務地名そのもの、または時程表に登録されているシフトコードと一致する場合は青系にする[cite: 1]
+    # 勤務地名そのもの、または時程表に登録されているシフトコードと一致する場合は青系にする
     if found_key and (found_key in shift_code_str or found_key == shift_code_str):
         return assigned_blue
         
@@ -125,9 +125,9 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
             return assigned_blue
             
-    # それ以外の場合も、keyから算出された青系カラー（assigned_blue）を返す[cite: 1]
+    # それ以外の場合も、決定された青系の色（assigned_blue）を返す
     return assigned_blue
-    
+ 
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
@@ -445,7 +445,7 @@ if st.button("カレンダー登録用データを生成"):
             final_rows.append([schedule_val, target_date, "", target_date, "", "True", "", schedule_val])
             time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
             if time_match:
-                # 【修正済み】時間指定（FALSE）の時もLocationへ found_key を正しく渡す
+                # 時間指定（FALSE）の時もLocationへ found_key を正しく渡す
                 final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", found_key])
 
     if final_rows:
@@ -455,7 +455,7 @@ if st.button("カレンダー登録用データを生成"):
         st.warning("生成対象のデータがありませんでした。")
 
 # ---------------------------------------------------------
-# 勤務地（found_key）専用カレンダーへの登録・管理処理（差分更新対応版）
+# 勤務地（found_key）専用カレンダーへの登録・管理処理（3つのモード対応版）
 # ---------------------------------------------------------
 if 'df_calendar' in st.session_state:
     st.dataframe(st.session_state.df_calendar)
@@ -494,11 +494,15 @@ if 'df_calendar' in st.session_state:
 
     if st.session_state.get('show_conflict_options', False):
         count = st.session_state.get('existing_count', 0)
-        st.warning(f"⚠️ 登録済みデータが **{count}件** あります。どうしますか？")
+        st.warning(f"⚠️ 登録済みデータが **{count}件** あります。処理方法を選択してください。")
         
         conflict_action = st.radio(
-            "処理方法を選択してください",
-            ["全て削除後新たにデータを登録する", "既存のデータと比較して差分のみ更新する（スマート更新）"],
+            "処理方法の選択",
+            [
+                "1. パッチ処理（全データ削除＋新たにデータ登録）",
+                "2. 差分処理 / スマート更新（同じデータは飛ばす）",
+                "3. 重複処理（元のデータは消さずに重複登録する）"
+            ],
             key="conflict_action_radio"
         )
         
@@ -521,8 +525,10 @@ if 'df_calendar' in st.session_state:
                 time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
                 time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
 
-                # パターンA：全て削除後に新しく登録
-                if "全て削除" in conflict_action:
+                # ==========================================
+                # モード1：パッチ処理（全削除 ＋ 全件新規登録）
+                # ==========================================
+                if "1. パッチ処理" in conflict_action:
                     events_result = service.events().list(
                         calendarId=target_cal_id, 
                         timeMin=min_date, 
@@ -562,10 +568,12 @@ if 'df_calendar' in st.session_state:
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
 
-                    st.success(f"「{found_key}」カレンダーを刷新しました！（削除: {deleted_count}件 / 新規登録: {added_count}件）")
+                    st.success(f"【パッチ処理完了】カレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
 
-                # パターンB：差分のみ更新（スマート更新）
-                else:
+                # ==========================================
+                # モード2：差分処理 / スマート更新（同じデータは飛ばす）
+                # ==========================================
+                elif "2. 差分処理" in conflict_action:
                     events_result = service.events().list(
                         calendarId=target_cal_id, 
                         timeMin=min_date, 
@@ -621,7 +629,42 @@ if 'df_calendar' in st.session_state:
                         service.events().delete(calendarId=target_cal_id, eventId=ev_id).execute()
                         deleted_count += 1
 
-                    st.success(f"カレンダーを同期しました！（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
+                    st.success(f"【差分更新完了】同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
+
+                # ==========================================
+                # モード3：重複処理（元のデータは消さずに重複登録）
+                # ==========================================
+                else:
+                    for _, row in st.session_state.df_calendar.iterrows():
+                        is_all_day = (str(row['AllDayEvent']) == "True")
+                        start_date = str(row['StartDate']).replace('/', '-')
+                        end_date = str(row['EndDate']).replace('/', '-')
+                        
+                        c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        
+                        if is_all_day:
+                            event_body = {
+                                'summary': row['Subject'], 
+                                'location': row['Location'], 
+                                'start': {'date': start_date}, 
+                                'end': {'date': end_date},
+                                'colorId': c_id
+                            }
+                        else:
+                            start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {
+                                'summary': row['Subject'], 
+                                'location': row['Location'],
+                                'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'},
+                                'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'},
+                                'colorId': c_id
+                            }
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        added_count += 1
+
+                    st.success(f"【重複登録完了】既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
                 st.session_state.show_conflict_options = False
             except Exception as e:
