@@ -9,7 +9,7 @@ import fitz  # PyMuPDF
 import datetime
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
+from google.oauth2.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
@@ -127,6 +127,12 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     # それ以外の場合も、決定された青系の色（assigned_blue）を返す
     return assigned_blue
+
+# --- アプリケーションを初期状態に戻すためのヘルパー関数 ---
+def reset_to_initial_state():
+    for key in list(st.session_state.keys()):
+        if key != 'data_dict':
+            del st.session_state[key]
  
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
@@ -135,14 +141,11 @@ if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
 
 # =========================================================
-# 【リセットボタン】サイドバーに常設し、いつでも初期状態に戻せるようにする
+# 【リセットボタン】サイドバーに常設
 # =========================================================
 st.sidebar.title("システムメニュー")
 if st.sidebar.button("🔄 最初からやり直す（リセット）"):
-    # セッションステートの主要な保持データをすべて削除・初期化
-    for key in list(st.session_state.keys()):
-        if key != 'data_dict':  # 事前読み込み済みの時程表マスターデータ以外をクリア
-            del st.session_state[key]
+    reset_to_initial_state()
     st.success("システムをリセットしました。初期画面に戻ります。")
     st.rerun()
 
@@ -615,6 +618,12 @@ if 'df_calendar' in st.session_state:
 
                     st.success(f"【重複登録完了】既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
-                st.session_state.show_conflict_options = False
+                # ==========================================
+                # 正常終了時：初期状態に自動リセットする処理
+                # ==========================================
+                st.balloons()  // 完了の演出（お好みで）
+                reset_to_initial_state()
+                st.rerun()
+
             except Exception as e:
                 st.error(f"登録実行エラー: {e}")
