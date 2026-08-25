@@ -9,7 +9,7 @@ import fitz  # PyMuPDF
 import datetime
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from google.oauth2.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
@@ -621,7 +621,7 @@ if 'df_calendar' in st.session_state:
                 # ==========================================
                 # 正常終了時：初期状態に自動リセットする処理
                 # ==========================================
-                st.balloons()  // 完了の演出（お好みで）
+                st.balloons()  # 完了の演出
                 reset_to_initial_state()
                 st.rerun()
 
