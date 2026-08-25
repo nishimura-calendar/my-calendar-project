@@ -106,18 +106,15 @@ def get_or_create_calendar(service, calendar_name):
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     
-    # 休日系は専用の色（赤系: 11）を返す
     if any(holiday in shift_code_str for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
     
-    # 勤務地ごとの青系パレットを決定（Keyのハッシュ値によって青の種類が変化）
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7"
     if found_key:
         hash_val = sum(ord(c) for c in str(found_key))
         assigned_blue = blue_palette[hash_val % len(blue_palette)]
 
-    # 勤務地名そのもの、または時程表に登録されているシフトコードと一致する場合は青系にする
     if found_key and (found_key in shift_code_str or found_key == shift_code_str):
         return assigned_blue
         
@@ -125,7 +122,6 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         if (time_shift_check.iloc[:, 1] == shift_code_str).any():
             return assigned_blue
             
-    # それ以外の場合も、決定された青系の色（assigned_blue）を返す
     return assigned_blue
 
 # --- アプリケーションを初期状態に戻すためのヘルパー関数 ---
@@ -151,12 +147,10 @@ if st.sidebar.button("🔄 最初からやり直す（リセット）"):
 
 st.sidebar.divider()
 
-# セッションステートにPDFデータが保持されていない場合初期化
 if 'loaded_pdf_bytes' not in st.session_state:
     st.session_state.loaded_pdf_bytes = None
     st.session_state.loaded_pdf_name = None
 
-# まだファイルが読み込まれていない場合、選択画面を表示
 if st.session_state.loaded_pdf_bytes is None:
     upload_option = st.radio("PDFの取得方法を選択してください", ["手動アップロード", "Google Driveから選択"], index=0)
 
@@ -198,7 +192,6 @@ if st.session_state.loaded_pdf_bytes is None:
             
     st.stop()
 
-# --- ファイルが選択・保持されたあとの処理 ---
 uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
 uploaded_pdf.name = st.session_state.loaded_pdf_name
 
@@ -233,7 +226,6 @@ with pdfplumber.open(uploaded_pdf) as pdf:
     tables = pdf.pages[0].extract_tables()
     df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
 
-# 1. 勤務地(Key)が特定できない場合 -> PDFを画像として表示して停止
 if not found_key:
     st.error("勤務地(Key)がPDFから特定できませんでした。")
     display_pdf_as_images(file_bytes)
@@ -277,16 +269,9 @@ else:
         st.stop()
     else:
         year_text_match = re.search(r'(\d{4})\s*年', pdf_full_text)
-        if year_text_match:
-            y = int(year_text_match.group(1))
-        else:
-            y = 2026
-        
+        y = int(year_text_match.group(1)) if year_text_match else 2026
         month_text_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
-        if month_text_match:
-            m = int(month_text_match.group(1))
-        else:
-            m = 2
+        m = int(month_text_match.group(1)) if month_text_match else 2
 
 _, last_day_num = calendar.monthrange(y, m)
 last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
@@ -302,7 +287,6 @@ else:
 
 st.divider()
 
-# --- 1. インデックスと人名の抽出 ---
 staff_data = []
 for idx in range(0, df_pdf.shape[0], 2):
     name_val = str(df_pdf.iloc[idx, 0])
@@ -329,14 +313,8 @@ for idx, name in staff_data:
         row.iloc[0, 0] = name
         other_rows.append(row)
 
-if other_rows:
-    other_df = pd.concat(other_rows)
-else:
-    other_df = pd.DataFrame()
+other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
 
-# ---------------------------------------------------------
-# カレンダー登録データの生成処理
-# ---------------------------------------------------------
 st.divider()
 
 def get_staff_names(codes, other_staff_shift, col):
@@ -359,13 +337,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
 
     for t_col in range(3, my_time_shift.shape[1]):
         current_val = row_data[t_col]
-        subject = ""
-        start = ""
-        change = ""
-        takeover = ""
-        handover = ""
-        break_change = ""
-        end = ""                    
+        subject, start, change, takeover, break_change, end = "", "", "", "", "", ""                    
       
         if current_val != prev_val:
             if current_val != "":
@@ -457,9 +429,6 @@ if st.button("カレンダー登録用データを生成"):
     else:
         st.warning("生成対象のデータがありませんでした。")
 
-# ---------------------------------------------------------
-# カレンダー登録・管理処理
-# ---------------------------------------------------------
 if 'df_calendar' in st.session_state:
     st.dataframe(st.session_state.df_calendar)
     
@@ -468,6 +437,8 @@ if 'df_calendar' in st.session_state:
 
     st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
     st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
+
+    target_total_count = len(st.session_state.df_calendar)
 
     if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
         try:
@@ -496,15 +467,16 @@ if 'df_calendar' in st.session_state:
             st.error(f"事前確認エラー: {e}")
 
     if st.session_state.get('show_conflict_options', False):
-        count = st.session_state.get('existing_count', 0)
-        st.warning(f"⚠️ 登録済みデータが **{count}件** あります。処理方法を選択してください。")
+        existing_count = st.session_state.get('existing_count', 0)
+        
+        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
         conflict_action = st.radio(
             "処理方法の選択",
             [
-                "1. パッチ処理（全データ削除＋新たにデータ登録）",
-                "2. 差分処理 / スマート更新（同じデータは飛ばす）",
-                "3. 重複処理（元のデータは消さずに重複登録する）"
+                "1. パッチ処理（全データ削除して新たに登録し直す）",
+                "2. 差分処理 / スマート更新（変更のない日はそのまま維持し、必要な分だけ追加・削除する）",
+                "3. 重複処理（既存データを消さずに、そのまま新しく上乗せして登録する）"
             ],
             key="conflict_action_radio"
         )
@@ -527,17 +499,29 @@ if 'df_calendar' in st.session_state:
 
                 time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
                 time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
+                df_cal_to_process = st.session_state.df_calendar
+
+                progress_text = "Googleカレンダーと通信中です。しばらくお待ちください..."
+                my_bar = st.progress(0, text=progress_text)
+                start_time_exec = datetime.datetime.now()
 
                 # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
                     events_result = service.events().list(
                         calendarId=target_cal_id, timeMin=min_date, timeMax=max_date, singleEvents=True
                     ).execute()
-                    for event in events_result.get('items', []):
+                    existing_items = events_result.get('items', [])
+                    total_steps = len(existing_items) + len(df_cal_to_process)
+                    current_step = 0
+
+                    for event in existing_items:
                         service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
                         deleted_count += 1
+                        current_step += 1
+                        if total_steps > 0:
+                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"既存データ削除中... ({deleted_count}/{len(existing_items)})")
 
-                    for _, row in st.session_state.df_calendar.iterrows():
+                    for _, row in df_cal_to_process.iterrows():
                         is_all_day = (str(row['AllDayEvent']) == "True")
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
@@ -546,14 +530,19 @@ if 'df_calendar' in st.session_state:
                         if is_all_day:
                             event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
                         else:
-                            start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                            end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
+                        current_step += 1
+                        if total_steps > 0:
+                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"新規登録中... ({added_count}/{len(df_cal_to_process)})")
 
-                    st.success(f"【パッチ処理完了】カレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【パッチ処理完了】(所要時間: 約 {elapsed_sec}秒)\nカレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
 
                 # --- モード2：差分処理 ---
                 elif "2. 差分処理" in conflict_action:
@@ -568,7 +557,13 @@ if 'df_calendar' in st.session_state:
                         key_signature = (ev.get('summary', ''), start_val)
                         existing_dict[key_signature] = ev['id']
 
-                    for _, row in st.session_state.df_calendar.iterrows():
+                    total_steps = len(df_cal_to_process)
+                    current_step = 0
+
+                    for _, row in df_cal_to_process.iterrows():
+                        current_step += 1
+                        my_bar.progress(min(current_step / total_steps, 1.0), text=f"差分チェック中... ({current_step}/{total_steps})")
+
                         is_all_day = (str(row['AllDayEvent']) == "True")
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
@@ -585,9 +580,9 @@ if 'df_calendar' in st.session_state:
                         if is_all_day:
                             event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
                         else:
-                            start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                            end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -596,11 +591,19 @@ if 'df_calendar' in st.session_state:
                         service.events().delete(calendarId=target_cal_id, eventId=ev_id).execute()
                         deleted_count += 1
 
-                    st.success(f"【差分更新完了】同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【差分更新完了】(所要時間: 約 {elapsed_sec}秒)\n同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
 
                 # --- モード3：重複処理 ---
                 else:
-                    for _, row in st.session_state.df_calendar.iterrows():
+                    total_steps = len(df_cal_to_process)
+                    current_step = 0
+
+                    for _, row in df_cal_to_process.iterrows():
+                        current_step += 1
+                        my_bar.progress(min(current_step / total_steps, 1.0), text=f"重複登録中... ({current_step}/{total_steps})")
+
                         is_all_day = (str(row['AllDayEvent']) == "True")
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
@@ -609,19 +612,25 @@ if 'df_calendar' in st.session_state:
                         if is_all_day:
                             event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
                         else:
-                            start_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
-                            end_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{start_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{end_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
+                            ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
 
-                    st.success(f"【重複登録完了】既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
                 # ==========================================
-                # 正常終了時：初期状態に自動リセットする処理
+                # 💡 完了メッセージの表示と自動リセット
                 # ==========================================
-                st.balloons()  # 完了の演出
+                st.success("🎉 カレンダー登録が終了しました。")
+                st.balloons()
+                
+                # 少しメッセージを見せてからリセットするために数秒待つか、
+                # すぐに初期化したい場合はそのままリセットします
                 reset_to_initial_state()
                 st.rerun()
 
