@@ -9,7 +9,6 @@ import fitz  # PyMuPDF
 import datetime
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from google.oauth2.client import ClientCredentials
 from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 
