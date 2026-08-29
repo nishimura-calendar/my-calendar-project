@@ -687,5 +687,9 @@ if 'df_calendar' in st.session_state:
                 # 10秒間のタイムラグを設ける
                 time.sleep(10)
                 
+                # 初期状態に戻して画面を再描画
+                reset_to_initial_state()
+                st.rerun()
+                
             except Exception as e:
                 st.error(f"登録実行エラー: {e}")
