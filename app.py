@@ -514,11 +514,9 @@ if 'df_calendar' in st.session_state:
                 service = build('calendar', 'v3', credentials=creds)
                 target_cal_id = get_or_create_calendar(service, found_key)
                 
+                _, last_day = calendar.monthrange(y, m)
                 min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
-                next_year = y if m < 12 else y + 1
-                next_month = m + 1 if m < 12 else 1
-                max_date = f"{next_year}-{next_month:02d}-05T23:59:59+09:00"
-                
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
                 deleted_count = 0
                 added_count = 0
                 skipped_count = 0
