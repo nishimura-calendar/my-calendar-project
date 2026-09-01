@@ -443,7 +443,8 @@ if st.button("カレンダー登録用データを生成"):
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
-            final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key])shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
+            final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key])
+            shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
             final_rows.append([schedule_val, target_date, "", target_date, "", "True", "", schedule_val])
             time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
