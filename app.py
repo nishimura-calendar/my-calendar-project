@@ -446,14 +446,16 @@ if st.button("カレンダー登録用データを生成"):
             final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key])
             shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
+            # 休日などの終日イベントも同様に終了日を翌日に設定する
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
-            final_rows.append([schedule_val, target_date, "", target_date, "", "True", "", schedule_val])
+            
+            final_rows.append([schedule_val, target_date, "", end_date_str, "", "True", "", schedule_val])
+            
             time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
             if time_match:
                 final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", found_key])
-
     if final_rows:
         st.session_state.df_calendar = pd.DataFrame(final_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
         st.success(f"カレンダー登録データの生成が完了しました（計 {len(st.session_state.df_calendar)} 件）")
