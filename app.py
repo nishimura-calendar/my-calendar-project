@@ -96,7 +96,6 @@ def load_and_process_data():
 def get_base_value(val):
     if not val or pd.isna(val):
         return ""
-    # "_" で分割し、左側のベース部分を取得する（例: "早番_1" -> "早番"）
     return str(val).split('_')[0].strip()
 
 # --- 補助関数：カレンダーの自動取得・作成 ---
@@ -128,7 +127,6 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         return assigned_blue
         
     if time_shift_check is not None and not time_shift_check.empty:
-        # ベース値同士で一致確認
         check_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
         if (check_bases == base_shift_code).any():
             return assigned_blue
@@ -331,7 +329,6 @@ st.divider()
 def get_staff_names(codes, other_staff_shift, col):
     if other_staff_shift.empty:
         return []
-    # コードのベース部分で比較するため、列データ側のベース値とコードのベース値を合わせる
     base_codes = [get_base_value(c) for c in codes]
     col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
     mask = col_bases.isin(base_codes)
@@ -341,7 +338,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
     time_shift = time_schedule.fillna("").astype(str)
     base_shift_info = get_base_value(shift_info)
     
-    # ベース値が一致する行を抽出
     time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
     if not (time_shift_bases == base_shift_info).any():
         return
@@ -388,7 +384,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 
                 takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
                 takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                # 表示の際、元の値（付加情報込みの raw_current_val もしくはベース）はお好みで扱えますが、ここでは一貫性のため current_val_base を使用
                 takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
 
                 subject = start + change + takeover
@@ -439,14 +434,12 @@ if st.button("カレンダー登録用データを生成"):
         time_shift_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
 
         if (time_shift_bases == base_schedule_val).any():
-            # カレンダー表題や内部処理にはベース値、あるいはそのままのコードを利用可能
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
             final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key])
             shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
-            # 休日などの終日イベントも同様に終了日を翌日に設定する
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
@@ -470,6 +463,16 @@ if 'df_calendar' in st.session_state:
 
     st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
     st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
+
+    # ▼ 【追加】2パターンのアラーム時間を設定するUI
+    st.markdown("### ⏰ アラーム（通知）設定")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        reminder_first_work = st.number_input("1. 朝の最初の勤務の通知 (分前)", min_value=0, max_value=1440, value=60, step=5)
+    with col_b:
+        reminder_reopen_work = st.number_input("2. 休憩後最初の勤務の通知 (分前)", min_value=0, max_value=1440, value=30, step=5)
+    st.markdown("---")
+    # ▲ ここまで追加
 
     target_total_count = len(st.session_state.df_calendar)
 
@@ -537,6 +540,26 @@ if 'df_calendar' in st.session_state:
                 my_bar = st.progress(0, text=progress_text)
                 start_time_exec = datetime.datetime.now()
 
+                # --- 共通の通知設定を判別して生成する内部関数 ---
+                def get_reminders_setting(subject_str):
+                    is_first_work = "(出勤)" in subject_str
+                    is_reopen_work = "▷" in subject_str
+
+                    if is_first_work:
+                        chosen_minutes = reminder_first_work
+                    elif is_reopen_work:
+                        chosen_minutes = reminder_reopen_work
+                    else:
+                        chosen_minutes = 15  # その他の細切れイベント等の標準通知分
+
+                    if chosen_minutes > 0:
+                        return {
+                            'useDefault': False,
+                            'overrides': [{'method': 'popup', 'minutes': chosen_minutes}],
+                        }
+                    else:
+                        return {'useDefault': True}
+
                 # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
                     existing_items = []
@@ -575,13 +598,14 @@ if 'df_calendar' in st.session_state:
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        reminders_setting = get_reminders_setting(str(row['Subject']))
                         
                         if is_all_day:
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': reminders_setting}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': reminders_setting}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -641,13 +665,14 @@ if 'df_calendar' in st.session_state:
                             continue
 
                         c_id = get_color_id(subject, time_shift_check_reg, found_key)
+                        reminders_setting = get_reminders_setting(str(subject))
                         
                         if is_all_day:
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': reminders_setting}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': reminders_setting}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -673,13 +698,14 @@ if 'df_calendar' in st.session_state:
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        reminders_setting = get_reminders_setting(str(row['Subject']))
                         
                         if is_all_day:
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': reminders_setting}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': reminders_setting}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -690,10 +716,8 @@ if 'df_calendar' in st.session_state:
 
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
-                # 10秒間のタイムラグを設ける
                 time.sleep(10)
                 
-                # 初期状態に戻して画面を再描画
                 reset_to_initial_state()
                 st.rerun()
                 
