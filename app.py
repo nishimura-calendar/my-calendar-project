@@ -550,7 +550,7 @@ if 'df_calendar' in st.session_state:
                     elif is_reopen_work:
                         chosen_minutes = reminder_reopen_work
                     else:
-                        chosen_minutes = 15  # その他の細切れイベント等の標準通知分
+                        chosen_minutes = 0  # その他の細切れイベント等の標準通知分
 
                     if chosen_minutes > 0:
                         return {
