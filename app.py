@@ -713,10 +713,8 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
                     
-                # ==========================================================
                 # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
                 # ==========================================================
-                # スペースや全角半角の揺れ（空白）をすべて取り除いて比較します
                 normalized_target = target_name.replace(" ", "").replace(" ", "")
                 
                 if normalized_target == "西村文宏":
@@ -783,5 +781,6 @@ if 'df_calendar' in st.session_state:
                                         drive_service.files().delete(fileId=sf['id']).execute()
 
                         st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
+                        
                     except Exception as e:
                         st.error(f"ドライブ自動保存・削除エラー: {e}")
