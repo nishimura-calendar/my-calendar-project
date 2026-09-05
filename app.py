@@ -717,6 +717,7 @@ if 'df_calendar' in st.session_state:
                 # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
                 # ==========================================================
                 if target_name == "西村文宏":
+                    st.wright("1")
                     try:
                         SCOPES_DRIVE = [
                             'https://www.googleapis.com/auth/drive',
@@ -727,7 +728,8 @@ if 'df_calendar' in st.session_state:
                         creds_dict_drive = st.secrets["google_oauth_credentials"]
                         creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
                         drive_service = build('drive', 'v3', credentials=creds_d)
-
+                        
+                        st.wright("2")
                         def get_or_create_folder(service, folder_name, parent_id=None):
                             query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
                             if parent_id:
@@ -742,7 +744,8 @@ if 'df_calendar' in st.session_state:
                                     file_metadata['parents'] = [parent_id]
                                 folder = service.files().create(body=file_metadata, fields='id').execute()
                                 return folder.get('id')
-
+                       
+                        st.wright("3")
                         calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
                         shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
 
