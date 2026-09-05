@@ -713,74 +713,74 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
                     
-    # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
-    # ==========================================================
-    normalized_target = target_name.replace(" ", "").replace(" ", "")
-    
-    if normalized_target == "西村文宏":
-        st.write("1")
-        try:
-            SCOPES_DRIVE = [
-                'https://www.googleapis.com/auth/drive',
-                'https://www.googleapis.com/auth/calendar',
-                'https://www.googleapis.com/auth/gmail.readonly',
-                'https://www.googleapis.com/auth/spreadsheets.readonly'
-            ]
-            creds_dict_drive = st.secrets["google_oauth_credentials"]
-            creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
-            drive_service = build('drive', 'v3', credentials=creds_d)
-            
-            st.write("2")
-            def get_or_create_folder(service, folder_name, parent_id=None):
-                query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+# 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
+# ==========================================================
+normalized_target = target_name.replace(" ", "").replace(" ", "")
+
+if normalized_target == "西村文宏":
+    st.write("1")
+    try:
+        SCOPES_DRIVE = [
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/calendar',
+            'https://www.googleapis.com/auth/gmail.readonly',
+            'https://www.googleapis.com/auth/spreadsheets.readonly'
+        ]
+        creds_dict_drive = st.secrets["google_oauth_credentials"]
+        creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
+        drive_service = build('drive', 'v3', credentials=creds_d)
+        
+        st.write("2")
+        def get_or_create_folder(service, folder_name, parent_id=None):
+            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            if parent_id:
+                query += f" and '{parent_id}' in parents"
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+            files = results.get('files', [])
+            if files:
+                return files[0]['id']
+            else:
+                file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
                 if parent_id:
-                    query += f" and '{parent_id}' in parents"
-                results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-                files = results.get('files', [])
-                if files:
-                    return files[0]['id']
-                else:
-                    file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
-                    if parent_id:
-                        file_metadata['parents'] = [parent_id]
-                    folder = service.files().create(body=file_metadata, fields='id').execute()
-                    return folder.get('id')
-           
-            st.write("3")
-            calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
-            shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
+                    file_metadata['parents'] = [parent_id]
+                folder = service.files().create(body=file_metadata, fields='id').execute()
+                return folder.get('id')
+       
+        st.write("3")
+        calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
+        shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
 
-            file_name = f"{y}年{m}月_{found_key}.pdf"
+        file_name = f"{y}年{m}月_{found_key}.pdf"
 
-            existing_q = f"name='{file_name}' and '{shift_folder_id}' in parents and trashed=false"
-            existing_files = drive_service.files().list(q=existing_q, fields='files(id)').execute().get('files', [])
-            for ef in existing_files:
-                drive_service.files().delete(fileId=ef['id']).execute()
+        existing_q = f"name='{file_name}' and '{shift_folder_id}' in parents and trashed=false"
+        existing_files = drive_service.files().list(q=existing_q, fields='files(id)').execute().get('files', [])
+        for ef in existing_files:
+            drive_service.files().delete(fileId=ef['id']).execute()
 
-            media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
-            file_metadata = {'name': file_name, 'parents': [shift_folder_id]}
-            drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
+        file_metadata = {'name': file_name, 'parents': [shift_folder_id]}
+        drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-            target_month_val = m - 2
-            target_year_val = y
-            if target_month_val <= 0:
-                target_month_val += 12
-                target_year_val -= 1
-            limit_date = datetime.datetime(target_year_val, target_month_val, 1)
+        target_month_val = m - 2
+        target_year_val = y
+        if target_month_val <= 0:
+            target_month_val += 12
+            target_year_val -= 1
+        limit_date = datetime.datetime(target_year_val, target_month_val, 1)
 
-            shift_files = drive_service.files().list(q=f"'{shift_folder_id}' in parents and trashed=false", fields='files(id, name)').execute().get('files', [])
-            
-            for sf in shift_files:
-                sf_name = sf['name']
-                if found_key in sf_name:
-                    match = re.search(r'(\d{4})年(\d{1,2})月', sf_name)
-                    if match:
-                        f_y, f_m = int(match.group(1)), int(match.group(2))
-                        f_date = datetime.datetime(f_y, f_m, 1)
-                        if f_date <= limit_date:
-                            drive_service.files().delete(fileId=sf['id']).execute()
+        shift_files = drive_service.files().list(q=f"'{shift_folder_id}' in parents and trashed=false", fields='files(id, name)').execute().get('files', [])
+        
+        for sf in shift_files:
+            sf_name = sf['name']
+            if found_key in sf_name:
+                match = re.search(r'(\d{4})年(\d{1,2})月', sf_name)
+                if match:
+                    f_y, f_m = int(match.group(1)), int(match.group(2))
+                    f_date = datetime.datetime(f_y, f_m, 1)
+                    if f_date <= limit_date:
+                        drive_service.files().delete(fileId=sf['id']).execute()
 
-            st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
-            
-        except Exception as e:
-            st.error(f"ドライブ自動保存・削除エラー: {e}")
+        st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
+        
+    except Exception as e:
+        st.error(f"ドライブ自動保存・削除エラー: {e}")
