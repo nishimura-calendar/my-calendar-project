@@ -10,7 +10,7 @@ import datetime
 import time  # タイムラグを設けるために利用します
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
@@ -176,7 +176,7 @@ if st.session_state.loaded_pdf_bytes is None:
             creds_dict = st.secrets["google_oauth_credentials"]
             creds_drive = Credentials.from_authorized_user_info(
                 creds_dict, 
-                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly", "https://www.googleapis.com/auth/drive.file"]
             )
             drive_service = build('drive', 'v3', credentials=creds_drive)
             
@@ -464,7 +464,7 @@ if 'df_calendar' in st.session_state:
     st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
     st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
 
-    # ▼ 【追加】2パターンのアラーム時間を設定するUI
+    # ▼ 2パターンのアラーム時間を設定するUI
     st.markdown("### ⏰ アラーム（通知）設定")
     col_a, col_b = st.columns(2)
     with col_a:
@@ -472,7 +472,6 @@ if 'df_calendar' in st.session_state:
     with col_b:
         reminder_reopen_work = st.number_input("2. 休憩後最初の勤務の通知 (分前)", min_value=0, max_value=1440, value=30, step=5)
     st.markdown("---")
-    # ▲ ここまで追加
 
     target_total_count = len(st.session_state.df_calendar)
 
@@ -550,7 +549,7 @@ if 'df_calendar' in st.session_state:
                     elif is_reopen_work:
                         chosen_minutes = reminder_reopen_work
                     else:
-                        chosen_minutes = 0  # その他の細切れイベント等の標準通知分
+                        chosen_minutes = 0  # その他の細切れイベント等
 
                     if chosen_minutes > 0:
                         return {
@@ -713,6 +712,63 @@ if 'df_calendar' in st.session_state:
                     my_bar.empty()
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
+
+                # ▼ target_staff = 西村文宏 のときの追加処理（ドライブ保存 ＆ 前々月以前ファイルの削除）
+                if target_name == "西村文宏":
+                    try:
+                        SCOPES_DRIVE = ['https://www.googleapis.com/auth/drive']
+                        creds_dict_drive = st.secrets["google_oauth_credentials"]
+                        creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
+                        drive_service = build('drive', 'v3', credentials=creds_d)
+
+                        def get_or_create_folder(service, folder_name, parent_id=None):
+                            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                            if parent_id:
+                                query += f" and '{parent_id}' in parents"
+                            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+                            files = results.get('files', [])
+                            if files:
+                                return files[0]['id']
+                            else:
+                                file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+                                if parent_id:
+                                    file_metadata['parents'] = [parent_id]
+                                folder = service.files().create(body=file_metadata, fields='id').execute()
+                                return folder.get('id')
+
+                        calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
+                        shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
+
+                        # ファイル名 = 年月 + key
+                        file_name = f"{y}年{m}月_{found_key}.pdf"
+
+                        # 同名ファイルが存在する場合は削除して上書き
+                        existing_q = f"name='{file_name}' and '{shift_folder_id}' in parents and trashed=false"
+                        existing_files = drive_service.files().list(q=existing_q, fields='files(id)').execute().get('files', [])
+                        for ef in existing_files:
+                            drive_service.files().delete(fileId=ef['id']).execute()
+
+                        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
+                        file_metadata = {'name': file_name, 'parents': [shift_folder_id]}
+                        drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+
+                        # 前々月以前のファイルを検索して削除
+                        target_date_limit = datetime.datetime(y, m, 1) - datetime.timedelta(days=60)
+                        limit_y, limit_m = target_date_limit.year, target_date_limit.month
+
+                        shift_files = drive_service.files().list(q=f"'{shift_folder_id}' in parents and trashed=false", fields='files(id, name)').execute().get('files', [])
+                        for sf in shift_files:
+                            sf_name = sf['name']
+                            match = re.search(r'(\d{4})年(\d{1,2})月', sf_name)
+                            if match:
+                                f_y, f_m = int(match.group(1)), int(match.group(2))
+                                f_date = datetime.datetime(f_y, f_m, 1)
+                                if f_date <= datetime.datetime(limit_y, limit_m, 1):
+                                    drive_service.files().delete(fileId=sf['id']).execute()
+
+                        st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
+                    except Exception as e:
+                        st.error(f"ドライブ自動保存・削除エラー: {e}")
 
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
