@@ -549,7 +549,7 @@ if 'df_calendar' in st.session_state:
                     elif is_reopen_work:
                         chosen_minutes = reminder_reopen_work
                     else:
-                        chosen_minutes = 0  # その他の細切れイベント等
+                        chosen_minutes = 0
 
                     if chosen_minutes > 0:
                         return {
@@ -568,7 +568,7 @@ if 'df_calendar' in st.session_state:
                             calendarId=target_cal_id, 
                             timeMin=min_date, 
                             timeMax=max_date, 
-                            singleEvents=True,
+                            singleEvents=True, 
                             pageToken=page_token,
                             maxResults=250
                         ).execute()
@@ -713,10 +713,17 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
-                # ▼ target_staff = 西村文宏 のときの追加処理（ドライブ保存 ＆ 前々月以前ファイルの削除）
+                # ==========================================================
+                # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
+                # ==========================================================
                 if target_name == "西村文宏":
                     try:
-                        SCOPES_DRIVE = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/spreadsheets.readonly']
+                        SCOPES_DRIVE = [
+                            'https://www.googleapis.com/auth/drive',
+                            'https://www.googleapis.com/auth/calendar',
+                            'https://www.googleapis.com/auth/gmail.readonly',
+                            'https://www.googleapis.com/auth/spreadsheets.readonly'
+                        ]
                         creds_dict_drive = st.secrets["google_oauth_credentials"]
                         creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
                         drive_service = build('drive', 'v3', credentials=creds_d)
@@ -739,10 +746,8 @@ if 'df_calendar' in st.session_state:
                         calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
                         shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
 
-                        # ファイル名 = 年月 + key
                         file_name = f"{y}年{m}月_{found_key}.pdf"
 
-                        # 同名ファイルが存在する場合は削除して上書き
                         existing_q = f"name='{file_name}' and '{shift_folder_id}' in parents and trashed=false"
                         existing_files = drive_service.files().list(q=existing_q, fields='files(id)').execute().get('files', [])
                         for ef in existing_files:
@@ -752,19 +757,24 @@ if 'df_calendar' in st.session_state:
                         file_metadata = {'name': file_name, 'parents': [shift_folder_id]}
                         drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
 
-                        # 前々月以前のファイルを検索して削除
-                        target_date_limit = datetime.datetime(y, m, 1) - datetime.timedelta(days=60)
-                        limit_y, limit_m = target_date_limit.year, target_date_limit.month
+                        target_month_val = m - 2
+                        target_year_val = y
+                        if target_month_val <= 0:
+                            target_month_val += 12
+                            target_year_val -= 1
+                        limit_date = datetime.datetime(target_year_val, target_month_val, 1)
 
                         shift_files = drive_service.files().list(q=f"'{shift_folder_id}' in parents and trashed=false", fields='files(id, name)').execute().get('files', [])
+                        
                         for sf in shift_files:
                             sf_name = sf['name']
-                            match = re.search(r'(\d{4})年(\d{1,2})月', sf_name)
-                            if match:
-                                f_y, f_m = int(match.group(1)), int(match.group(2))
-                                f_date = datetime.datetime(f_y, f_m, 1)
-                                if f_date <= datetime.datetime(limit_y, limit_m, 1):
-                                    drive_service.files().delete(fileId=sf['id']).execute()
+                            if found_key in sf_name:
+                                match = re.search(r'(\d{4})年(\d{1,2})月', sf_name)
+                                if match:
+                                    f_y, f_m = int(match.group(1)), int(match.group(2))
+                                    f_date = datetime.datetime(f_y, f_m, 1)
+                                    if f_date <= limit_date:
+                                        drive_service.files().delete(fileId=sf['id']).execute()
 
                         st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
                     except Exception as e:
