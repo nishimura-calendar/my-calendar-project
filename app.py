@@ -713,16 +713,14 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
-                # ==========================================================
+# ==========================================================
                 # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
                 # ==========================================================
-                # デバッグ用に実際の値と文字コードを確認する
-                st.write(f"現在の選択値: [{target_name}]")
+                # スペースや全角半角の揺れ（空白）をすべて取り除いて比較します
+                normalized_target = target_name.replace(" ", "").replace(" ", "")
                 
-                # 空白や全角半角の揺れを吸収して判定する
-                if target_name and target_name.strip() == "西村文宏":
+                if normalized_target == "西村文宏":
                     st.write("1")
-                    # ... 以下のドライブ処理    
                     try:
                         SCOPES_DRIVE = [
                             'https://www.googleapis.com/auth/drive',
@@ -787,13 +785,3 @@ if 'df_calendar' in st.session_state:
                         st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
                     except Exception as e:
                         st.error(f"ドライブ自動保存・削除エラー: {e}")
-
-                st.success("🎉 カレンダー登録が終了しました。")
-                st.balloons()
-                time.sleep(10)
-                
-                reset_to_initial_state()
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"登録実行エラー: {e}")
