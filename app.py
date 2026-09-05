@@ -176,7 +176,7 @@ if st.session_state.loaded_pdf_bytes is None:
             creds_dict = st.secrets["google_oauth_credentials"]
             creds_drive = Credentials.from_authorized_user_info(
                 creds_dict, 
-                scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
             )
             drive_service = build('drive', 'v3', credentials=creds_drive)
             
@@ -716,7 +716,7 @@ if 'df_calendar' in st.session_state:
                 # ▼ target_staff = 西村文宏 のときの追加処理（ドライブ保存 ＆ 前々月以前ファイルの削除）
                 if target_name == "西村文宏":
                     try:
-                        SCOPES_DRIVE = ['https://www.googleapis.com/auth/drive']
+                        SCOPES_DRIVE = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/spreadsheets.readonly']
                         creds_dict_drive = st.secrets["google_oauth_credentials"]
                         creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
                         drive_service = build('drive', 'v3', credentials=creds_d)
