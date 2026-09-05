@@ -716,8 +716,13 @@ if 'df_calendar' in st.session_state:
                 # ==========================================================
                 # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
                 # ==========================================================
-                if target_name == "西村文宏":
+                # デバッグ用に実際の値と文字コードを確認する
+                st.write(f"現在の選択値: [{target_name}]")
+                
+                # 空白や全角半角の揺れを吸収して判定する
+                if target_name and target_name.strip() == "西村文宏":
                     st.write("1")
+                    # ... 以下のドライブ処理    
                     try:
                         SCOPES_DRIVE = [
                             'https://www.googleapis.com/auth/drive',
