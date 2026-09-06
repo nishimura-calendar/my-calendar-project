@@ -10,7 +10,7 @@ import datetime
 import time  # タイムラグを設けるために利用します
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseDownload, MediaBytesUpload
 from google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
@@ -37,22 +37,6 @@ def get_recent_pdfs_from_drive(service):
         fields="files(id, name, createdTime)"
     ).execute()
     return results.get('files', [])
-
-# --- Google Driveのフォルダを取得または作成する補助関数 ---
-def get_or_create_folder(service, folder_name, parent_id=None):
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    if parent_id:
-        query += f" and '{parent_id}' in parents"
-    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-    files = results.get('files', [])
-    if files:
-        return files[0]['id']
-    else:
-        file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
-        if parent_id:
-            file_metadata['parents'] = [parent_id]
-        folder = service.files().create(body=file_metadata, fields='id').execute()
-        return folder.get('id')
 
 def download_pdf_from_drive(service, file_id):
     request = service.files().get_media(fileId=file_id)
@@ -138,16 +122,58 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
     if found_key:
         hash_val = sum(ord(c) for c in str(found_key))
         assigned_blue = blue_palette[hash_val % len(blue_palette)]
-
-    if found_key and (found_key in base_shift_code or found_key == base_shift_code):
-        return assigned_blue
         
-    if time_shift_check is not None and not time_shift_check.empty:
-        check_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
-        if (check_bases == base_shift_code).any():
-            return assigned_blue
-            
     return assigned_blue
+
+# --- 補助関数：西村文宏の名前判定（スペースゆらぎ対応） ---
+def is_nishimura_fumihiro(name):
+    if not name:
+        return False
+    normalized = re.sub(r'\s+', '', name)
+    return normalized == "西村文宏"
+
+# --- 補助関数：GoogleドライブのPDF保存と前々月以前のファイル削除 ---
+def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
+    folder_id = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
+    file_name = f"{y}年{m}月_{found_key}.pdf"
+    
+    # 同名ファイルが存在する場合は事前に削除
+    query = f"'{folder_id}' in parents and name = '{file_name}' and trashed = false"
+    existing_files = drive_service.files().list(q=query, fields="files(id, name)").execute().get('files', [])
+    for ef in existing_files:
+        drive_service.files().delete(fileId=ef['id']).execute()
+        
+    # 新規アップロード
+    media = MediaBytesUpload(file_bytes, mimetype='application/pdf', resumable=True)
+    file_metadata = {
+        'name': file_name,
+        'parents': [folder_id]
+    }
+    drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
+    
+    # 前々月までのPDFファイルを削除
+    q_all = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed = false"
+    all_files = drive_service.files().list(q=q_all, fields="files(id, name)").execute().get('files', [])
+    
+    current_total_months = y * 12 + m
+    
+    for f in all_files:
+        fname = f['name']
+        match = re.search(r'(\d{4})年\s*(\d{1,2})月', fname)
+        if match:
+            fy = int(match.group(1))
+            fm = int(match.group(2))
+            file_total_months = fy * 12 + fm
+            # 前々月以前（当月基準で差が2ヶ月以上）のファイルを削除
+            if current_total_months - file_total_months >= 2:
+                try:
+                    drive_service.files().delete(fileId=f['id']).execute()
+                except Exception:
+                    pass
 
 # --- アプリケーションを初期状態に戻すためのヘルパー関数 ---
 def reset_to_initial_state():
@@ -192,7 +218,7 @@ if st.session_state.loaded_pdf_bytes is None:
             creds_dict = st.secrets["google_oauth_credentials"]
             creds_drive = Credentials.from_authorized_user_info(
                 creds_dict, 
-                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
+                scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
             )
             drive_service = build('drive', 'v3', credentials=creds_drive)
             
@@ -480,15 +506,6 @@ if 'df_calendar' in st.session_state:
     st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
     st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
 
-    # ▼ 2パターンのアラーム時間を設定するUI
-    st.markdown("### ⏰ アラーム（通知）設定")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        reminder_first_work = st.number_input("1. 朝の最初の勤務の通知 (分前)", min_value=0, max_value=1440, value=60, step=5)
-    with col_b:
-        reminder_reopen_work = st.number_input("2. 休憩後最初の勤務の通知 (分前)", min_value=0, max_value=1440, value=30, step=5)
-    st.markdown("---")
-
     target_total_count = len(st.session_state.df_calendar)
 
     if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
@@ -555,26 +572,6 @@ if 'df_calendar' in st.session_state:
                 my_bar = st.progress(0, text=progress_text)
                 start_time_exec = datetime.datetime.now()
 
-                # --- 共通の通知設定を判別して生成する内部関数 ---
-                def get_reminders_setting(subject_str):
-                    is_first_work = "(出勤)" in subject_str
-                    is_reopen_work = "▷" in subject_str
-
-                    if is_first_work:
-                        chosen_minutes = reminder_first_work
-                    elif is_reopen_work:
-                        chosen_minutes = reminder_reopen_work
-                    else:
-                        chosen_minutes = 0
-
-                    if chosen_minutes > 0:
-                        return {
-                            'useDefault': False,
-                            'overrides': [{'method': 'popup', 'minutes': chosen_minutes}],
-                        }
-                    else:
-                        return {'useDefault': True}
-
                 # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
                     existing_items = []
@@ -584,7 +581,7 @@ if 'df_calendar' in st.session_state:
                             calendarId=target_cal_id, 
                             timeMin=min_date, 
                             timeMax=max_date, 
-                            singleEvents=True, 
+                            singleEvents=True,
                             pageToken=page_token,
                             maxResults=250
                         ).execute()
@@ -613,14 +610,13 @@ if 'df_calendar' in st.session_state:
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
-                        reminders_setting = get_reminders_setting(str(row['Subject']))
                         
                         if is_all_day:
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': reminders_setting}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': reminders_setting}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -680,14 +676,13 @@ if 'df_calendar' in st.session_state:
                             continue
 
                         c_id = get_color_id(subject, time_shift_check_reg, found_key)
-                        reminders_setting = get_reminders_setting(str(subject))
                         
                         if is_all_day:
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': reminders_setting}
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': reminders_setting}
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -713,14 +708,13 @@ if 'df_calendar' in st.session_state:
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
-                        reminders_setting = get_reminders_setting(str(row['Subject']))
                         
                         if is_all_day:
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': reminders_setting}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': reminders_setting}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -728,64 +722,26 @@ if 'df_calendar' in st.session_state:
                     my_bar.empty()
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
-                    
-                # 🚀 【共通】カレンダー登録完了後・終了前の西村文宏さん向けドライブ処理
-                # ==========================================================
-                normalized_target = target_name.replace(" ", "").replace(" ", "")
-                
-                if normalized_target == "西村文宏":
-                    try:
-                        SCOPES_DRIVE = [
-                            'https://www.googleapis.com/auth/drive',
-                            'https://www.googleapis.com/auth/calendar',
-                            'https://www.googleapis.com/auth/gmail.readonly',
-                            'https://www.googleapis.com/auth/spreadsheets.readonly'
-                        ]
-                        creds_dict_drive = st.secrets["google_oauth_credentials"]
-                        creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
-                        
-                        if creds_d.expired and creds_d.refresh_token:
-                            creds_d.refresh(Request())
-                            
-                        drive_service = build('drive', 'v3', credentials=creds_d)
-                        
-                        calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
-                        shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
-                
-                        file_name = f"{y}年{m}月_{found_key}.pdf"
-                
-                        existing_q = f"name='{file_name}' and '{shift_folder_id}' in parents and trashed=false"
-                        existing_files = drive_service.files().list(q=existing_q, fields='files(id)').execute().get('files', [])
-                        for ef in existing_files:
-                            drive_service.files().delete(fileId=ef['id']).execute()
-                
-                        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
-                        file_metadata = {'name': file_name, 'parents': [shift_folder_id]}
-                        drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-                
-                        target_month_val = m - 2
-                        target_year_val = y
-                        if target_month_val <= 0:
-                            target_month_val += 12
-                            target_year_val -= 1
-                        limit_date = datetime.datetime(target_year_val, target_month_val, 1)
-                
-                        shift_files = drive_service.files().list(q=f"'{shift_folder_id}' in parents and trashed=false", fields='files(id, name)').execute().get('files', [])
-                        
-                        for sf in shift_files:
-                            sf_name = sf['name']
-                            if found_key in sf_name:
-                                match = re.search(r'(\d{4})年(\d{1,2})月', sf_name)
-                                if match:
-                                    f_y, f_m = int(match.group(1)), int(match.group(2))
-                                    f_date = datetime.datetime(f_y, f_m, 1)
-                                    if f_date <= limit_date:
-                                        drive_service.files().delete(fileId=sf['id']).execute()
-                
-                        st.success("📁 Googleドライブ「カレンダー > シフト」フォルダへのPDF保存および古いファイルの整理が完了しました。")
-                        
-                    except Exception as e:
-                        st.error(f"ドライブ自動保存・削除エラー: {e}")
 
+                # --- ターゲットスタッフが「西村文宏」の場合のGoogleドライブ保存＆前々月以前のファイル削除処理 ---
+                if is_nishimura_fumihiro(target_name):
+                    try:
+                        creds_drive_full = Credentials.from_authorized_user_info(
+                            creds_dict, 
+                            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/calendar"]
+                        )
+                        drive_write_service = build('drive', 'v3', credentials=creds_drive_full)
+                        process_drive_pdf_management(drive_write_service, file_bytes, y, m, found_key)
+                        st.info("📁 Googleドライブの指定フォルダへPDFを保存し、前々月以前のファイルを整理しました。")
+                    except Exception as drv_err:
+                        st.warning(f"GoogleドライブのPDF保存・削除処理でエラーが発生しました: {drv_err}")
+
+                st.success("🎉 カレンダー登録が終了しました。")
+                st.balloons()
+                time.sleep(10)
+                
+                reset_to_initial_state()
+                st.rerun()
+                
             except Exception as e:
-                st.error(f"カレンダー登録処理エラー: {e}")
+                st.error(f"登録実行エラー: {e}")
