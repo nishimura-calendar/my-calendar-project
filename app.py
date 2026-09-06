@@ -176,12 +176,8 @@ if st.session_state.loaded_pdf_bytes is None:
     else:
         try:
             creds_dict = st.secrets["google_oauth_credentials"]
-            creds_drive = Credentials.from_authorized_user_info(
-                creds_dict, 
-                scopes=["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/spreadsheets.readonly"]
-            )
-            drive_service = build('drive', 'v3', credentials=creds_drive)
-            
+            creds_drive = Credentials.from_authorized_user_info(creds_dict)
+            drive_service = build('drive', 'v3', credentials=creds_drive)            
             files = get_recent_pdfs_from_drive(drive_service)
             
             if files:
