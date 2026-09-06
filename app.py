@@ -231,6 +231,7 @@ if st.session_state.loaded_pdf_bytes is None:
                     fh = download_pdf_from_drive(drive_service, selected_file['id'])
                     st.session_state.loaded_pdf_bytes = fh.getvalue()
                     st.session_state.loaded_pdf_name = selected_file['name']
+                    st.session_state.selected_file_id = selected_file['id']
                     st.success(f"「{selected_file['name']}」を読み込みました。")
                     st.rerun()
             else:
@@ -731,6 +732,14 @@ if 'df_calendar' in st.session_state:
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
                 st.success("🎉 カレンダー登録が終了しました。")
+
+                if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
+                    try:
+                        drive_service.files().delete(fileId=st.session_state.selected_file_id).execute()
+                        st.success("🗑️ Googleドライブ上の元のPDFファイルを削除しました。")
+                    except Exception as e:
+                        st.warning(f"元ファイルの削除に失敗しました: {e}")
+                        
                 st.balloons()
                 time.sleep(10)
                 
