@@ -735,15 +735,13 @@ if 'df_calendar' in st.session_state:
                 
                 if normalized_target == "西村文宏":
                     try:
-                        # 既に有効なドライブ・カレンダー等の権限を含むスコープ、または現状の最小限のスコープに調整
+                        # アプリが作成したファイルを安全に操作できるドライブ用スコープに変更
                         SCOPES_DRIVE = [
-                            'https://www.googleapis.com/auth/drive',
-                            'https://www.googleapis.com/auth/calendar'
+                            'https://www.googleapis.com/auth/drive.file'
                         ]
                         creds_dict_drive = st.secrets["google_oauth_credentials"]
                         creds_d = Credentials.from_authorized_user_info(creds_dict_drive, scopes=SCOPES_DRIVE)
                         
-                        # トークンにスコープが不足している場合やリフレッシュが必要な場合の対応
                         if creds_d.expired and creds_d.refresh_token:
                             creds_d.refresh(Request())
                             
