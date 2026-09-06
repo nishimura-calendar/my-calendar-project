@@ -784,3 +784,6 @@ if 'df_calendar' in st.session_state:
                         
                     except Exception as e:
                         st.error(f"ドライブ自動保存・削除エラー: {e}")
+
+            except Exception as e:
+                st.error(f"カレンダー登録処理エラー: {e}")
