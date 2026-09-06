@@ -733,13 +733,41 @@ if 'df_calendar' in st.session_state:
 
                 st.success("🎉 カレンダー登録が終了しました。")
 
+                # 登録処理などの実行部分（例：conflict_action の中の処理など）
+                try:
+                    # カレンダー用サービスだけでなく、ファイル削除用のドライブサービスも準備する
+                    SCOPES_CAL_DRIVE = [
+                        'https://www.googleapis.com/auth/calendar',
+                        'https://www.googleapis.com/auth/drive'
+                    ]
+                    creds_dict = st.secrets["google_oauth_credentials"]
+                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES_CAL_DRIVE)
+                    
+                    # 期限切れならリフレッシュ
+                    if creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+
+                    calendar_service = build('calendar', 'v3', credentials=creds)
+                    drive_del_service = build('drive', 'v3', credentials=creds) # ⬅️ 削除専用のドライブサービス
+                    
+                    target_cal_id = get_or_create_calendar(calendar_service, found_key)
+                    
+                    # (中略：パッチ・差分・重複の登録処理...)
+
+                except Exception as e:
+                    st.error(f"登録実行エラー: {e}")
+
+                # --- 登録がすべて終わった後の元ファイル削除処理 ---
+                st.success("🎉 カレンダー登録が終了しました。")
+                
                 if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
-                        drive_service.files().delete(fileId=st.session_state.selected_file_id).execute()
+                        # 先ほど用意した drive_del_service を使って削除を実行
+                        drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
                         st.success("🗑️ Googleドライブ上の元のPDFファイルを削除しました。")
                     except Exception as e:
                         st.warning(f"元ファイルの削除に失敗しました: {e}")
-                        
+
                 st.balloons()
                 time.sleep(10)
                 
