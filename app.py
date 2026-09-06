@@ -38,6 +38,22 @@ def get_recent_pdfs_from_drive(service):
     ).execute()
     return results.get('files', [])
 
+# --- Google Driveのフォルダを取得または作成する補助関数 ---
+def get_or_create_folder(service, folder_name, parent_id=None):
+    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    if parent_id:
+        query += f" and '{parent_id}' in parents"
+    results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+    files = results.get('files', [])
+    if files:
+        return files[0]['id']
+    else:
+        file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
+        if parent_id:
+            file_metadata['parents'] = [parent_id]
+        folder = service.files().create(body=file_metadata, fields='id').execute()
+        return folder.get('id')
+
 def download_pdf_from_drive(service, file_id):
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
@@ -731,22 +747,6 @@ if 'df_calendar' in st.session_state:
                         drive_service = build('drive', 'v3', credentials=creds_d)
                         
                         st.write("2")
-                        def get_or_create_folder(service, folder_name, parent_id=None):
-                            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                            if parent_id:
-                                query += f" and '{parent_id}' in parents"
-                            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-                            files = results.get('files', [])
-                            if files:
-                                return files[0]['id']
-                            else:
-                                file_metadata = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder'}
-                                if parent_id:
-                                    file_metadata['parents'] = [parent_id]
-                                folder = service.files().create(body=file_metadata, fields='id').execute()
-                                return folder.get('id')
-                       
-                        st.write("3")
                         calendar_folder_id = get_or_create_folder(drive_service, "カレンダー")
                         shift_folder_id = get_or_create_folder(drive_service, "シフト", calendar_folder_id)
                 
