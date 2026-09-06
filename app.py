@@ -10,7 +10,7 @@ import datetime
 import time  # タイムラグを設けるために利用します
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
 # --- PDFを画面に画像として表示する補助関数 ---
@@ -27,13 +27,13 @@ def display_pdf_as_images(file_bytes):
 
 # --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
 def get_recent_pdfs_from_drive(service):
-    thirty_days_ago = (datetime.datetime.utcnow() - datetime.timedelta(days=30)).isoformat() + 'Z'
-    query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}'"
+    thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
+    query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}' and trashed = false"
     
     results = service.files().list(
         q=query,
         orderBy="createdTime desc",
-        pageSize=10,
+        pageSize=20,
         fields="files(id, name, createdTime)"
     ).execute()
     return results.get('files', [])
@@ -47,6 +47,49 @@ def download_pdf_from_drive(service, file_id):
         status, done = downloader.next_chunk()
     fh.seek(0)
     return fh
+
+# --- GoogleドライブのPDF保存と前々月以前のファイル削除処理 ---
+def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
+    folder_id = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
+    file_name = f"{y}年{m}月_{found_key}.pdf"
+    
+    # 同名ファイルが存在する場合は事前に削除
+    query = f"'{folder_id}' in parents and name = '{file_name}' and trashed = false"
+    existing_files = drive_service.files().list(q=query, fields="files(id, name)").execute().get('files', [])
+    for ef in existing_files:
+        drive_service.files().delete(fileId=ef['id']).execute()
+        
+    # 新規アップロード
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
+    file_metadata = {
+        'name': file_name,
+        'parents': [folder_id]
+    }
+    drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields='id'
+    ).execute()
+    
+    # 前々月までのPDFファイルを削除
+    q_all = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed = false"
+    all_files = drive_service.files().list(q=q_all, fields="files(id, name)").execute().get('files', [])
+    
+    current_total_months = y * 12 + m
+    
+    for f in all_files:
+        fname = f['name']
+        match = re.search(r'(\d{4})年\s*(\d{1,2})月', fname)
+        if match:
+            fy = int(match.group(1))
+            fm = int(match.group(2))
+            file_total_months = fy * 12 + fm
+            # 前々月以前（当月基準で差が2ヶ月以上）のファイルを削除
+            if current_total_months - file_total_months >= 2:
+                try:
+                    drive_service.files().delete(fileId=f['id']).execute()
+                except Exception:
+                    pass
 
 # --- [1] 時程表読み込み ---
 def format_time(val):
@@ -96,7 +139,6 @@ def load_and_process_data():
 def get_base_value(val):
     if not val or pd.isna(val):
         return ""
-    # "_" で分割し、左側のベース部分を取得する（例: "早番_1" -> "早番"）
     return str(val).split('_')[0].strip()
 
 # --- 補助関数：カレンダーの自動取得・作成 ---
@@ -128,7 +170,6 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
         return assigned_blue
         
     if time_shift_check is not None and not time_shift_check.empty:
-        # ベース値同士で一致確認
         check_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
         if (check_bases == base_shift_code).any():
             return assigned_blue
@@ -292,6 +333,16 @@ else:
     display_pdf_as_images(file_bytes)
     st.stop()
 
+# 年月と勤務地が確定したタイミングで、Googleドライブへの保存・整理処理を自動実行
+try:
+    creds_dict = st.secrets["google_oauth_credentials"]
+    creds_drive = Credentials.from_authorized_user_info(creds_dict)
+    drive_mgmt_service = build('drive', 'v3', credentials=creds_drive)
+    process_drive_pdf_management(drive_mgmt_service, file_bytes, y, m, found_key)
+except Exception as e:
+    # ドライブ管理処理のエラーでメイン処理が止まらないよう警告表示に留める
+    st.sidebar.warning(f"Googleドライブのファイル整理スキップ: {e}")
+
 st.divider()
 
 staff_data = []
@@ -327,7 +378,6 @@ st.divider()
 def get_staff_names(codes, other_staff_shift, col):
     if other_staff_shift.empty:
         return []
-    # コードのベース部分で比較するため、列データ側のベース値とコードのベース値を合わせる
     base_codes = [get_base_value(c) for c in codes]
     col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
     mask = col_bases.isin(base_codes)
@@ -337,7 +387,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
     time_shift = time_schedule.fillna("").astype(str)
     base_shift_info = get_base_value(shift_info)
     
-    # ベース値が一致する行を抽出
     time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
     if not (time_shift_bases == base_shift_info).any():
         return
@@ -384,7 +433,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 
                 takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
                 takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                # 表示の際、元の値（付加情報込みの raw_current_val もしくはベース）はお好みで扱えますが、ここでは一貫性のため current_val_base を使用
                 takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
 
                 subject = start + change + takeover
@@ -435,14 +483,12 @@ if st.button("カレンダー登録用データを生成"):
         time_shift_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
 
         if (time_shift_bases == base_schedule_val).any():
-            # カレンダー表題や内部処理にはベース値、あるいはそのままのコードを利用可能
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
             final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key])
             shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
-            # 休日などの終日イベントも同様に終了日を翌日に設定する
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
@@ -686,10 +732,8 @@ if 'df_calendar' in st.session_state:
 
                 st.success("🎉 カレンダー登録が終了しました。")
                 st.balloons()
-                # 10秒間のタイムラグを設ける
                 time.sleep(10)
                 
-                # 初期状態に戻して画面を再描画
                 reset_to_initial_state()
                 st.rerun()
                 
