@@ -731,8 +731,6 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
-                st.success("🎉 カレンダー登録が終了しました。")
-
                 # 登録処理などの実行部分（例：conflict_action の中の処理など）
                 try:
                     # カレンダー用サービスだけでなく、ファイル削除用のドライブサービスも準備する
