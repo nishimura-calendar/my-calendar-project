@@ -189,13 +189,43 @@ if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
 
 # =========================================================
-# 【リセットボタン】サイドバーに常設
+# 【リセットボタン & 各種設定】サイドバーに常設
 # =========================================================
 st.sidebar.title("システムメニュー")
 if st.sidebar.button("🔄 最初からやり直す（リセット）"):
     reset_to_initial_state()
     st.success("システムをリセットしました。初期画面に戻ります。")
     st.rerun()
+
+st.sidebar.divider()
+
+# ユーザーによるアラーム（通知）個別設定項目
+st.sidebar.subheader("アラーム（通知）設定")
+
+reminder_option_start = st.sidebar.selectbox(
+    "出勤時（時間指定）の通知",
+    ["通知なし", "同時（0分前）", "10分前", "15分前", "30分前", "60分前"],
+    index=2  # デフォルトは10分前
+)
+
+reminder_option_other = st.sidebar.selectbox(
+    "それ以外の予定の通知",
+    ["通知なし", "同時（0分前）", "10分前", "15分前", "30分前", "60分前"],
+    index=0  # デフォルトは通知なし
+)
+
+# 選択されたテキストからGoogle API用の「分(minutes)」の数値に変換
+reminder_minutes_map = {
+    "通知なし": None,
+    "同時（0分前）": 0,
+    "10分前": 10,
+    "15分前": 15,
+    "30分前": 30,
+    "60分前": 60
+}
+
+selected_reminder_minutes_start = reminder_minutes_map[reminder_option_start]
+selected_reminder_minutes_other = reminder_minutes_map[reminder_option_other]
 
 st.sidebar.divider()
 
@@ -545,7 +575,7 @@ if 'df_calendar' in st.session_state:
     if st.session_state.get('show_conflict_options', False):
         existing_count = st.session_state.get('existing_count', 0)
         
-        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
+        st.warning(f"⚠️️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
         conflict_action = st.radio(
             "処理方法の選択",
@@ -579,6 +609,22 @@ if 'df_calendar' in st.session_state:
                 progress_text = "Googleカレンダーと通信中です。しばらくお待ちください..."
                 my_bar = st.progress(0, text=progress_text)
                 start_time_exec = datetime.datetime.now()
+
+                # --- アラーム（通知）設定の構築関数 ---
+                def make_reminder_body(mins):
+                    if mins is None:
+                        return {'useDefault': True}
+                    else:
+                        return {
+                            'useDefault': False,
+                            'overrides': [
+                                {'method': 'popup', 'minutes': mins},
+                            ]
+                        }
+
+                # 出勤時（時間指定）用とそれ以外の予定用のリマインダー設定を作成
+                reminder_setting_start = make_reminder_body(selected_reminder_minutes_start)
+                reminder_setting_other = make_reminder_body(selected_reminder_minutes_other)
 
                 # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
@@ -619,12 +665,15 @@ if 'df_calendar' in st.session_state:
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
                         
+                        # 終日予定か時間指定かで通知設定を切り替え
+                        current_reminder = reminder_setting_other if is_all_day else reminder_setting_start
+                        
                         if is_all_day:
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': current_reminder}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -684,13 +733,14 @@ if 'df_calendar' in st.session_state:
                             continue
 
                         c_id = get_color_id(subject, time_shift_check_reg, found_key)
+                        current_reminder = reminder_setting_other if is_all_day else reminder_setting_start
                         
                         if is_all_day:
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            event_body = {'summary': subject, 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': current_reminder}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -716,13 +766,14 @@ if 'df_calendar' in st.session_state:
                         start_date = str(row['StartDate']).replace('/', '-')
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
+                        current_reminder = reminder_setting_other if is_all_day else reminder_setting_start
                         
                         if is_all_day:
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
                         else:
                             st_time = str(row['StartTime']).zfill(5) if ':' in str(row['StartTime']) else str(row['StartTime'])
                             ed_time = str(row['EndTime']).zfill(5) if ':' in str(row['EndTime']) else str(row['EndTime'])
-                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id}
+                            event_body = {'summary': row['Subject'], 'location': row['Location'], 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': current_reminder}
                         
                         service.events().insert(calendarId=target_cal_id, body=event_body).execute()
                         added_count += 1
@@ -731,9 +782,7 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
-                # 登録処理などの実行部分（例：conflict_action の中の処理など）
                 try:
-                    # カレンダー用サービスだけでなく、ファイル削除用のドライブサービスも準備する
                     SCOPES_CAL_DRIVE = [
                         'https://www.googleapis.com/auth/calendar',
                         'https://www.googleapis.com/auth/drive'
@@ -741,16 +790,13 @@ if 'df_calendar' in st.session_state:
                     creds_dict = st.secrets["google_oauth_credentials"]
                     creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES_CAL_DRIVE)
                     
-                    # 期限切れならリフレッシュ
                     if creds.expired and creds.refresh_token:
                         creds.refresh(Request())
 
                     calendar_service = build('calendar', 'v3', credentials=creds)
-                    drive_del_service = build('drive', 'v3', credentials=creds) # ⬅️ 削除専用のドライブサービス
+                    drive_del_service = build('drive', 'v3', credentials=creds)
                     
                     target_cal_id = get_or_create_calendar(calendar_service, found_key)
-                    
-                    # (中略：パッチ・差分・重複の登録処理...)
 
                 except Exception as e:
                     st.error(f"登録実行エラー: {e}")
@@ -760,7 +806,6 @@ if 'df_calendar' in st.session_state:
                 
                 if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
-                        # 先ほど用意した drive_del_service を使って削除を実行
                         drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
                         st.success("🗑️ Googleドライブ上の元のPDFファイルを削除しました。")
                     except Exception as e:
