@@ -189,43 +189,13 @@ if 'data_dict' not in st.session_state:
     st.session_state.data_dict = load_and_process_data()
 
 # =========================================================
-# 【リセットボタン & 各種設定】サイドバーに常設
+# 【リセットボタン】サイドバーに常設
 # =========================================================
 st.sidebar.title("システムメニュー")
 if st.sidebar.button("🔄 最初からやり直す（リセット）"):
     reset_to_initial_state()
     st.success("システムをリセットしました。初期画面に戻ります。")
     st.rerun()
-
-st.sidebar.divider()
-
-# ユーザーによるアラーム（通知）個別設定項目
-st.sidebar.subheader("アラーム（通知）設定")
-
-reminder_option_start = st.sidebar.selectbox(
-    "出勤時（時間指定）の通知",
-    ["通知なし", "同時（0分前）", "10分前", "15分前", "30分前", "60分前"],
-    index=2  # デフォルトは10分前
-)
-
-reminder_option_other = st.sidebar.selectbox(
-    "それ以外の予定の通知",
-    ["通知なし", "同時（0分前）", "10分前", "15分前", "30分前", "60分前"],
-    index=0  # デフォルトは通知なし
-)
-
-# 選択されたテキストからGoogle API用の「分(minutes)」の数値に変換
-reminder_minutes_map = {
-    "通知なし": None,
-    "同時（0分前）": 0,
-    "10分前": 10,
-    "15分前": 15,
-    "30分前": 30,
-    "60分前": 60
-}
-
-selected_reminder_minutes_start = reminder_minutes_map[reminder_option_start]
-selected_reminder_minutes_other = reminder_minutes_map[reminder_option_other]
 
 st.sidebar.divider()
 
@@ -575,8 +545,39 @@ if 'df_calendar' in st.session_state:
     if st.session_state.get('show_conflict_options', False):
         existing_count = st.session_state.get('existing_count', 0)
         
-        st.warning(f"⚠️️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
+        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
+        # --- 「登録しますか？」の確認画面エリアに通知設定を配置 ---
+        st.markdown("### ⏰ アラーム（通知）設定")
+        col_notif1, col_notif2 = st.columns(2)
+        
+        with col_notif1:
+            reminder_option_start = st.selectbox(
+                "出勤時（時間指定）の通知",
+                ["通知なし", "同時（0分前）", "10分前", "15分前", "30分前", "60分前"],
+                index=2  # デフォルトは10分前
+            )
+        with col_notif2:
+            reminder_option_other = st.selectbox(
+                "それ以外の予定の通知",
+                ["通知なし", "同時（0分前）", "10分前", "15分前", "30分前", "60分前"],
+                index=0  # デフォルトは通知なし
+            )
+
+        reminder_minutes_map = {
+            "通知なし": None,
+            "同時（0分前）": 0,
+            "10分前": 10,
+            "15分前": 15,
+            "30分前": 30,
+            "60分前": 60
+        }
+
+        selected_reminder_minutes_start = reminder_minutes_map[reminder_option_start]
+        selected_reminder_minutes_other = reminder_minutes_map[reminder_option_other]
+
+        st.divider()
+
         conflict_action = st.radio(
             "処理方法の選択",
             [
@@ -622,7 +623,7 @@ if 'df_calendar' in st.session_state:
                             ]
                         }
 
-                # 出勤時（時間指定）用とそれ以外の予定用のリマインダー設定を作成
+                # ユーザーが選択した設定をそれぞれ適用
                 reminder_setting_start = make_reminder_body(selected_reminder_minutes_start)
                 reminder_setting_other = make_reminder_body(selected_reminder_minutes_other)
 
@@ -665,7 +666,7 @@ if 'df_calendar' in st.session_state:
                         end_date = str(row['EndDate']).replace('/', '-')
                         c_id = get_color_id(row['Subject'], time_shift_check_reg, found_key)
                         
-                        # 終日予定か時間指定かで通知設定を切り替え
+                        # 終日予定か時間指定かで通知設定を個別に切り替え
                         current_reminder = reminder_setting_other if is_all_day else reminder_setting_start
                         
                         if is_all_day:
@@ -807,7 +808,7 @@ if 'df_calendar' in st.session_state:
                 if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
                         drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
-                        st.success("🗑️ Googleドライブ上の元のPDFファイルを削除しました。")
+                        st.success("🗑️️ Googleドライブ上の元のPDFファイルを削除しました。")
                     except Exception as e:
                         st.warning(f"元ファイルの削除に失敗しました: {e}")
 
