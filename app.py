@@ -171,10 +171,10 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
 
 # --- 確実な初期化を行うリセット関数 ---
 def reset_to_initial_state():
-    data_dict_cache = st.session_state.get('data_dict', None)
-    st.session_state.clear()
-    if data_dict_cache is not None:
-        st.session_state.data_dict = data_dict_cache
+    # data_dict 以外のセッションステートを安全に一括削除
+    for key in list(st.session_state.keys()):
+        if key != 'data_dict':
+            del st.session_state[key]
  
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
@@ -185,7 +185,6 @@ if 'data_dict' not in st.session_state:
 st.sidebar.title("システムメニュー")
 if st.sidebar.button("🔄 最初からやり直す（リセット）"):
     reset_to_initial_state()
-    st.success("システムをリセットしました。初期画面に戻ります。")
     st.rerun()
 
 st.sidebar.divider()
@@ -827,7 +826,7 @@ if 'df_calendar' in st.session_state:
                 if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
                         drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
-                        st.success("🗑️️ Googleドライブ上の元のPDFファイルを削除しました。")
+                        st.success("🗑 Googleドライブ上の元のPDFファイルを削除しました。")
                     except Exception as e:
                         st.warning(f"元ファイルの削除に失敗しました: {e}")
 
