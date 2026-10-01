@@ -169,12 +169,18 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
+# --- アップロードウィジェット用のキー初期化 ---
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
+
 # --- 確実な初期化を行うリセット関数 ---
 def reset_to_initial_state():
-    # data_dict 以外のセッションステートを安全に一括削除
+    # アップロードウィジェットのキーを更新することで、保持されているファイルを強制クリアする
+    current_uploader_key = st.session_state.get('uploader_key', 0) + 1
     for key in list(st.session_state.keys()):
         if key != 'data_dict':
             del st.session_state[key]
+    st.session_state.uploader_key = current_uploader_key
  
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
@@ -199,7 +205,8 @@ if st.session_state.loaded_pdf_bytes is None:
     uploaded_file_obj = None
 
     if upload_option == "手動アップロード":
-        uploaded_file_obj = st.file_uploader("PDFシフト表をアップロード", type="pdf")
+        # uploader_keyを付与することで、リセット時に選択ファイルが確実にクリアされるようにする
+        uploaded_file_obj = st.file_uploader("PDFシフト表をアップロード", type="pdf", key=f"uploader_{st.session_state.uploader_key}")
         if uploaded_file_obj is not None:
             st.session_state.loaded_pdf_bytes = uploaded_file_obj.getvalue()
             st.session_state.loaded_pdf_name = uploaded_file_obj.name
