@@ -393,7 +393,6 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
       
         if current_val_base != prev_val_base:
             if current_val_base != "":
-                # 9列目にイベント種別を保持: "START" (出勤時), "RESUME" (休憩明け/再開), "OTHER" (その他)
                 final_rows.append([subject, target_date, "", target_date, "", "False", "", found_key, "OTHER"])
                 start_time = time_shift.iloc[0, t_col]
             
@@ -431,7 +430,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 subject = start + change + takeover
                 final_rows[-1][0] = subject
                 final_rows[-1][2] = start_time
-                final_rows[-1][8] = event_type  # イベント種別を更新
+                final_rows[-1][8] = event_type
                
             else:
                 mask_break = (time_shift.iloc[:, t_col - 1].apply(get_base_value) == "") & (time_shift.iloc[:, t_col].apply(get_base_value) != "")
@@ -480,7 +479,6 @@ if st.button("カレンダー登録用データを生成"):
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
-            # 終日予定 ("ALL_DAY")
             final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key, "ALL_DAY"])
             shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
@@ -492,14 +490,11 @@ if st.button("カレンダー登録用データを生成"):
             
             time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
             if time_match:
-                # 簡易時間指定は "START" として扱う
                 final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", found_key, "START"])
                 
     if final_rows:
-        # 表示やCSV出力用には最初の8列だけ使用
         display_rows = [row[:8] for row in final_rows]
         st.session_state.df_calendar = pd.DataFrame(display_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
-        # 内部処理用に拡張行データも保持
         st.session_state.raw_final_rows = final_rows
         st.success(f"カレンダー登録データの生成が完了しました（計 {len(st.session_state.df_calendar)} 件）")
     else:
@@ -547,63 +542,66 @@ if 'df_calendar' in st.session_state:
         
         st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
-        # --- 「登録しますか？」の確認画面エリアに通知設定（通知_A / 通知_B / その他）を配置 ---
-        st.markdown("### ⏰ アラーム（通知）設定")
-        col_notif1, col_notif2, col_notif3 = st.columns(3)
+        # --- フォーム（st.form）に変更し、「実行する」ボタンが押された瞬間のみ設定値を読み込む仕様に修正 ---
+        with st.form(key="calendar_execution_form"):
+            st.markdown("### ⏰ アラーム（通知）設定")
+            col_notif1, col_notif2, col_notif3 = st.columns(3)
+            
+            with col_notif1:
+                reminder_option_a = st.selectbox(
+                    "出勤時（通知_A）",
+                    ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "1時間前", "2時間前", "3時間前"],
+                    index=3  # デフォルト10分前
+                )
+            with col_notif2:
+                reminder_option_b = st.selectbox(
+                    "休憩明け時（通知_B）",
+                    ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "40分前", "45分前", "50分前", "55分前", "1時間前"],
+                    index=2  # デフォルト5分前
+                )
+            with col_notif3:
+                reminder_option_other = st.selectbox(
+                    "その他の予定（終日等）",
+                    ["通知なし", "0分前（同時）", "10分前", "15分前", "30分前", "60分前"],
+                    index=0  # デフォルト通知なし
+                )
+
+            st.divider()
+
+            conflict_action = st.radio(
+                "処理方法の選択",
+                [
+                    "1. パッチ処理（全データ削除して新たに登録し直す）",
+                    "2. 差分処理 / スマート更新（変更のない日はそのまま維持し、必要な分だけ追加・削除する）",
+                    "3. 重複処理（既存データを消さずに、そのまま新しく上乗せして登録する）"
+                ],
+                key="conflict_action_radio"
+            )
+            
+            submitted = st.form_submit_button("実行する")
         
-        with col_notif1:
-            reminder_option_a = st.selectbox(
-                "出勤時（通知_A）",
-                ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "1時間前", "2時間前", "3時間前"],
-                index=3  # デフォルト10分前
-            )
-        with col_notif2:
-            reminder_option_b = st.selectbox(
-                "休憩明け時（通知_B）",
-                ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "40分前", "45分前", "50分前", "55分前", "1時間前"],
-                index=2  # デフォルト5分前など
-            )
-        with col_notif3:
-            reminder_option_other = st.selectbox(
-                "その他の予定（終日等）",
-                ["通知なし", "0分前（同時）", "10分前", "15分前", "30分前", "60分前"],
-                index=0  # デフォルト通知なし
-            )
-
-        # 選択されたテキストからGoogle API用の「分(minutes)」の数値に変換するマップ
-        def label_to_minutes(label):
-            if label == "通知なし":
-                return None
-            if label == "0分前（同時）":
-                return 0
-            if "分前" in label:
-                return int(label.replace("分前", ""))
-            if "1時間前" in label:
-                return 60
-            if "2時間前" in label:
-                return 120
-            if "3時間前" in label:
-                return 180
-            return None
-
-        selected_minutes_a = label_to_minutes(reminder_option_a)
-        selected_minutes_b = label_to_minutes(reminder_option_b)
-        selected_minutes_other = label_to_minutes(reminder_option_other)
-
-        st.divider()
-
-        conflict_action = st.radio(
-            "処理方法の選択",
-            [
-                "1. パッチ処理（全データ削除して新たに登録し直す）",
-                "2. 差分処理 / スマート更新（変更のない日はそのまま維持し、必要な分だけ追加・削除する）",
-                "3. 重複処理（既存データを消さずに、そのまま新しく上乗せして登録する）"
-            ],
-            key="conflict_action_radio"
-        )
-        
-        if st.button("実行する", key="execute_conflict_action_btn"):
+        if submitted:
             try:
+                # フォームが送信（実行）された瞬間に選択値を「分」に変換
+                def label_to_minutes(label):
+                    if label == "通知なし":
+                        return None
+                    if label == "0分前（同時）":
+                        return 0
+                    if "分前" in label:
+                        return int(label.replace("分前", ""))
+                    if "1時間前" in label:
+                        return 60
+                    if "2時間前" in label:
+                        return 120
+                    if "3時間前" in label:
+                        return 180
+                    return None
+
+                selected_minutes_a = label_to_minutes(reminder_option_a)
+                selected_minutes_b = label_to_minutes(reminder_option_b)
+                selected_minutes_other = label_to_minutes(reminder_option_other)
+
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
                 creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
