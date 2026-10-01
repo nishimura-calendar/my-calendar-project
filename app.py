@@ -7,7 +7,7 @@ import calendar
 import unicodedata
 import fitz  # PyMuPDF
 import datetime
-import time  # タイムラグを設けるために利用します
+import time
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -265,7 +265,7 @@ with pdfplumber.open(uploaded_pdf) as pdf:
     else:
         found_key = None
 
-# ★ファイル名に "T2" が含まれる場合は key を "T2" にする
+# ファイル名に "T2" や "第2ターミナル" が含まれる場合の対応
 if "T2" in uploaded_pdf.name or "第2ターミナル" in uploaded_pdf.name:
     if not found_key or found_key not in st.session_state.data_dict:
         found_key = "T2"
@@ -351,6 +351,7 @@ except Exception as e:
 
 st.divider()
 
+# --- スタッフデータの抽出処理（通常＋例外処理） ---
 staff_data = []
 for idx in range(0, df_pdf.shape[0], 2):
     name_val = str(df_pdf.iloc[idx, 0])
@@ -362,7 +363,19 @@ for idx in range(0, df_pdf.shape[0], 2):
     else:
         clean_name = "該当なし"
     staff_data.append((idx, clean_name))
-    
+
+# あくまで例外処理：通常の抽出でスタッフデータが取得できなかった場合、0列目2行目以降をスタッフデータとする
+if not staff_data:
+    for idx in range(2, df_pdf.shape[0], 2):
+        if idx >= df_pdf.shape[0]:
+            break
+        name_val = str(df_pdf.iloc[idx, 0])
+        if not name_val or name_val == 'nan' or name_val == 'None' or name_val in st.session_state.data_dict.keys():
+            continue
+        clean_name = name_val.split('\n')[0].strip()
+        if clean_name:
+            staff_data.append((idx, clean_name))
+
 if staff_data:
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
