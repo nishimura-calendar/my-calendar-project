@@ -351,9 +351,13 @@ except Exception as e:
 
 st.divider()
 
-# --- スタッフデータの抽出処理（通常＋例外処理） ---
+# --- スタッフデータの抽出処理（通常＋連続行・詰まったデータ対応の例外処理） ---
 staff_data = []
+
+# 1. まず従来の1行飛ばしパターンをチェック
 for idx in range(0, df_pdf.shape[0], 2):
+    if idx >= df_pdf.shape[0]:
+        break
     name_val = str(df_pdf.iloc[idx, 0])
     if name_val in st.session_state.data_dict.keys():
         continue
@@ -362,19 +366,22 @@ for idx in range(0, df_pdf.shape[0], 2):
         clean_name = name_val.split('\n')[0].strip()
     else:
         clean_name = "該当なし"
-    staff_data.append((idx, clean_name))
+    if clean_name and clean_name != 'nan':
+        staff_data.append((idx, clean_name))
 
-# あくまで例外処理：通常の抽出でスタッフデータが取得できなかった場合、0列目2行目以降をスタッフデータとする
-if not staff_data:
-    for idx in range(2, df_pdf.shape[0], 2):
-        if idx >= df_pdf.shape[0]:
-            break
+# 2. あくまで例外処理：スタッフデータが取れない場合や、連続して入力されているレイアウトのフォールバック
+if not staff_data or len(staff_data) < 1:
+    staff_data = []
+    for idx in range(1, df_pdf.shape[0]):
         name_val = str(df_pdf.iloc[idx, 0])
         if not name_val or name_val == 'nan' or name_val == 'None' or name_val in st.session_state.data_dict.keys():
             continue
+        
         clean_name = name_val.split('\n')[0].strip()
-        if clean_name:
-            staff_data.append((idx, clean_name))
+        # 日付や曜日などの単一文字/数字を除外
+        if clean_name and not re.match(r'^(0?[1-9]|[12][0-9]|3[01]|[月火水木金土日])$', clean_name):
+            if clean_name not in [s[1] for s in staff_data]:
+                staff_data.append((idx, clean_name))
 
 if staff_data:
     target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
