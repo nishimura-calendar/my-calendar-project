@@ -267,6 +267,10 @@ with pdfplumber.open(uploaded_pdf) as pdf:
     else:
         found_key = None
 
+# ファイル名に "T2" が含まれる場合は key を "T2" にする
+if "T2" in uploaded_pdf.name:
+    found_key = "T2"
+
 uploaded_pdf.seek(0)
 with pdfplumber.open(uploaded_pdf) as pdf:
     tables = pdf.pages[0].extract_tables()
