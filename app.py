@@ -169,26 +169,13 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
-# --- アプリケーションを初期状態に戻すためのヘルパー関数 ---
+# --- 確実な初期化を行うリセット関数 ---
 def reset_to_initial_state():
-    # ウィジェットのキーを直接 del するとエラーになるため、状態変数を初期化・クリアする
-    st.session_state.loaded_pdf_bytes = None
-    st.session_state.loaded_pdf_name = None
-    st.session_state.last_file_bytes = None
-    st.session_state.ym_confirmed = False
-    
-    # クリアすべきセッションデータ
-    clear_keys = [
-        'df_calendar', 
-        'show_conflict_options', 
-        'existing_count', 
-        'selected_file_id', 
-        'raw_final_rows',
-        'use_pdf_choice'
-    ]
-    for key in clear_keys:
-        if key in st.session_state:
-            del st.session_state[key] 
+    data_dict_cache = st.session_state.get('data_dict', None)
+    st.session_state.clear()
+    if data_dict_cache is not None:
+        st.session_state.data_dict = data_dict_cache
+ 
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
@@ -557,7 +544,6 @@ if 'df_calendar' in st.session_state:
         
         st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
-        # --- フォーム（st.form）に変更し、「実行する」ボタンが押された瞬間のみ設定値を読み込む仕様に修正 ---
         with st.form(key="calendar_execution_form"):
             st.markdown("### ⏰ アラーム（通知）設定")
             col_notif1, col_notif2, col_notif3 = st.columns(3)
@@ -566,19 +552,19 @@ if 'df_calendar' in st.session_state:
                 reminder_option_a = st.selectbox(
                     "出勤時（通知_A）",
                     ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "1時間前", "2時間前", "3時間前"],
-                    index=3  # デフォルト10分前
+                    index=3
                 )
             with col_notif2:
                 reminder_option_b = st.selectbox(
                     "休憩明け時（通知_B）",
                     ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "40分前", "45分前", "50分前", "55分前", "1時間前"],
-                    index=2  # デフォルト5分前
+                    index=2
                 )
             with col_notif3:
                 reminder_option_other = st.selectbox(
                     "その他の予定（終日等）",
                     ["通知なし", "0分前（同時）", "10分前", "15分前", "30分前", "60分前"],
-                    index=0  # デフォルト通知なし
+                    index=0
                 )
 
             st.divider()
@@ -597,7 +583,6 @@ if 'df_calendar' in st.session_state:
         
         if submitted:
             try:
-                # フォームが送信（実行）された瞬間に選択値を「分」に変換
                 def label_to_minutes(label):
                     if label == "通知なし":
                         return None
@@ -842,7 +827,7 @@ if 'df_calendar' in st.session_state:
                 if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
                         drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
-                        st.success("🗑️ Googleドライブ上の元のPDFファイルを削除しました。")
+                        st.success("🗑️️ Googleドライブ上の元のPDFファイルを削除しました。")
                     except Exception as e:
                         st.warning(f"元ファイルの削除に失敗しました: {e}")
 
