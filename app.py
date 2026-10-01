@@ -169,11 +169,26 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
+# --- アプリケーションを初期状態に戻すためのヘルパー関数 ---
 def reset_to_initial_state():
-    for key in list(st.session_state.keys()):
-        if key != 'data_dict':
-            del st.session_state[key]
- 
+    # ウィジェットのキーを直接 del するとエラーになるため、状態変数を初期化・クリアする
+    st.session_state.loaded_pdf_bytes = None
+    st.session_state.loaded_pdf_name = None
+    st.session_state.last_file_bytes = None
+    st.session_state.ym_confirmed = False
+    
+    # クリアすべきセッションデータ
+    clear_keys = [
+        'df_calendar', 
+        'show_conflict_options', 
+        'existing_count', 
+        'selected_file_id', 
+        'raw_final_rows',
+        'use_pdf_choice'
+    ]
+    for key in clear_keys:
+        if key in st.session_state:
+            del st.session_state[key] 
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
