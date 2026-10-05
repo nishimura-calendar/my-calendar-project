@@ -171,7 +171,6 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
 
 # --- 通知オプション生成用ヘルパー関数 ---
 def get_start_reminder_options():
-    # 5分刻み（60分前まで） + 30分刻み（4時間前＝240分前まで）
     mins_list = list(range(0, 61, 5)) + list(range(90, 241, 30))
     options = {"通知なし": None}
     for m in mins_list:
@@ -191,7 +190,6 @@ def get_start_reminder_options():
     return options
 
 def get_resume_reminder_options():
-    # 5分刻み（60分前まで）
     mins_list = list(range(0, 61, 5))
     options = {"通知なし": None}
     for m in mins_list:
@@ -221,7 +219,7 @@ def make_reminder_body(mins):
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
-# --- 確実な初期化を行うリセット関数 ---
+# --- リセット関数 ---
 def reset_to_initial_state():
     current_uploader_key = st.session_state.get('uploader_key', 0) + 1
     for key in list(st.session_state.keys()):
@@ -422,6 +420,7 @@ time_schedule_df_init = st.session_state.data_dict[found_key]
 time_shift_check_init = time_schedule_df_init.fillna("").astype(str)
 time_shift_bases_set = set(time_shift_check_init.iloc[:, 1].apply(get_base_value)) if not time_shift_check_init.empty else set()
 
+# my_daily_shift からシフトコードを抽出
 my_daily_shift_codes = []
 _, last_day_num_chk = calendar.monthrange(y, m)
 for col in range(1, min(my_df.shape[1], last_day_num_chk + 1)):
@@ -429,6 +428,7 @@ for col in range(1, min(my_df.shape[1], last_day_num_chk + 1)):
     if val and val != "nan":
         my_daily_shift_codes.append(get_base_value(val))
 
+# 時程表ベース（time_shift_bases）にあれば start_shift_info としてリスト化
 start_shift_info = sorted(list(set([
     code for code in my_daily_shift_codes 
     if code and code in time_shift_bases_set
@@ -444,7 +444,7 @@ if start_shift_info:
     for idx, code in enumerate(start_shift_info):
         with cols[idx % len(cols)]:
             selected_label = st.selectbox(
-                f"シフト [{code}]",
+                f"シフト [{code}] の出勤時通知",
                 options=list(start_options.keys()),
                 key=f"rem_code_{code}"
             )
@@ -455,7 +455,7 @@ else:
 st.divider()
 st.markdown("### 🔄 勤務再開時の通知（共通）")
 selected_restart_label = st.selectbox(
-    "勤務再開_通知",
+    "勤務再開時の通知",
     options=list(resume_options.keys()),
     key="rem_restart"
 )
@@ -471,6 +471,7 @@ def get_staff_names(codes, other_staff_shift, col):
     mask = col_bases.isin(base_codes)
     return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
 
+# --- shift_cal 関数 (通知の動的判定・適用) ---
 def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
     time_shift = time_schedule.fillna("").astype(str)
     base_shift_info = get_base_value(shift_info)
@@ -493,6 +494,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
       
         if current_val_base != prev_val_base:
             if current_val_base != "":
+                # 最後にイベント種別やシフトコード情報を保持して追加
                 final_rows.append([subject, target_date, "", target_date, "", "False", "", key, "OTHER", base_shift_info])
                 start_time = time_shift.iloc[0, t_col]
             
@@ -580,6 +582,7 @@ if st.button("カレンダー登録用データを生成"):
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
+            # 終日イベント（ALL_DAY）
             final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key, "ALL_DAY", base_schedule_val])
             shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
@@ -677,6 +680,7 @@ if 'df_calendar' in st.session_state:
 
                 default_reminder_body = {'useDefault': True}
 
+                # --- 登録時の通知ボディ取得ロジック（打ち合わせ通りの判定） ---
                 def get_reminder_by_type(ev_type, shift_code):
                     if ev_type in ["START", "ALL_DAY"]:
                         if shift_code in start_shift_info:
