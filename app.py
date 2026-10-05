@@ -7,7 +7,7 @@ import calendar
 import unicodedata
 import fitz  # PyMuPDF
 import datetime
-import time
+import time  # タイムラグを設けるために利用します
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
@@ -169,19 +169,11 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
-# --- スタッフ名取得補助関数 ---
-def get_staff_names(codes, other_staff_shift, col):
-    if other_staff_shift.empty:
-        return []
-    base_codes = [get_base_value(c) for c in codes]
-    col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
-    mask = col_bases.isin(base_codes)
-    return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
-
 # --- アップロードウィジェット用のキー初期化 ---
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
+# --- 確実な初期化を行うリセット関数 ---
 def reset_to_initial_state():
     current_uploader_key = st.session_state.get('uploader_key', 0) + 1
     for key in list(st.session_state.keys()):
@@ -377,6 +369,102 @@ other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
 
 st.divider()
 
+def get_staff_names(codes, other_staff_shift, col):
+    if other_staff_shift.empty:
+        return []
+    base_codes = [get_base_value(c) for c in codes]
+    col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
+    mask = col_bases.isin(base_codes)
+    return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
+
+def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+    time_shift = time_schedule.fillna("").astype(str)
+    base_shift_info = get_base_value(shift_info)
+    
+    time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
+    if not (time_shift_bases == base_shift_info).any():
+        return
+       
+    my_time_shift = time_shift[time_shift_bases == base_shift_info]
+    if my_time_shift.empty:
+        return
+
+    prev_val_base = ""
+    row_data = my_time_shift.iloc[0]
+
+    for t_col in range(3, my_time_shift.shape[1]):
+        raw_current_val = row_data[t_col]
+        current_val_base = get_base_value(raw_current_val)
+        subject, start, change, takeover, break_change, end = "", "", "", "", "", ""                    
+      
+        if current_val_base != prev_val_base:
+            if current_val_base != "":
+                # 修正: グローバル変数ではなく引数の key を使用
+                final_rows.append([subject, target_date, "", target_date, "", "False", "", key, "OTHER"])
+                start_time = time_shift.iloc[0, t_col]
+            
+                event_type = "OTHER"
+                if (row_data[3:t_col] == "").all():
+                    start = "(出勤)："
+                    event_type = "START"  # 出勤時 (通知_A)
+                    
+                prev_raw_val = row_data[t_col - 1]
+                if get_base_value(prev_raw_val) == "":              
+                    mask_change = (time_shift.iloc[:, t_col - 1].apply(get_base_value) != "") & (time_shift.iloc[:, t_col].apply(get_base_value) == "")
+                    paired_staff = []
+                    for idx in time_shift.index[mask_change]:
+                        places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
+                        codes = time_shift.loc[idx, time_shift.columns[1]]
+                        staff = get_staff_names([codes], other_staff_shift, col)
+                        for name in staff:
+                            paired_staff.append(f"{name}({places})")       
+                    
+                    change_formatted = ",".join(paired_staff)
+                    change = f"{change_formatted}▷" if change_formatted else ""
+                    if not (row_data[3:t_col] == "").all():
+                        event_type = "RESUME"  # 休憩明け / 再開時 (通知_B)
+                else:
+                    final_rows[-2][4] = time_shift.iloc[0, t_col]                             
+                    handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
+                    handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
+                    handover = f"to {','.join(handover_staff)}"
+                    final_rows[-2][0] += handover
+                
+                takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
+                takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
+                takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
+
+                subject = start + change + takeover
+                final_rows[-1][0] = subject
+                final_rows[-1][2] = start_time
+                final_rows[-1][8] = event_type
+               
+            else:
+                mask_break = (time_shift.iloc[:, t_col - 1].apply(get_base_value) == "") & (time_shift.iloc[:, t_col].apply(get_base_value) != "")
+                paired_staff = []
+                for idx in time_shift.index[mask_break]:
+                    places = time_shift.loc[idx, time_shift.columns[t_col]]
+                    codes = time_shift.loc[idx, time_shift.columns[1]]
+                    staff = get_staff_names([codes], other_staff_shift, col)
+                    for name in staff:
+                        paired_staff.append(f"{name}({places})")
+
+                break_formatted = ",".join(paired_staff)
+                break_change = f"▷{break_formatted}" if break_formatted else ""
+                                        
+                if (row_data[t_col:] == "").all():
+                    end = "：(退勤)"
+                end_time = time_shift.iloc[0, t_col]
+                
+                handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
+                handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
+                handover = f"to {','.join(handover_staff)}"                   
+
+                final_rows[-1][0] += handover + break_change + end   
+                final_rows[-1][4] = end_time                            
+            
+        prev_val_base = current_val_base
+
 if st.button("カレンダー登録用データを生成"):
     final_rows = []
     time_schedule_df = st.session_state.data_dict[found_key]
@@ -398,18 +486,18 @@ if st.button("カレンダー登録用データを生成"):
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
-            final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key, "ALL_DAY", base_schedule_val])
-            shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows, found_key)
+            final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key, "ALL_DAY"])
+            shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
         else:
             start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
             end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
             end_date_str = end_dt_obj.strftime("%Y/%m/%d")
             
-            final_rows.append([schedule_val, target_date, "", end_date_str, "", "True", "", schedule_val, "ALL_DAY", schedule_val])
+            final_rows.append([schedule_val, target_date, "", end_date_str, "", "True", "", schedule_val, "ALL_DAY"])
             
             time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
             if time_match:
-                final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", found_key, "START", schedule_val])
+                final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", found_key, "START"])
                 
     if final_rows:
         display_rows = [row[:8] for row in final_rows]
@@ -462,36 +550,27 @@ if 'df_calendar' in st.session_state:
         st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
         with st.form(key="calendar_execution_form"):
-            st.markdown("### ⏰ シフトコード別 アラーム（通知）設定")
+            st.markdown("### ⏰ アラーム（通知）設定")
+            col_notif1, col_notif2, col_notif3 = st.columns(3)
             
-            time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
-            shift_codes = []
-            if not time_schedule_df_check.empty:
-                raw_codes = time_schedule_df_check.iloc[:, 1].tolist()
-                for rc in raw_codes:
-                    bc = get_base_value(rc)
-                    if bc and bc not in shift_codes:
-                        shift_codes.append(bc)
-            
-            reminder_settings_by_code = {}
-            if shift_codes:
-                cols = st.columns(min(len(shift_codes), 3) if len(shift_codes) > 0 else 1)
-                for idx, sc in enumerate(shift_codes):
-                    col_target = cols[idx % len(cols)]
-                    with col_target:
-                        reminder_settings_by_code[sc] = st.selectbox(
-                            f"シフト「{sc}」の通知",
-                            ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "1時間前", "2時間前", "3時間前"],
-                            index=3,
-                            key=f"reminder_code_{sc}"
-                        )
-            
-            reminder_settings_by_code["DEFAULT"] = st.selectbox(
-                "その他の予定（シフト外・終日等）の通知",
-                ["通知なし", "0分前（同時）", "10分前", "15分前", "30分前", "60分前"],
-                index=0,
-                key="reminder_code_default"
-            )
+            with col_notif1:
+                reminder_option_a = st.selectbox(
+                    "出勤時（通知_A）",
+                    ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "1時間前", "2時間前", "3時間前"],
+                    index=3
+                )
+            with col_notif2:
+                reminder_option_b = st.selectbox(
+                    "休憩明け時（通知_B）",
+                    ["通知なし", "0分前（同時）", "5分前", "10分前", "15分前", "20分前", "25分前", "30分前", "35分前", "40分前", "45分前", "50分前", "55分前", "1時間前"],
+                    index=2
+                )
+            with col_notif3:
+                reminder_option_other = st.selectbox(
+                    "その他の予定（終日等）",
+                    ["通知なし", "0分前（同時）", "10分前", "15分前", "30分前", "60分前"],
+                    index=0
+                )
 
             st.divider()
 
@@ -524,9 +603,9 @@ if 'df_calendar' in st.session_state:
                         return 180
                     return None
 
-                reminder_minutes_map = {}
-                for sc, label in reminder_settings_by_code.items():
-                    reminder_minutes_map[sc] = label_to_minutes(label)
+                selected_minutes_a = label_to_minutes(reminder_option_a)
+                selected_minutes_b = label_to_minutes(reminder_option_b)
+                selected_minutes_other = label_to_minutes(reminder_option_other)
 
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
@@ -560,10 +639,17 @@ if 'df_calendar' in st.session_state:
                             ]
                         }
 
-                def get_reminder_for_row(row):
-                    sc = row[9] if len(row) > 9 and row[9] in reminder_minutes_map else "DEFAULT"
-                    mins = reminder_minutes_map.get(sc, reminder_minutes_map.get("DEFAULT", None))
-                    return make_reminder_body(mins)
+                reminder_setting_a = make_reminder_body(selected_minutes_a)
+                reminder_setting_b = make_reminder_body(selected_minutes_b)
+                reminder_setting_other = make_reminder_body(selected_minutes_other)
+
+                def get_reminder_by_type(ev_type):
+                    if ev_type == "START":
+                        return reminder_setting_a
+                    elif ev_type == "RESUME":
+                        return reminder_setting_b
+                    else:
+                        return reminder_setting_other
 
                 # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
@@ -599,12 +685,13 @@ if 'df_calendar' in st.session_state:
                             my_bar.progress(min(current_step / total_steps, 1.0), text=f"既存データ削除中... ({deleted_count}/{len(existing_items)})")
 
                     for row in raw_rows_to_process:
-                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type = row[:9]
+                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type = row
                         is_all_day = (str(all_day_str) == "True")
                         start_date = str(start_date_str).replace('/', '-')
                         end_date = str(end_date_str).replace('/', '-')
                         c_id = get_color_id(subject, time_shift_check_reg, found_key)
-                        current_reminder = get_reminder_for_row(row)
+                        
+                        current_reminder = get_reminder_by_type(ev_type)
                         
                         if is_all_day:
                             event_body = {'summary': subject, 'location': loc, 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
@@ -659,7 +746,7 @@ if 'df_calendar' in st.session_state:
                         current_step += 1
                         my_bar.progress(min(current_step / total_steps, 1.0), text=f"差分チェック中... ({current_step}/{total_steps})")
 
-                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type = row[:9]
+                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type = row
                         is_all_day = (str(all_day_str) == "True")
                         start_date = str(start_date_str).replace('/', '-')
                         end_date = str(end_date_str).replace('/', '-')
@@ -671,7 +758,7 @@ if 'df_calendar' in st.session_state:
                             continue
 
                         c_id = get_color_id(subject, time_shift_check_reg, found_key)
-                        current_reminder = get_reminder_for_row(row)
+                        current_reminder = get_reminder_by_type(ev_type)
                         
                         if is_all_day:
                             event_body = {'summary': subject, 'location': loc, 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
@@ -700,12 +787,12 @@ if 'df_calendar' in st.session_state:
                         current_step += 1
                         my_bar.progress(min(current_step / total_steps, 1.0), text=f"重複登録中... ({current_step}/{total_steps})")
 
-                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type = row[:9]
+                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type = row
                         is_all_day = (str(all_day_str) == "True")
                         start_date = str(start_date_str).replace('/', '-')
                         end_date = str(end_date_str).replace('/', '-')
                         c_id = get_color_id(subject, time_shift_check_reg, found_key)
-                        current_reminder = get_reminder_for_row(row)
+                        current_reminder = get_reminder_by_type(ev_type)
                         
                         if is_all_day:
                             event_body = {'summary': subject, 'location': loc, 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
@@ -721,16 +808,29 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
 
+                try:
+                    SCOPES_CAL_DRIVE = [
+                        'https://www.googleapis.com/auth/calendar',
+                        'https://www.googleapis.com/auth/drive'
+                    ]
+                    creds_dict = st.secrets["google_oauth_credentials"]
+                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES_CAL_DRIVE)
+                    
+                    if creds.expired and creds.refresh_token:
+                        creds.refresh(Request())
+
+                    calendar_service = build('calendar', 'v3', credentials=creds)
+                    drive_del_service = build('drive', 'v3', credentials=creds)
+                    
+                    target_cal_id = get_or_create_calendar(calendar_service, found_key)
+
+                except Exception as e:
+                    st.error(f"登録実行エラー: {e}")
+
                 st.success("🎉 カレンダー登録が終了しました。")
                 
                 if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
-                        SCOPES_CAL_DRIVE = [
-                            'https://www.googleapis.com/auth/calendar',
-                            'https://www.googleapis.com/auth/drive'
-                        ]
-                        creds_del = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES_CAL_DRIVE)
-                        drive_del_service = build('drive', 'v3', credentials=creds_del)
                         drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
                         st.success("🗑 Googleドライブ上の元のPDFファイルを削除しました。")
                     except Exception as e:
