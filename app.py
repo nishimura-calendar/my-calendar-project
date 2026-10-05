@@ -169,7 +169,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
-# --- 通知オプション生成用ヘルパー関数（①対応：何時間何分前の形式に修正） ---
+# --- 通知オプション生成用ヘルパー関数（何時間何分前の形式） ---
 def get_start_reminder_options():
     mins_list = list(range(0, 61, 5)) + list(range(90, 241, 30))
     options = {"通知なし": None}
@@ -396,170 +396,183 @@ for idx in range(0, df_pdf.shape[0], 2):
     else:
         clean_name = "該当なし"
     staff_data.append((idx, clean_name))
-    
-target_name = st.selectbox("スタッフを選択してください", [s[1] for s in staff_data])
-target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
 
-my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
-my_df.iloc[0, 0] = target_name
-my_df.iloc[1, 0] = "" 
-
-other_rows = []
-for idx, name in staff_data:
-    if name != target_name:
-        row = df_pdf.iloc[idx : idx+1].copy()
-        row.iloc[0, 0] = name
-        other_rows.append(row)
-
-other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
-
-st.divider()
-
-# --- ターゲットスタッフ選択後の有効シフトコード抽出・通知設定UI ---
+# --- スタッフ選択・通知設定・生成ボタンをすべてひとつのフォームに統合 ---
+# フォーム内であれば、セレクトボックスを変更しても送信ボタンを押すまで処理は走らなくなります。
 time_schedule_df_init = st.session_state.data_dict[found_key]
 time_shift_check_init = time_schedule_df_init.fillna("").astype(str)
 time_shift_bases_set = set(time_shift_check_init.iloc[:, 1].apply(get_base_value)) if not time_shift_check_init.empty else set()
 
-my_daily_shift_codes = []
-_, last_day_num_chk = calendar.monthrange(y, m)
-for col in range(1, min(my_df.shape[1], last_day_num_chk + 1)):
-    val = str(my_df.iloc[0, col]).strip()
-    if val and val != "nan":
-        my_daily_shift_codes.append(get_base_value(val))
-
-start_shift_info = sorted(list(set([
-    code for code in my_daily_shift_codes 
-    if code and code in time_shift_bases_set
-])))
+# ターゲットスタッフの仮取得（フォーム内で選択させるため一旦初期インデックスを使用）
+staff_names_list = [s[1] for s in staff_data]
 
 start_options = get_start_reminder_options()
 resume_options = get_resume_reminder_options()
 
-code_reminder_minutes = {}
-st.markdown("### ⏰ シフト別 出勤時通知の設定")
-if start_shift_info:
-    cols = st.columns(min(len(start_shift_info), 3))
-    for idx, code in enumerate(start_shift_info):
-        with cols[idx % len(cols)]:
-            selected_label = st.selectbox(
-                f"シフト [{code}] の出勤時通知",
-                options=list(start_options.keys()),
-                key=f"rem_code_{code}"
-            )
-            code_reminder_minutes[code] = start_options[selected_label]
-else:
-    st.info("対象期間に有効なシフトコード（時程表に存在するコード）が見つかりませんでした。")
-
-st.divider()
-st.markdown("### 🔄 勤務再開時の通知（共通）")
-selected_restart_label = st.selectbox(
-    "勤務再開時の通知",
-    options=list(resume_options.keys()),
-    key="rem_restart"
-)
-restart_mins = resume_options[selected_restart_label]
-
-st.divider()
-
-def get_staff_names(codes, other_staff_shift, col):
-    if other_staff_shift.empty:
-        return []
-    base_codes = [get_base_value(c) for c in codes]
-    col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
-    mask = col_bases.isin(base_codes)
-    return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
-
-# --- shift_cal 関数 ---
-def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
-    time_shift = time_schedule.fillna("").astype(str)
-    base_shift_info = get_base_value(shift_info)
+with st.form("settings_and_generation_form"):
+    target_name = st.selectbox("スタッフを選択してください", staff_names_list)
     
-    time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
-    if not (time_shift_bases == base_shift_info).any():
-        return
-       
-    my_time_shift = time_shift[time_shift_bases == base_shift_info]
-    if my_time_shift.empty:
-        return
+    # 選択されたスタッフのシフトコードを抽出
+    target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
+    temp_my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
+    
+    my_daily_shift_codes = []
+    _, last_day_num_chk = calendar.monthrange(y, m)
+    for col in range(1, min(temp_my_df.shape[1], last_day_num_chk + 1)):
+        val = str(temp_my_df.iloc[0, col]).strip()
+        if val and val != "nan":
+            my_daily_shift_codes.append(get_base_value(val))
 
-    prev_val_base = ""
-    row_data = my_time_shift.iloc[0]
+    start_shift_info = sorted(list(set([
+        code for code in my_daily_shift_codes 
+        if code and code in time_shift_bases_set
+    ])))
 
-    for t_col in range(3, my_time_shift.shape[1]):
-        raw_current_val = row_data[t_col]
-        current_val_base = get_base_value(raw_current_val)
-        subject, start, change, takeover, break_change, end = "", "", "", "", "", ""                    
-      
-        if current_val_base != prev_val_base:
-            if current_val_base != "":
-                final_rows.append([subject, target_date, "", target_date, "", "False", "", key, "OTHER", base_shift_info])
-                start_time = time_shift.iloc[0, t_col]
-            
-                event_type = "OTHER"
-                if (row_data[3:t_col] == "").all():
-                    start = "(出勤)："
-                    event_type = "START"
+    code_reminder_widgets = {}
+    st.markdown("### ⏰ シフト別 出勤時通知の設定")
+    if start_shift_info:
+        cols = st.columns(min(len(start_shift_info), 3))
+        for idx, code in enumerate(start_shift_info):
+            with cols[idx % len(cols)]:
+                selected_label = st.selectbox(
+                    f"シフト [{code}] の出勤時通知",
+                    options=list(start_options.keys()),
+                    key=f"rem_code_{code}"
+                )
+                code_reminder_widgets[code] = start_options[selected_label]
+    else:
+        st.info("対象期間に有効なシフトコード（時程表に存在するコード）が見つかりませんでした。")
+
+    st.divider()
+    st.markdown("### 🔄 勤務再開時の通知（共通）")
+    selected_restart_label = st.selectbox(
+        "勤務再開時の通知",
+        options=list(resume_options.keys()),
+        key="rem_restart"
+    )
+    restart_mins_widget = resume_options[selected_restart_label]
+
+    st.divider()
+    # フォームの送信ボタン（これ推すまでデータ生成・再読込は走りません）
+    submitted_generation = st.form_submit_button("カレンダー登録用データを生成")
+
+# フォームが送信された、または既にsession_stateにデータがある場合の処理
+if submitted_generation:
+    # フォーム内の設定値をsession_stateに保存
+    st.session_state.selected_target_name = target_name
+    st.session_state.code_reminder_minutes = code_reminder_widgets
+    st.session_state.restart_mins = restart_mins_widget
+
+    target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
+    my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
+    my_df.iloc[0, 0] = target_name
+    my_df.iloc[1, 0] = "" 
+
+    other_rows = []
+    for idx, name in staff_data:
+        if name != target_name:
+            row = df_pdf.iloc[idx : idx+1].copy()
+            row.iloc[0, 0] = name
+            other_rows.append(row)
+
+    other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
+
+    def get_staff_names(codes, other_staff_shift, col):
+        if other_staff_shift.empty:
+            return []
+        base_codes = [get_base_value(c) for c in codes]
+        col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
+        mask = col_bases.isin(base_codes)
+        return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
+
+    def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+        time_shift = time_schedule.fillna("").astype(str)
+        base_shift_info = get_base_value(shift_info)
+        
+        time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
+        if not (time_shift_bases == base_shift_info).any():
+            return
+           
+        my_time_shift = time_shift[time_shift_bases == base_shift_info]
+        if my_time_shift.empty:
+            return
+
+        prev_val_base = ""
+        row_data = my_time_shift.iloc[0]
+
+        for t_col in range(3, my_time_shift.shape[1]):
+            raw_current_val = row_data[t_col]
+            current_val_base = get_base_value(raw_current_val)
+            subject, start, change, takeover, break_change, end = "", "", "", "", "", ""                    
+          
+            if current_val_base != prev_val_base:
+                if current_val_base != "":
+                    final_rows.append([subject, target_date, "", target_date, "", "False", "", key, "OTHER", base_shift_info])
+                    start_time = time_shift.iloc[0, t_col]
+                
+                    event_type = "OTHER"
+                    if (row_data[3:t_col] == "").all():
+                        start = "(出勤)："
+                        event_type = "START"
+                        
+                    prev_raw_val = row_data[t_col - 1]
+                    if get_base_value(prev_raw_val) == "":              
+                        mask_change = (time_shift.iloc[:, t_col - 1].apply(get_base_value) != "") & (time_shift.iloc[:, t_col].apply(get_base_value) == "")
+                        paired_staff = []
+                        for idx in time_shift.index[mask_change]:
+                            places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
+                            codes = time_shift.loc[idx, time_shift.columns[1]]
+                            staff = get_staff_names([codes], other_staff_shift, col)
+                            for name in staff:
+                                paired_staff.append(f"{name}({places})")       
+                        
+                        change_formatted = ",".join(paired_staff)
+                        change = f"{change_formatted}▷" if change_formatted else ""
+                        if not (row_data[3:t_col] == "").all():
+                            event_type = "RESUME"
+                    else:
+                        final_rows[-2][4] = time_shift.iloc[0, t_col]                             
+                        handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
+                        handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
+                        handover = f"to {','.join(handover_staff)}"
+                        final_rows[-2][0] += handover
                     
-                prev_raw_val = row_data[t_col - 1]
-                if get_base_value(prev_raw_val) == "":              
-                    mask_change = (time_shift.iloc[:, t_col - 1].apply(get_base_value) != "") & (time_shift.iloc[:, t_col].apply(get_base_value) == "")
+                    takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
+                    takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
+                    takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
+
+                    subject = start + change + takeover
+                    final_rows[-1][0] = subject
+                    final_rows[-1][2] = start_time
+                    final_rows[-1][8] = event_type
+                    final_rows[-1][9] = base_shift_info
+                   
+                else:
+                    mask_break = (time_shift.iloc[:, t_col - 1].apply(get_base_value) == "") & (time_shift.iloc[:, t_col].apply(get_base_value) != "")
                     paired_staff = []
-                    for idx in time_shift.index[mask_change]:
-                        places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
+                    for idx in time_shift.index[mask_break]:
+                        places = time_shift.loc[idx, time_shift.columns[t_col]]
                         codes = time_shift.loc[idx, time_shift.columns[1]]
                         staff = get_staff_names([codes], other_staff_shift, col)
                         for name in staff:
-                            paired_staff.append(f"{name}({places})")       
+                            paired_staff.append(f"{name}({places})")
+
+                    break_formatted = ",".join(paired_staff)
+                    break_change = f"▷{break_formatted}" if break_formatted else ""
+                                            
+                    if (row_data[t_col:] == "").all():
+                        end = "：(退勤)"
+                    end_time = time_shift.iloc[0, t_col]
                     
-                    change_formatted = ",".join(paired_staff)
-                    change = f"{change_formatted}▷" if change_formatted else ""
-                    if not (row_data[3:t_col] == "").all():
-                        event_type = "RESUME"
-                else:
-                    final_rows[-2][4] = time_shift.iloc[0, t_col]                             
                     handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
                     handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
-                    handover = f"to {','.join(handover_staff)}"
-                    final_rows[-2][0] += handover
+                    handover = f"to {','.join(handover_staff)}"                   
+
+                    final_rows[-1][0] += handover + break_change + end   
+                    final_rows[-1][4] = end_time                            
                 
-                takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
-                takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
-                takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
+            prev_val_base = current_val_base
 
-                subject = start + change + takeover
-                final_rows[-1][0] = subject
-                final_rows[-1][2] = start_time
-                final_rows[-1][8] = event_type
-                final_rows[-1][9] = base_shift_info
-               
-            else:
-                mask_break = (time_shift.iloc[:, t_col - 1].apply(get_base_value) == "") & (time_shift.iloc[:, t_col].apply(get_base_value) != "")
-                paired_staff = []
-                for idx in time_shift.index[mask_break]:
-                    places = time_shift.loc[idx, time_shift.columns[t_col]]
-                    codes = time_shift.loc[idx, time_shift.columns[1]]
-                    staff = get_staff_names([codes], other_staff_shift, col)
-                    for name in staff:
-                        paired_staff.append(f"{name}({places})")
-
-                break_formatted = ",".join(paired_staff)
-                break_change = f"▷{break_formatted}" if break_formatted else ""
-                                        
-                if (row_data[t_col:] == "").all():
-                    end = "：(退勤)"
-                end_time = time_shift.iloc[0, t_col]
-                
-                handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
-                handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
-                handover = f"to {','.join(handover_staff)}"                   
-
-                final_rows[-1][0] += handover + break_change + end   
-                final_rows[-1][4] = end_time                            
-            
-        prev_val_base = current_val_base
-
-# --- ②対応：ボタンが押されたときのみデータを生成するように修正 ---
-if st.button("カレンダー登録用データを生成"):
     final_rows = []
     time_schedule_df = st.session_state.data_dict[found_key]
     time_shift_check = time_schedule_df.fillna("").astype(str)
@@ -601,6 +614,7 @@ if st.button("カレンダー登録用データを生成"):
     else:
         st.warning("生成対象のデータがありませんでした。")
 
+# 生成データが存在する場合の表示・登録処理
 if 'df_calendar' in st.session_state:
     st.dataframe(st.session_state.df_calendar)
     
@@ -680,9 +694,12 @@ if 'df_calendar' in st.session_state:
 
                 default_reminder_body = {'useDefault': True}
 
+                code_reminder_minutes = st.session_state.get('code_reminder_minutes', {})
+                restart_mins = st.session_state.get('restart_mins', None)
+
                 def get_reminder_by_type(ev_type, shift_code):
                     if ev_type in ["START", "ALL_DAY"]:
-                        if shift_code in start_shift_info:
+                        if shift_code in code_reminder_minutes:
                             mins = code_reminder_minutes.get(shift_code, None)
                             return make_reminder_body(mins)
                     elif ev_type == "RESUME":
