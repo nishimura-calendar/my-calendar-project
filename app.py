@@ -169,7 +169,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
-# --- 通知オプション生成用ヘルパー関数 ---
+# --- 通知オプション生成用ヘルパー関数（①対応：何時間何分前の形式に修正） ---
 def get_start_reminder_options():
     mins_list = list(range(0, 61, 5)) + list(range(90, 241, 30))
     options = {"通知なし": None}
@@ -179,14 +179,14 @@ def get_start_reminder_options():
         elif m < 60:
             options[f"{m}分前"] = m
         elif m == 60:
-            options["1時間前 (60分前)"] = 60
+            options["1時間前"] = 60
         else:
             hours = m // 60
             rem = m % 60
             if rem == 0:
-                options[f"{hours}時間前 ({m}分前)"] = m
+                options[f"{hours}時間前"] = m
             else:
-                options[f"{hours}時間{rem}分前 ({m}分前)"] = m
+                options[f"{hours}時間{rem}分前"] = m
     return options
 
 def get_resume_reminder_options():
@@ -198,7 +198,7 @@ def get_resume_reminder_options():
         elif m < 60:
             options[f"{m}分前"] = m
         elif m == 60:
-            options["1時間前 (60分前)"] = 60
+            options["1時間前"] = 60
     return options
 
 def make_reminder_body(mins):
@@ -558,6 +558,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
             
         prev_val_base = current_val_base
 
+# --- ②対応：ボタンが押されたときのみデータを生成するように修正 ---
 if st.button("カレンダー登録用データを生成"):
     final_rows = []
     time_schedule_df = st.session_state.data_dict[found_key]
@@ -670,7 +671,6 @@ if 'df_calendar' in st.session_state:
                 added_count = 0
                 skipped_count = 0
 
-                # 💡 各モードで共通して使用する time_shift_check をここで安全に定義
                 time_schedule_df_mode = st.session_state.data_dict.get(found_key, pd.DataFrame())
                 time_shift_check = time_schedule_df_mode.fillna("").astype(str)
 
