@@ -549,19 +549,16 @@ if 'df_calendar' in st.session_state:
         
         st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
-        # 時程表（time_shift_check）に存在するベースコードのセットを取得
         time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
         time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
         time_shift_bases_set = set(time_shift_check_reg.iloc[:, 1].apply(get_base_value)) if not time_shift_check_reg.empty else set()
 
-        # 選択されたスタッフのシフト表から、time_shift_basesの中に存在するベースコードのみを抽出
         raw_rows_to_process = st.session_state.get('raw_final_rows', [])
         unique_shift_codes = sorted(list(set([
             row[9] for row in raw_rows_to_process 
             if len(row) > 9 and row[9] and row[9] in time_shift_bases_set
         ])))
 
-        # --- 通知選択肢の動的生成関数 ---
         def get_start_reminder_options():
             opts = ["通知なし", "0分前（同時）"]
             for mins in range(5, 61, 5):
@@ -593,7 +590,6 @@ if 'df_calendar' in st.session_state:
         with st.form(key="calendar_execution_form"):
             st.markdown("### ⏰ アラーム（通知）設定")
             
-            # シフトコード毎の「出勤時_通知」設定用コンテナ
             st.markdown("#### 【出勤時_通知（シフトコード別設定）】")
             shift_reminders = {}
             if unique_shift_codes:
@@ -611,7 +607,6 @@ if 'df_calendar' in st.session_state:
 
             st.divider()
             
-            # 「勤務再開_通知」のみ配置し、「その他の予定」項目を省く
             reminder_option_b = st.selectbox(
                 "勤務再開_通知",
                 resume_options,
@@ -634,11 +629,17 @@ if 'df_calendar' in st.session_state:
         
         if submitted:
             try:
+                # --- 修正版: 確実に通知の分数を抽出する関数 ---
                 def label_to_minutes(label):
-                    if label == "通知なし":
+                    if not label or label == "通知なし":
                         return None
                     if "0分前" in label:
                         return 0
+                    # 括弧内の「〇〇分前」を最優先で取得（例: "1時間前（60分前）" -> 60）
+                    match_bracket = re.search(r'（(\d+)分前）', label)
+                    if match_bracket:
+                        return int(match_bracket.group(1))
+                    # フォールバックとして「〇〇分前」の数字を抽出
                     matches = re.findall(r'(\d+)分前', label)
                     if matches:
                         return int(matches[-1])
