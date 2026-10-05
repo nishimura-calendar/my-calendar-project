@@ -405,7 +405,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                 event_type = "OTHER"
                 if (row_data[3:t_col] == "").all():
                     start = "(出勤)："
-                    event_type = "START"  # 出勤時 (出勤時_通知) - シフトコード毎に個別設定
+                    event_type = "START"  # 出勤時 (出勤時_通知)
                     
                 prev_raw_val = row_data[t_col - 1]
                 if get_base_value(prev_raw_val) == "":              
@@ -421,7 +421,7 @@ def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shi
                     change_formatted = ",".join(paired_staff)
                     change = f"{change_formatted}▷" if change_formatted else ""
                     if not (row_data[3:t_col] == "").all():
-                        event_type = "RESUME"  # 休憩明け / 再開時 (勤務再開_通知)
+                        event_type = "RESUME"  # 勤務再開_通知
                 else:
                     final_rows[-2][4] = time_shift.iloc[0, t_col]                             
                     handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
@@ -549,20 +549,26 @@ if 'df_calendar' in st.session_state:
         
         st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
         
-        # 選択されたスタッフのシフト表から、対象となるユニークなシフトコード（ベースコード）を抽出
+        # 時程表（time_shift_check）に存在するベースコードのセットを取得
+        time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
+        time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
+        time_shift_bases_set = set(time_shift_check_reg.iloc[:, 1].apply(get_base_value)) if not time_shift_check_reg.empty else set()
+
+        # 選択されたスタッフのシフト表から、time_shift_basesの中に存在するベースコードのみを抽出
         raw_rows_to_process = st.session_state.get('raw_final_rows', [])
-        unique_shift_codes = sorted(list(set([row[9] for row in raw_rows_to_process if len(row) > 9 and row[9]])))
+        unique_shift_codes = sorted(list(set([
+            row[9] for row in raw_rows_to_process 
+            if len(row) > 9 and row[9] and row[9] in time_shift_bases_set
+        ])))
 
         # --- 通知選択肢の動的生成関数 ---
         def get_start_reminder_options():
             opts = ["通知なし", "0分前（同時）"]
-            # 5分毎に1時間前(60分)まで
             for mins in range(5, 61, 5):
                 if mins == 60:
                     opts.append("1時間前（60分前）")
                 else:
                     opts.append(f"{mins}分前")
-            # それ以降は30分毎に4時間前(240分)まで
             for mins in range(90, 241, 30):
                 hours = mins // 60
                 remainder = mins % 60
@@ -574,7 +580,6 @@ if 'df_calendar' in st.session_state:
 
         def get_resume_reminder_options():
             opts = ["通知なし", "0分前（同時）"]
-            # 5分毎に60分前まで
             for mins in range(5, 61, 5):
                 if mins == 60:
                     opts.append("1時間前（60分前）")
@@ -598,27 +603,20 @@ if 'df_calendar' in st.session_state:
                         shift_reminders[code] = st.selectbox(
                             f"シフトコード: {code}",
                             start_options,
-                            index=min(3, len(start_options)-1), # デフォルトで15分前あたりを選択（存在すれば）
+                            index=min(3, len(start_options)-1),
                             key=f"reminder_code_{code}"
                         )
             else:
-                st.info("設定可能なシフトコードが見つかりませんでした。")
+                st.info("設定可能なシフトコード（時程表に存在するコード）が見つかりませんでした。")
 
             st.divider()
             
-            col_notif2, col_notif3 = st.columns(2)
-            with col_notif2:
-                reminder_option_b = st.selectbox(
-                    "勤務再開_通知",
-                    resume_options,
-                    index=min(3, len(resume_options)-1)
-                )
-            with col_notif3:
-                reminder_option_other = st.selectbox(
-                    "その他の予定（終日等）",
-                    ["通知なし", "0分前（同時）", "10分前", "15分前", "30分前", "60分前"],
-                    index=0
-                )
+            # 「勤務再開_通知」のみ配置し、「その他の予定」項目を省く
+            reminder_option_b = st.selectbox(
+                "勤務再開_通知",
+                resume_options,
+                index=min(3, len(resume_options)-1)
+            )
 
             st.divider()
 
@@ -646,13 +644,11 @@ if 'df_calendar' in st.session_state:
                         return int(matches[-1])
                     return None
 
-                # 各シフトコードごとの出勤時_通知時間（分）を辞書に変換
                 code_reminder_minutes = {
                     code: label_to_minutes(label) for code, label in shift_reminders.items()
                 }
 
                 selected_minutes_b = label_to_minutes(reminder_option_b)
-                selected_minutes_other = label_to_minutes(reminder_option_other)
 
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
                 creds_dict = st.secrets["google_oauth_credentials"]
@@ -666,9 +662,6 @@ if 'df_calendar' in st.session_state:
                 deleted_count = 0
                 added_count = 0
                 skipped_count = 0
-
-                time_schedule_df_check = st.session_state.data_dict.get(found_key, pd.DataFrame())
-                time_shift_check_reg = time_schedule_df_check.fillna("").astype(str)
 
                 progress_text = "Googleカレンダーと通信中です。しばらくお待ちください..."
                 my_bar = st.progress(0, text=progress_text)
@@ -686,16 +679,16 @@ if 'df_calendar' in st.session_state:
                         }
 
                 reminder_setting_b = make_reminder_body(selected_minutes_b)
-                reminder_setting_other = make_reminder_body(selected_minutes_other)
+                default_reminder_body = {'useDefault': True}
 
                 def get_reminder_by_type(ev_type, shift_code):
                     if ev_type == "START":
-                        mins = code_reminder_minutes.get(shift_code, 15)
+                        mins = code_reminder_minutes.get(shift_code, None)
                         return make_reminder_body(mins)
                     elif ev_type == "RESUME":
                         return reminder_setting_b
                     else:
-                        return reminder_setting_other
+                        return default_reminder_body
 
                 # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
