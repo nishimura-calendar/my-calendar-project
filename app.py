@@ -25,48 +25,85 @@ def display_pdf_as_images(file_bytes):
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
-# --- 日付行＋次行曜日行のペアから最大日付と曜日を抽出する補助関数 ---
+# --- 日付行と曜日行から最大日付と曜日を抽出する補助関数 ---
 def extract_max_date_and_day(df):
-    best_date = None
-    best_day = None
-
     if df is None or df.empty or df.shape[0] < 2:
         return None, None
 
     weekdays = set("月火水木金土日")
+    date_pattern = re.compile(r'^(0?[1-9]|[12][0-9]|3[01])$')
 
-    for row in range(df.shape[0] - 1):
-        row_dates = []
-        row_days = []
+    # 各行の「日付一覧 (col, day_num)」と「曜日一覧 (col, [day_chars])」を収集
+    date_rows = []
+    day_rows = []
+
+    for row in range(df.shape[0]):
+        col_dates = []
+        col_days = []
 
         for col in range(df.shape[1]):
-            up_raw = unicodedata.normalize("NFKC", str(df.iloc[row, col] or "")).strip()
-            down_raw = unicodedata.normalize("NFKC", str(df.iloc[row + 1, col] or "")).strip()
+            raw = unicodedata.normalize("NFKC", str(df.iloc[row, col] or "")).strip()
+            if not raw or raw.lower() == "nan" or raw == "None":
+                continue
 
-            up_tokens = [t.strip() for t in up_raw.splitlines() if t.strip()]
-            down_tokens = [t.strip() for t in down_raw.splitlines() if t.strip()]
+            tokens = [t.strip() for t in raw.splitlines() if t.strip()]
+            nums = [int(t) for t in tokens if date_pattern.match(t)]
+            days = [ch for t in tokens for ch in t if ch in weekdays]
 
-            matched_dates = [
-                int(t) for t in up_tokens
-                if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', t)
-            ]
-            matched_days = [
-                ch for t in down_tokens
-                for ch in t if ch in weekdays
-            ]
+            if nums:
+                for n in nums:
+                    col_dates.append((col, n))
+            if days:
+                col_days.append((col, days))
 
-            if matched_dates and matched_days:
-                row_dates.append((col, max(matched_dates)))
-                row_days.append((col, matched_days))
+        # 1〜31の日付が5個以上並んでいる行を「日付行」とみなす
+        unique_nums = {n for _, n in col_dates}
+        if len(unique_nums) >= 5:
+            date_rows.append((row, col_dates))
 
-        if len(row_dates) >= 2:
-            days_by_col = dict(row_days)
-            for col, d_val in row_dates:
-                w_list = days_by_col.get(col)
-                if w_list:
-                    if best_date is None or d_val >= best_date:
-                        best_date = d_val
-                        best_day = w_list[-1]
+        # 曜日文字が5列以上並んでいる行を「曜日行」とみなす
+        if len(col_days) >= 5:
+            day_rows.append((row, col_days))
+
+    if not date_rows:
+        return None, None
+
+    best_date = None
+    best_day = None
+
+    for d_row_idx, col_dates in date_rows:
+        # 最も近い曜日行を探す（優先: d_row_idx + 1、次点: 距離が最も近い曜日行）
+        nearest_day_row = None
+        if day_rows:
+            nearest_day_row = min(day_rows, key=lambda item: (abs(item[0] - (d_row_idx + 1)), abs(item[0] - d_row_idx)))
+
+        day_map = {}
+        ordered_days = []
+        if nearest_day_row:
+            for c_idx, d_list in nearest_day_row[1]:
+                day_map[c_idx] = d_list
+                ordered_days.extend(d_list)
+
+        for idx_in_row, (c_idx, d_val) in enumerate(col_dates):
+            matched_w = None
+
+            # 1. 同じ列に曜日があればそれを使う
+            if c_idx in day_map and day_map[c_idx]:
+                matched_w = day_map[c_idx][-1]
+            # 2. なければ隣接列（c_idx - 1 / c_idx + 1）を確認
+            elif (c_idx - 1) in day_map and day_map[c_idx - 1]:
+                matched_w = day_map[c_idx - 1][-1]
+            elif (c_idx + 1) in day_map and day_map[c_idx + 1]:
+                matched_w = day_map[c_idx + 1][0]
+            # 3. それでも取れない場合は曜日行の並び順から推定
+            elif ordered_days:
+                pos = min(idx_in_row, len(ordered_days) - 1)
+                matched_w = ordered_days[pos]
+
+            if matched_w:
+                if best_date is None or d_val >= best_date:
+                    best_date = d_val
+                    best_day = matched_w
 
     return best_date, best_day
 
