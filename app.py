@@ -362,7 +362,7 @@ def inspect_shift_dates_and_weekdays(df, year, month):
       "cal_last_day": cal_last_day,
       "cal_last_weekday": cal_last_weekday,
   }            
-    st.stop()
+st.stop()
 
 uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
 uploaded_pdf.name = st.session_state.loaded_pdf_name
