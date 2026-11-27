@@ -25,7 +25,7 @@ def display_pdf_as_images(file_bytes):
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
-# --- ファイル名の年月とPDF内容の整合性判定（パターンA） ---
+# --- ファイル名の年月抽出と暦・PDF内容の整合性判定 ---
 def extract_year_month_from_filename(filename, fallback_year=2026):
     name_norm = unicodedata.normalize("NFKC", filename or "")
     y_match = re.search(r"(\d{4})\s*年", name_norm) or re.search(r"(\d{4})", name_norm)
@@ -96,7 +96,7 @@ def evaluate_month_end_consistency(df, year, month, pdf_full_text=""):
 def get_recent_pdfs_from_drive(service):
     thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
     query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}' and trashed = false"
-
+    
     results = service.files().list(
         q=query,
         orderBy="createdTime desc",
@@ -119,12 +119,12 @@ def download_pdf_from_drive(service, file_id):
 def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
     folder_id = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
     file_name = f"{y}年{m}月_{found_key}.pdf"
-
+    
     query = f"'{folder_id}' in parents and name = '{file_name}' and trashed = false"
     existing_files = drive_service.files().list(q=query, fields="files(id, name)").execute().get('files', [])
     for ef in existing_files:
         drive_service.files().delete(fileId=ef['id']).execute()
-
+        
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
     file_metadata = {
         'name': file_name,
@@ -135,12 +135,12 @@ def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
         media_body=media,
         fields='id'
     ).execute()
-
+    
     q_all = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed = false"
     all_files = drive_service.files().list(q=q_all, fields="files(id, name)").execute().get('files', [])
-
+    
     current_total_months = y * 12 + m
-
+    
     for f in all_files:
         fname = f['name']
         match = re.search(r'(\d{4})年\s*(\d{1,2})月', fname)
@@ -208,7 +208,7 @@ def get_or_create_calendar(service, calendar_name):
     for cal in calendar_list.get('items', []):
         if cal.get('summary') == calendar_name:
             return cal.get('id')
-
+    
     new_cal = {'summary': calendar_name}
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
@@ -216,10 +216,10 @@ def get_or_create_calendar(service, calendar_name):
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     base_shift_code = get_base_value(shift_code_str)
-
+    
     if any(holiday in base_shift_code for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
-
+    
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7"
     if found_key:
@@ -228,12 +228,12 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
 
     if found_key and (found_key in base_shift_code or found_key == base_shift_code):
         return assigned_blue
-
+        
     if time_shift_check is not None and not time_shift_check.empty:
         check_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
         if (check_bases == base_shift_code).any():
             return assigned_blue
-
+            
     return assigned_blue
 
 # --- 通知オプション生成用ヘルパー関数（何時間何分前の形式） ---
@@ -293,7 +293,7 @@ def reset_to_initial_state():
         if key != 'data_dict':
             del st.session_state[key]
     st.session_state.uploader_key = current_uploader_key
-
+ 
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
@@ -326,98 +326,15 @@ if st.session_state.loaded_pdf_bytes is None:
         try:
             creds_dict = st.secrets["google_oauth_credentials"]
             creds_drive = Credentials.from_authorized_user_info(creds_dict)
-            drive_service = build('drive', 'v3', credentials=creds_drive)
+            drive_service = build('drive', 'v3', credentials=creds_drive)            
             files = get_recent_pdfs_from_drive(drive_service)
-
+            
             if files:
                 selected_file = st.selectbox(
-                    "解析したいファイルを選択してください (過去30日以内)",
-                    files,
+                    "解析したいファイルを選択してください (過去30日以内)", 
+                    files, 
                     format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
                 )
                 if st.button("選択したPDFを読み込む"):
                     fh = download_pdf_from_drive(drive_service, selected_file['id'])
-                    st.session_state.loaded_pdf_bytes = fh.getvalue()
-                    st.session_state.loaded_pdf_name = selected_file['name']
-                    st.session_state.selected_file_id = selected_file['id']
-                    st.success(f"「{selected_file['name']}」を読み込みました。")
-                    st.rerun()
-            else:
-                st.warning("最近30日以内に保存されたPDFは見つかりませんでした。")
-        except Exception as e:
-            st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
-
-if st.session_state.loaded_pdf_bytes is None:
-    st.stop()
-
-file_bytes = st.session_state.loaded_pdf_bytes
-file_name = st.session_state.loaded_pdf_name or ""
-
-if not isinstance(file_bytes, (bytes, bytearray)) or not bytes(file_bytes).startswith(b"%PDF-"):
-    st.error("読み込まれたデータが有効なPDFではありません。ファイルを確認して下さい。")
-    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
-    time.sleep(10)
-    reset_to_initial_state()
-    st.rerun()
-
-uploaded_pdf = io.BytesIO(file_bytes)
-uploaded_pdf.name = file_name
-
-try:
-    uploaded_pdf.seek(0)
-    with pdfplumber.open(uploaded_pdf) as pdf:
-        raw_text = pdf.pages[0].extract_text() or ""
-        pdf_full_text = unicodedata.normalize('NFKC', raw_text)
-
-        matched_keys = []
-        for key in st.session_state.data_dict.keys():
-            pos = pdf_full_text.find(str(key))
-            if pos != -1:
-                matched_keys.append((key, pos))
-
-        if matched_keys:
-            matched_keys.sort(key=lambda x: x[1])
-            found_key = matched_keys[0][0]
-        else:
-            found_key = None
-
-    uploaded_pdf.seek(0)
-    with pdfplumber.open(uploaded_pdf) as pdf:
-        tables = pdf.pages[0].extract_tables()
-        df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
-except Exception as e:
-    st.error(f"PDFの解析中にエラーが発生しました: {e}。ファイルを確認して下さい。")
-    display_pdf_as_images(file_bytes)
-    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
-    time.sleep(10)
-    reset_to_initial_state()
-    st.rerun()
-
-if not found_key:
-    st.error("勤務地(Key)がPDFから特定できませんでした。ファイルを確認して下さい。")
-    display_pdf_as_images(file_bytes)
-    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
-    time.sleep(10)
-    reset_to_initial_state()
-    st.rerun()
-
-y, m = extract_year_month_from_filename(file_name, fallback_year=2026)
-if m is None:
-    st.error(f"ファイル名「{file_name}」から対象月を特定できませんでした。ファイルを確認して下さい。")
-    display_pdf_as_images(file_bytes)
-    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
-    time.sleep(10)
-    reset_to_initial_state()
-    st.rerun()
-
-check_res = evaluate_month_end_consistency(df_pdf, y, m, pdf_full_text=pdf_full_text)
-
-if not check_res["is_consistent"]:
-    display_pdf_as_images(file_bytes)
-    st.error(check_res["reason"])
-    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
-    time.sleep(10)
-    reset_to_initial_state()
-    st.rerun()
-
-# --- 一致時：何も表示せずに次のステップへ進む ---
+                    st.session_state
