@@ -25,42 +25,57 @@ def display_pdf_as_images(file_bytes):
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
-# --- 0行目の最後の文字と下段(1行目)の文字を抽出する補助関数 ---
-def extract_last_char_row1_and_above(df):
-    if df is None or df.empty or df.shape[0] < 2:
-        return None, None
+# --- 曜日文字カウントとカレンダー照合による最終日・最終曜日判定 ---
+def evaluate_month_end_consistency(df, year, month):
+    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+    weekdays_set = set(weekdays_jp)
 
-    def clean_cell(val):
-        if val is None:
-            return ""
-        s = unicodedata.normalize("NFKC", str(val)).strip()
-        if not s or s.lower() == "nan" or s == "None":
-            return ""
-        return s
+    cal_first_weekday = weekdays_jp[calendar.weekday(year, month, 1)]
+    _, cal_last_day = calendar.monthrange(year, month)
+    cal_last_weekday = weekdays_jp[calendar.weekday(year, month, cal_last_day)]
 
-    last_col = None
-    last_val_row0 = ""
-    for col in range(df.shape[1] - 1, -1, -1):
-        val0 = clean_cell(df.iloc[0, col])
-        if val0:
-            last_col = col
-            last_val_row0 = val0
-            break
+    found_weekdays = []
+    max_rows = min(df.shape[0], 3) if df is not None and not df.empty else 0
 
-    if last_col is None:
-        return None, None
+    for r in range(max_rows):
+        for c in range(df.shape[1]):
+            raw = df.iloc[r, c]
+            if raw is None:
+                continue
+            s = unicodedata.normalize("NFKC", str(raw)).strip()
+            if not s or s.lower() in ("nan", "none"):
+                continue
+            for ch in s:
+                if ch in weekdays_set:
+                    found_weekdays.append(ch)
 
-    last_char_row0 = last_val_row0[-1]
-    val1 = clean_cell(df.iloc[1, last_col])
-    last_char_row1 = val1[-1] if val1 else None
+    pdf_day_count = len(found_weekdays) if len(found_weekdays) > 0 else None
+    pdf_last_weekday = found_weekdays[-1] if len(found_weekdays) > 0 else None
+    pdf_first_weekday = found_weekdays[0] if len(found_weekdays) > 0 else None
 
-    return last_char_row0, last_char_row1
+    is_consistent = (
+        pdf_day_count == cal_last_day
+        and pdf_last_weekday == cal_last_weekday
+    )
+
+    return {
+        "is_consistent": is_consistent,
+        "year": year,
+        "month": month,
+        "cal_first_weekday": cal_first_weekday,
+        "pdf_first_weekday": pdf_first_weekday,
+        "pdf_day_count": pdf_day_count,
+        "pdf_last_weekday": pdf_last_weekday,
+        "cal_last_day": cal_last_day,
+        "cal_last_weekday": cal_last_weekday,
+        "weekday_chars_seq": "".join(found_weekdays),
+    }
 
 # --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
 def get_recent_pdfs_from_drive(service):
     thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
     query = f"mimeType='application/pdf' and createdTime >= '{thirty_days_ago}' and trashed = false"
-    
+
     results = service.files().list(
         q=query,
         orderBy="createdTime desc",
@@ -83,12 +98,12 @@ def download_pdf_from_drive(service, file_id):
 def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
     folder_id = "1X9ThkHI4xPeUYa29FW3AmLll9gRz6EFd"
     file_name = f"{y}年{m}月_{found_key}.pdf"
-    
+
     query = f"'{folder_id}' in parents and name = '{file_name}' and trashed = false"
     existing_files = drive_service.files().list(q=query, fields="files(id, name)").execute().get('files', [])
     for ef in existing_files:
         drive_service.files().delete(fileId=ef['id']).execute()
-        
+
     media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
     file_metadata = {
         'name': file_name,
@@ -99,12 +114,12 @@ def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
         media_body=media,
         fields='id'
     ).execute()
-    
+
     q_all = f"'{folder_id}' in parents and mimeType='application/pdf' and trashed = false"
     all_files = drive_service.files().list(q=q_all, fields="files(id, name)").execute().get('files', [])
-    
+
     current_total_months = y * 12 + m
-    
+
     for f in all_files:
         fname = f['name']
         match = re.search(r'(\d{4})年\s*(\d{1,2})月', fname)
@@ -172,7 +187,7 @@ def get_or_create_calendar(service, calendar_name):
     for cal in calendar_list.get('items', []):
         if cal.get('summary') == calendar_name:
             return cal.get('id')
-    
+
     new_cal = {'summary': calendar_name}
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
@@ -180,10 +195,10 @@ def get_or_create_calendar(service, calendar_name):
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
     base_shift_code = get_base_value(shift_code_str)
-    
+
     if any(holiday in base_shift_code for holiday in ["休", "休日", "公休", "有休", "有給"]):
         return "11"
-    
+
     blue_palette = ["7", "9", "1"]
     assigned_blue = "7"
     if found_key:
@@ -192,12 +207,12 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
 
     if found_key and (found_key in base_shift_code or found_key == base_shift_code):
         return assigned_blue
-        
+
     if time_shift_check is not None and not time_shift_check.empty:
         check_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
         if (check_bases == base_shift_code).any():
             return assigned_blue
-            
+
     return assigned_blue
 
 # --- 通知オプション生成用ヘルパー関数（何時間何分前の形式） ---
@@ -258,57 +273,6 @@ def reset_to_initial_state():
             del st.session_state[key]
     st.session_state.uploader_key = current_uploader_key
 
-# --- 日付・曜日抽出の検証用関数 ---
-def inspect_shift_dates_and_weekdays(df, year, month):
-    weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    weekdays_set = set(weekdays_jp)
-    day_pattern = re.compile(r"(?<!\d)([1-9]|[12][0-9]|3[01])(?!\d)")
-
-    first_weekday = weekdays_jp[calendar.weekday(year, month, 1)]
-    _, cal_last_day = calendar.monthrange(year, month)
-    cal_last_weekday = weekdays_jp[calendar.weekday(year, month, cal_last_day)]
-
-    found_weekdays = []
-    max_day_candidate = None
-    max_rows = min(df.shape[0], 3) if df is not None and not df.empty else 0
-
-    for r in range(max_rows):
-        for c in range(df.shape[1]):
-            raw = df.iloc[r, c]
-            if raw is None:
-                continue
-            s = unicodedata.normalize("NFKC", str(raw)).strip()
-            if not s or s.lower() in ("nan", "none"):
-                continue
-
-            for ch in s:
-                if ch in weekdays_set:
-                    found_weekdays.append(ch)
-
-            s_clean = re.sub(r"\s+", " ", s)
-            for m in day_pattern.finditer(s_clean):
-                val = int(m.group(1))
-                if max_day_candidate is None or val > max_day_candidate:
-                    max_day_candidate = val
-
-    first_match_in_pdf = first_weekday in found_weekdays[:5]
-    calc_weekday_from_max = (
-        weekdays_jp[calendar.weekday(year, month, max_day_candidate)]
-        if max_day_candidate
-        else None
-    )
-
-    return {
-        "cal_first_weekday": first_weekday,
-        "first_in_head_weekdays": first_match_in_pdf,
-        "weekday_char_count": len(found_weekdays),
-        "weekday_chars_seq": "".join(found_weekdays),
-        "max_day_candidate": max_day_candidate,
-        "calc_weekday_from_max": calc_weekday_from_max,
-        "cal_last_day": cal_last_day,
-        "cal_last_weekday": cal_last_weekday,
-    }
-
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
@@ -343,11 +307,11 @@ if st.session_state.loaded_pdf_bytes is None:
             creds_drive = Credentials.from_authorized_user_info(creds_dict)
             drive_service = build('drive', 'v3', credentials=creds_drive)
             files = get_recent_pdfs_from_drive(drive_service)
-            
+
             if files:
                 selected_file = st.selectbox(
-                    "解析したいファイルを選択してください (過去30日以内)", 
-                    files, 
+                    "解析したいファイルを選択してください (過去30日以内)",
+                    files,
                     format_func=lambda x: f"{x['name']} (作成日: {x['createdTime'][:10]})"
                 )
                 if st.button("選択したPDFを読み込む"):
@@ -381,6 +345,7 @@ uploaded_pdf.name = file_name
 if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
     st.session_state.last_file_bytes = file_bytes
     st.session_state.ym_confirmed = False
+    st.session_state.proceed_after_mismatch = False
     for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
         if key in st.session_state:
             del st.session_state[key]
@@ -390,13 +355,13 @@ try:
     with pdfplumber.open(uploaded_pdf) as pdf:
         raw_text = pdf.pages[0].extract_text() or ""
         pdf_full_text = unicodedata.normalize('NFKC', raw_text)
-        
+
         matched_keys = []
         for key in st.session_state.data_dict.keys():
             pos = pdf_full_text.find(str(key))
             if pos != -1:
                 matched_keys.append((key, pos))
-        
+
         if matched_keys:
             matched_keys.sort(key=lambda x: x[1])
             found_key = matched_keys[0][0]
@@ -422,6 +387,33 @@ month_match = re.search(r"(\d{1,2})\s*月", pdf_full_text) or re.search(r"(\d{1,
 y = int(year_match.group(1)) if year_match else 2026
 m = int(month_match.group(1)) if month_match else 12
 
-info = inspect_shift_dates_and_weekdays(df_pdf, y, m)
-st.write(info)
-st.stop()
+check_res = evaluate_month_end_consistency(df_pdf, y, m)
+
+if check_res["is_consistent"]:
+    st.success(
+        f"整合性OK：{y}年{m}月の暦（末日 {check_res['cal_last_day']}日 / {check_res['cal_last_weekday']}曜日）と、"
+        f"PDFの曜日文字数（{check_res['pdf_day_count']}日）および最終曜日（{check_res['pdf_last_weekday']}曜日）が一致しました。"
+    )
+else:
+    if not st.session_state.get("proceed_after_mismatch", False):
+        st.warning(
+            f"末日・曜日の整合性に不一致があります（{y}年{m}月：暦は {check_res['cal_last_day']}日・{check_res['cal_last_weekday']}曜日 / "
+            f"PDF抽出は {check_res['pdf_day_count']}日・{check_res['pdf_last_weekday']}曜日）。"
+        )
+        display_pdf_as_images(file_bytes)
+        choice = st.radio(
+            "このまま処理を続行しますか？",
+            ["選択してください", "はい", "いいえ"],
+            index=0,
+            key="mismatch_choice_radio",
+        )
+        if choice == "選択してください":
+            st.stop()
+        elif choice == "はい":
+            st.session_state.proceed_after_mismatch = True
+            st.rerun()
+        elif choice == "いいえ":
+            reset_to_initial_state()
+            st.rerun()
+
+st.info(f"勤務地Key: {found_key} / 対象年月: {y}年{m}月（次の解析・カレンダー登録処理へ進めます）")
