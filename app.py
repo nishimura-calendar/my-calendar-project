@@ -26,7 +26,7 @@ def display_pdf_as_images(file_bytes):
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
 # --- 0行目の最後の文字と下段(1行目)の文字を抽出する補助関数 ---
-def extract_last_char_row0_and_below(df):
+def extract_last_char_row1_and_above(df):
     if df is None or df.empty or df.shape[0] < 2:
         return None, None
 
@@ -353,7 +353,7 @@ if not found_key:
     st.stop()
 
 # --- 0行目の最後の文字とその下段(1行目)の文字を抽出・表示して終了 ---
-last_char_row0, last_char_row1 = extract_last_char_row0_and_below(df_pdf)
-st.write(f"0行目の最後の文字: {last_char_row0}")
-st.write(f"その下段(1行目)の文字: {last_char_row1}")
+last_char_row1, char_above_row0 = extract_last_char_row1_and_above(df_pdf)
+st.write(f"1行目の最後の文字: {last_char_row1}")
+st.write(f"その1行上(0行目)の文字: {char_above_row0}")
 st.stop()
