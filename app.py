@@ -451,4 +451,248 @@ time_shift_bases_set = set(time_shift_check_init.iloc[:, 1].apply(get_base_value
 
 staff_names_list = [s[1] for s in staff_data]
 
-start_options
+start_options = get_start_reminder_options()
+resume_options = get_resume_reminder_options()
+
+with st.form("settings_and_generation_form"):
+    target_name = st.selectbox("スタッフを選択してください", staff_names_list)
+    
+    target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
+    temp_my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
+    
+    my_daily_shift_codes = []
+    _, last_day_num_chk = calendar.monthrange(y, m)
+    for col in range(1, min(temp_my_df.shape[1], last_day_num_chk + 1)):
+        val = str(temp_my_df.iloc[0, col]).strip()
+        if val and val != "nan":
+            my_daily_shift_codes.append(get_base_value(val))
+
+    start_shift_info = sorted(list(set([
+        code for code in my_daily_shift_codes 
+        if code and code in time_shift_bases_set
+    ])))
+
+    code_reminder_widgets = {}
+    st.markdown("### ⏰ シフト別 出勤時通知の設定")
+    if start_shift_info:
+        cols = st.columns(min(len(start_shift_info), 3))
+        for idx, code in enumerate(start_shift_info):
+            with cols[idx % len(cols)]:
+                selected_label = st.selectbox(
+                    f"シフト [{code}] の出勤時通知",
+                    options=list(start_options.keys()),
+                    key=f"rem_code_{code}"
+                )
+                code_reminder_widgets[code] = start_options[selected_label]
+    else:
+        st.info("対象期間に有効なシフトコード（時程表に存在するコード）が見つかりませんでした。")
+
+    st.divider()
+    st.markdown("### 🔄 勤務再開時の通知（共通）")
+    selected_restart_label = st.selectbox(
+        "勤務再開時の通知",
+        options=list(resume_options.keys()),
+        key="rem_restart"
+    )
+    restart_mins_widget = resume_options[selected_restart_label]
+
+    st.divider()
+    submitted_generation = st.form_submit_button("カレンダー登録用データを生成")
+
+if submitted_generation:
+    st.session_state.selected_target_name = target_name
+    st.session_state.code_reminder_minutes = code_reminder_widgets
+    st.session_state.restart_mins = restart_mins_widget
+
+    target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
+    my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
+    my_df.iloc[0, 0] = target_name
+    my_df.iloc[1, 0] = "" 
+
+    other_rows = []
+    for idx, name in staff_data:
+        if name != target_name:
+            row = df_pdf.iloc[idx : idx+1].copy()
+            row.iloc[0, 0] = name
+            other_rows.append(row)
+
+    other_df = pd.concat(other_rows) if other_rows else pd.DataFrame()
+
+    def get_staff_names(codes, other_staff_shift, col):
+        if other_staff_shift.empty:
+            return []
+        base_codes = [get_base_value(c) for c in codes]
+        col_bases = other_staff_shift.iloc[:, col].apply(get_base_value)
+        mask = col_bases.isin(base_codes)
+        return other_staff_shift.loc[mask, other_staff_shift.columns[0]].tolist()
+
+    def shift_cal(key, target_date, col, shift_info, my_daily_shift, other_staff_shift, time_schedule, final_rows):
+        time_shift = time_schedule.fillna("").astype(str)
+        base_shift_info = get_base_value(shift_info)
+        
+        time_shift_bases = time_shift.iloc[:, 1].apply(get_base_value)
+        if not (time_shift_bases == base_shift_info).any():
+            return
+           
+        my_time_shift = time_shift[time_shift_bases == base_shift_info]
+        if my_time_shift.empty:
+            return
+
+        prev_val_base = ""
+        row_data = my_time_shift.iloc[0]
+
+        for t_col in range(3, my_time_shift.shape[1]):
+            raw_current_val = row_data[t_col]
+            current_val_base = get_base_value(raw_current_val)
+            subject, start, change, takeover, break_change, end = "", "", "", "", "", ""                    
+          
+            if current_val_base != prev_val_base:
+                if current_val_base != "":
+                    final_rows.append([subject, target_date, "", target_date, "", "False", "", key, "OTHER", base_shift_info])
+                    start_time = time_shift.iloc[0, t_col]
+                
+                    event_type = "OTHER"
+                    if (row_data[3:t_col] == "").all():
+                        start = "(出勤)："
+                        event_type = "START"
+                        
+                    prev_raw_val = row_data[t_col - 1]
+                    if get_base_value(prev_raw_val) == "":              
+                        mask_change = (time_shift.iloc[:, t_col - 1].apply(get_base_value) != "") & (time_shift.iloc[:, t_col].apply(get_base_value) == "")
+                        paired_staff = []
+                        for idx in time_shift.index[mask_change]:
+                            places = time_shift.loc[idx, time_shift.columns[t_col - 1]]
+                            codes = time_shift.loc[idx, time_shift.columns[1]]
+                            staff = get_staff_names([codes], other_staff_shift, col)
+                            for name in staff:
+                                paired_staff.append(f"{name}({places})")       
+                        
+                        change_formatted = ",".join(paired_staff)
+                        change = f"{change_formatted}▷" if change_formatted else ""
+                        if not (row_data[3:t_col] == "").all():
+                            event_type = "RESUME"
+                    else:
+                        final_rows[-2][4] = time_shift.iloc[0, t_col]                             
+                        handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
+                        handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
+                        handover = f"to {','.join(handover_staff)}"
+                        final_rows[-2][0] += handover
+                    
+                    takeover_codes = time_shift.loc[time_shift.iloc[:, t_col - 1].apply(get_base_value) == current_val_base, time_shift.columns[1]]
+                    takeover_staff = get_staff_names(takeover_codes, other_staff_shift, col)
+                    takeover = f"from {','.join(takeover_staff)}【{current_val_base}】" if takeover_staff else f"from 【{current_val_base}】"
+
+                    subject = start + change + takeover
+                    final_rows[-1][0] = subject
+                    final_rows[-1][2] = start_time
+                    final_rows[-1][8] = event_type
+                    final_rows[-1][9] = base_shift_info
+                   
+                else:
+                    mask_break = (time_shift.iloc[:, t_col - 1].apply(get_base_value) == "") & (time_shift.iloc[:, t_col].apply(get_base_value) != "")
+                    paired_staff = []
+                    for idx in time_shift.index[mask_break]:
+                        places = time_shift.loc[idx, time_shift.columns[t_col]]
+                        codes = time_shift.loc[idx, time_shift.columns[1]]
+                        staff = get_staff_names([codes], other_staff_shift, col)
+                        for name in staff:
+                            paired_staff.append(f"{name}({places})")
+
+                    break_formatted = ",".join(paired_staff)
+                    break_change = f"▷{break_formatted}" if break_formatted else ""
+                                            
+                    if (row_data[t_col:] == "").all():
+                        end = "：(退勤)"
+                    end_time = time_shift.iloc[0, t_col]
+                    
+                    handover_codes = time_shift.loc[time_shift.iloc[:, t_col].apply(get_base_value) == prev_val_base, time_shift.columns[1]]
+                    handover_staff = get_staff_names(handover_codes, other_staff_shift, col)
+                    handover = f"to {','.join(handover_staff)}"                   
+
+                    final_rows[-1][0] += handover + break_change + end   
+                    final_rows[-1][4] = end_time                            
+                
+            prev_val_base = current_val_base
+
+    final_rows = []
+    time_schedule_df = st.session_state.data_dict[found_key]
+    time_shift_check = time_schedule_df.fillna("").astype(str)
+    _, last_day_num = calendar.monthrange(y, m)
+
+    for col in range(1, min(my_df.shape[1], last_day_num + 1)):
+        day_num = col
+        target_date = f"{y}/{m:02d}/{day_num:02d}"
+        schedule_val = str(my_df.iloc[0, col]).strip()
+        sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
+
+        if not schedule_val or schedule_val == "nan":
+            continue
+
+        base_schedule_val = get_base_value(schedule_val)
+        time_shift_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
+
+        if (time_shift_bases == base_schedule_val).any():
+            start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
+            end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
+            end_date_str = end_dt_obj.strftime("%Y/%m/%d")
+            final_rows.append([f"{found_key}_{base_schedule_val}", target_date, "", end_date_str, "", "True", "", found_key, "ALL_DAY", base_schedule_val])
+            shift_cal(found_key, target_date, col, schedule_val, my_df, other_df, time_schedule_df, final_rows)
+        else:
+            start_dt_obj = datetime.datetime.strptime(target_date, "%Y/%m/%d")
+            end_dt_obj = start_dt_obj + datetime.timedelta(days=1)
+            end_date_str = end_dt_obj.strftime("%Y/%m/%d")
+            
+            final_rows.append([schedule_val, target_date, "", end_date_str, "", "True", "", schedule_val, "ALL_DAY", base_schedule_val])
+            
+            time_match = re.search(r'(\d+)[^\d]+(\d+)', sub_val)
+            if time_match:
+                final_rows.append([schedule_val, target_date, f"{time_match.group(1)}:00", target_date, f"{time_match.group(2)}:00", "False", "", found_key, "START", base_schedule_val])
+                
+    if final_rows:
+        display_rows = [row[:8] for row in final_rows]
+        st.session_state.df_calendar = pd.DataFrame(display_rows, columns=["Subject", "StartDate", "StartTime", "EndDate", "EndTime", "AllDayEvent", "Description", "Location"])
+        st.session_state.raw_final_rows = final_rows
+        st.success(f"カレンダー登録データの生成が完了しました（計 {len(st.session_state.df_calendar)} 件）")
+    else:
+        st.warning("生成対象のデータがありませんでした。")
+
+if 'df_calendar' in st.session_state:
+    st.dataframe(st.session_state.df_calendar)
+    
+    csv_cal = st.session_state.df_calendar.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+    st.download_button("カレンダー登録用CSVをダウンロード", csv_cal, "calendar_import.csv", "text/csv")
+
+    st.subheader(f"Googleカレンダー連携 (対象勤務地: {found_key})")
+    st.info(f"※マイカレンダーに「{found_key}」という名前のカレンダーがない場合は自動的に新規作成されます。")
+
+    target_total_count = len(st.session_state.df_calendar)
+
+    if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
+        try:
+            SCOPES = ['https://www.googleapis.com/auth/calendar']
+            creds = get_google_creds(scopes=SCOPES)
+            service = build('calendar', 'v3', credentials=creds)
+            
+            target_cal_id = get_or_create_calendar(service, found_key)
+            
+            last_day = calendar.monthrange(y, m)[1]
+            min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+            max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+            
+            events_result = service.events().list(
+                calendarId=target_cal_id, 
+                timeMin=min_date, 
+                timeMax=max_date,
+                singleEvents=True
+            ).execute()
+            
+            existing_items = events_result.get('items', [])
+            st.session_state.existing_count = len(existing_items)
+            st.session_state.show_conflict_options = True
+        except Exception as e:
+            st.error(f"事前確認エラー: {e}")
+
+    if st.session_state.get('show_conflict_options', False):
+        existing_count = st.session_state.get('existing_count', 0)
+        
+        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ
