@@ -13,6 +13,19 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from google.auth.transport.requests import Request
 
+
+# --- Google認証ヘルパー関数 ---
+def get_google_creds(scopes=None):
+    creds_dict = dict(st.secrets["google_oauth_credentials"])
+    if scopes:
+        creds = Credentials.from_authorized_user_info(creds_dict, scopes=scopes)
+    else:
+        creds = Credentials.from_authorized_user_info(creds_dict)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    return creds
+
+
 # --- PDFを画面に画像として表示する補助関数 ---
 def display_pdf_as_images(file_bytes):
     try:
@@ -25,55 +38,6 @@ def display_pdf_as_images(file_bytes):
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
-# --- 0行目最終列(28〜31)と1行目曜日を抽出する補助関数 ---
-def extract_max_date_and_day(df):
-    if df is None or df.empty or df.shape[0] < 2:
-        return None, None
-
-    weekdays = set("月火水木金土日")
-    target_end_days = [31, 30, 29, 28]
-
-    end_day_cols = []
-    for col in range(df.shape[1]):
-        raw_up = unicodedata.normalize("NFKC", str(df.iloc[0, col] or "")).strip()
-        if not raw_up or raw_up.lower() == "nan" or raw_up == "None":
-            continue
-        nums = [int(m) for m in re.findall(r'(?<!\d)(28|29|30|31)(?!\d)', raw_up)]
-        for n in nums:
-            end_day_cols.append((col, n))
-
-    if not end_day_cols:
-        return None, None
-
-    chosen_col = None
-    chosen_date = None
-    for target_d in target_end_days:
-        matches = [(c, d) for c, d in end_day_cols if d == target_d]
-        if matches:
-            chosen_col, chosen_date = max(matches, key=lambda x: x[0])
-            break
-
-    if chosen_col is None:
-        return None, None
-
-    def get_days_at_col(c_idx):
-        if c_idx < 0 or c_idx >= df.shape[1]:
-            return []
-        raw_down = unicodedata.normalize("NFKC", str(df.iloc[1, c_idx] or "")).strip()
-        if not raw_down or raw_down.lower() == "nan" or raw_down == "None":
-            return []
-        return [ch for ch in raw_down if ch in weekdays]
-
-    days_here = get_days_at_col(chosen_col)
-    if days_here:
-        return chosen_date, days_here[-1]
-
-    for offset in (-1, 1, -2, 2):
-        adj_days = get_days_at_col(chosen_col + offset)
-        if adj_days:
-            return chosen_date, adj_days[-1] if offset < 0 else adj_days[0]
-
-    return chosen_date, None
 
 # --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
 def get_recent_pdfs_from_drive(service):
@@ -88,6 +52,7 @@ def get_recent_pdfs_from_drive(service):
     ).execute()
     return results.get('files', [])
 
+
 def download_pdf_from_drive(service, file_id):
     request = service.files().get_media(fileId=file_id)
     fh = io.BytesIO()
@@ -97,6 +62,7 @@ def download_pdf_from_drive(service, file_id):
         status, done = downloader.next_chunk()
     fh.seek(0)
     return fh
+
 
 # --- GoogleドライブのPDF保存と前々月以前のファイル削除処理 ---
 def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
@@ -137,6 +103,7 @@ def process_drive_pdf_management(drive_service, file_bytes, y, m, found_key):
                 except Exception:
                     pass
 
+
 # --- [1] 時程表読み込み ---
 def format_time(val):
     try:
@@ -146,6 +113,7 @@ def format_time(val):
         return f"{h}:{m:02d}"
     except (ValueError, TypeError):
         return val
+
 
 def process_data(df):
     location_data = {}
@@ -165,26 +133,27 @@ def process_data(df):
         location_data[key] = schedule
     return location_data
 
+
 @st.cache_data(ttl=3600)
 def load_and_process_data():
-    creds_dict = st.secrets["google_oauth_credentials"]
-    creds = Credentials(**creds_dict)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+    creds = get_google_creds(scopes=['https://www.googleapis.com/auth/drive'])
     service = build('drive', 'v3', credentials=creds)
     file_id = "1HR8gkT2ZbshHYenyQEEepTo8BjnB1gFkHgFYS_Tk4ZE"
     request = service.files().export_media(fileId=file_id, mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
-    while not downloader.next_chunk()[1]: pass
+    while not downloader.next_chunk()[1]:
+        pass
     fh.seek(0)
     df = pd.read_excel(fh, header=None, engine='openpyxl', dtype=str)
     return process_data(df)
+
 
 def get_base_value(val):
     if not val or pd.isna(val):
         return ""
     return str(val).split('_')[0].strip()
+
 
 def get_or_create_calendar(service, calendar_name):
     calendar_list = service.calendarList().list().execute()
@@ -195,6 +164,7 @@ def get_or_create_calendar(service, calendar_name):
     new_cal = {'summary': calendar_name}
     created_cal = service.calendars().insert(body=new_cal).execute()
     return created_cal.get('id')
+
 
 def get_color_id(shift_code, time_shift_check=None, found_key=None):
     shift_code_str = str(shift_code)
@@ -219,6 +189,7 @@ def get_color_id(shift_code, time_shift_check=None, found_key=None):
             
     return assigned_blue
 
+
 # --- 通知オプション生成用ヘルパー関数（何時間何分前の形式） ---
 def get_start_reminder_options():
     mins_list = list(range(0, 61, 5)) + list(range(90, 241, 30))
@@ -239,6 +210,7 @@ def get_start_reminder_options():
                 options[f"{hours}時間{rem}分前"] = m
     return options
 
+
 def get_resume_reminder_options():
     mins_list = list(range(0, 61, 5))
     options = {"通知なし": None}
@@ -250,6 +222,7 @@ def get_resume_reminder_options():
         elif m == 60:
             options["1時間前"] = 60
     return options
+
 
 def make_reminder_body(mins):
     if mins is None:
@@ -265,9 +238,11 @@ def make_reminder_body(mins):
             ]
         }
 
+
 # --- アップロードウィジェット用のキー初期化 ---
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
+
 
 # --- リセット関数 ---
 def reset_to_initial_state():
@@ -276,7 +251,8 @@ def reset_to_initial_state():
         if key != 'data_dict':
             del st.session_state[key]
     st.session_state.uploader_key = current_uploader_key
- 
+
+
 # --- [2] メイン処理 ---
 st.title("シフト表解析システム")
 
@@ -307,9 +283,8 @@ if st.session_state.loaded_pdf_bytes is None:
             st.rerun()
     else:
         try:
-            creds_dict = st.secrets["google_oauth_credentials"]
-            creds_drive = Credentials.from_authorized_user_info(creds_dict)
-            drive_service = build('drive', 'v3', credentials=creds_drive)            
+            creds_drive = get_google_creds(scopes=['https://www.googleapis.com/auth/drive'])
+            drive_service = build('drive', 'v3', credentials=creds_drive)
             files = get_recent_pdfs_from_drive(drive_service)
             
             if files:
@@ -347,7 +322,7 @@ if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes
 
 uploaded_pdf.seek(0)
 with pdfplumber.open(uploaded_pdf) as pdf:
-    pdf_full_text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text())
+    pdf_full_text = unicodedata.normalize('NFKC', pdf.pages[0].extract_text() or "")
     
     matched_keys = []
     for key in st.session_state.data_dict.keys():
@@ -371,21 +346,30 @@ if not found_key:
     display_pdf_as_images(file_bytes)
     st.stop()
 
-A_date, A_day = extract_max_date_and_day(df_pdf)
+# 最大の日付（月末側）と直下の曜日を優先して抽出
+A_date, A_day = None, None
+for row in range(df_pdf.shape[0] - 1):
+    for col in range(df_pdf.shape[1]):
+        val_up = unicodedata.normalize('NFKC', str(df_pdf.iloc[row, col])).strip()
+        val_down = unicodedata.normalize('NFKC', str(df_pdf.iloc[row + 1, col])).strip()
+        if re.fullmatch(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
+            cand_date = int(val_up)
+            if A_date is None or cand_date >= A_date:
+                A_date, A_day = cand_date, val_down
 
-if not A_date or not A_day:
+if not A_date:
     st.error("日付と曜日が抽出できませんでした。")
     display_pdf_as_images(file_bytes)
     st.stop()
 
-filename = uploaded_pdf.name
-year_match = re.search(r'(\d{4})', filename)
-month_match = re.search(r'(\d{1,2})月', filename)
+filename = unicodedata.normalize('NFKC', uploaded_pdf.name or "")
+year_match = re.search(r'(20\d{2})', filename) or re.search(r'(20\d{2})\s*年', pdf_full_text)
+month_match = re.search(r'(\d{1,2})\s*月', filename) or re.search(r'(\d{1,2})\s*月', pdf_full_text)
 
 if year_match and month_match:
     y, m = int(year_match.group(1)), int(month_match.group(1))
 else:
-    st.warning("ファイル名から年月が取得できませんでした。プレビューを確認してください。")
+    st.warning("ファイル名・本文から年月が取得できませんでした。プレビューを確認してください。")
     display_pdf_as_images(file_bytes)
     
     choice = st.radio(
@@ -402,26 +386,22 @@ else:
         st.warning("このファイルの利用がキャンセルされました。サイドバーのリセットボタンまたは別の操作を行ってください。")
         st.stop()
     else:
-        year_text_match = re.search(r'(\d{4})\s*年', pdf_full_text)
+        year_text_match = re.search(r'(20\d{2})\s*年', pdf_full_text)
         y = int(year_text_match.group(1)) if year_text_match else 2026
         month_text_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
-        m = int(month_text_match.group(1)) if month_text_match else 2
+        m = int(month_text_match.group(1)) if month_text_match else 12
 
 _, last_day_num = calendar.monthrange(y, m)
 last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
 
-if A_date == last_day_num and A_day == last_day_w:
-    pass 
-else:
-    st.error("整合性不一致: アップロードされたシフト表の年月が期待値と異なります。")
-    st.write(f"抽出された最終日: {A_date}日 ({A_day}曜日)")
-    st.write(f"カレンダー上の最終日: {last_day_num}日 ({last_day_w}曜日)")
-    display_pdf_as_images(file_bytes)
-    st.stop()
+if not (A_date == last_day_num and A_day == last_day_w):
+    st.warning(
+        f"最終日表記の差異を検知しました（抽出: {A_date}日 {A_day}曜 / カレンダー末日: {last_day_num}日 {last_day_w}曜）。"
+        f"{y}年{m}月分として処理を続行します。"
+    )
 
 try:
-    creds_dict = st.secrets["google_oauth_credentials"]
-    creds_drive = Credentials.from_authorized_user_info(creds_dict)
+    creds_drive = get_google_creds(scopes=['https://www.googleapis.com/auth/drive'])
     drive_mgmt_service = build('drive', 'v3', credentials=creds_drive)
     process_drive_pdf_management(drive_mgmt_service, file_bytes, y, m, found_key)
 except Exception as e:
@@ -441,7 +421,6 @@ for idx in range(0, df_pdf.shape[0], 2):
         clean_name = "該当なし"
     staff_data.append((idx, clean_name))
 
-# --- スタッフ選択・通知設定・生成ボタンをすべてひとつのフォームに統合 ---
 time_schedule_df_init = st.session_state.data_dict[found_key]
 time_shift_check_init = time_schedule_df_init.fillna("").astype(str)
 time_shift_bases_set = set(time_shift_check_init.iloc[:, 1].apply(get_base_value)) if not time_shift_check_init.empty else set()
@@ -622,7 +601,8 @@ if submitted_generation:
         schedule_val = str(my_df.iloc[0, col]).strip()
         sub_val = str(my_df.iloc[1, col]).strip() if my_df.shape[0] > 1 else ""
 
-        if not schedule_val or schedule_val == "nan": continue
+        if not schedule_val or schedule_val == "nan":
+            continue
 
         base_schedule_val = get_base_value(schedule_val)
         time_shift_bases = time_shift_check.iloc[:, 1].apply(get_base_value)
@@ -666,8 +646,7 @@ if 'df_calendar' in st.session_state:
     if st.button(f"🚀 {found_key} カレンダーへ新規登録する", key="unique_register_key_button"):
         try:
             SCOPES = ['https://www.googleapis.com/auth/calendar']
-            creds_dict = st.secrets["google_oauth_credentials"]
-            creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+            creds = get_google_creds(scopes=SCOPES)
             service = build('calendar', 'v3', credentials=creds)
             
             target_cal_id = get_or_create_calendar(service, found_key)
@@ -710,8 +689,7 @@ if 'df_calendar' in st.session_state:
         if submitted:
             try:
                 SCOPES = ['https://www.googleapis.com/auth/calendar']
-                creds_dict = st.secrets["google_oauth_credentials"]
-                creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES)
+                creds = get_google_creds(scopes=SCOPES)
                 service = build('calendar', 'v3', credentials=creds)
                 target_cal_id = get_or_create_calendar(service, found_key)
                 
@@ -904,23 +882,17 @@ if 'df_calendar' in st.session_state:
                         'https://www.googleapis.com/auth/calendar',
                         'https://www.googleapis.com/auth/drive'
                     ]
-                    creds_dict = st.secrets["google_oauth_credentials"]
-                    creds = Credentials.from_authorized_user_info(creds_dict, scopes=SCOPES_CAL_DRIVE)
-                    
-                    if creds.expired and creds.refresh_token:
-                        creds.refresh(Request())
-
-                    calendar_service = build('calendar', 'v3', credentials=creds)
-                    drive_del_service = build('drive', 'v3', credentials=creds)
-                    
+                    creds_cd = get_google_creds(scopes=SCOPES_CAL_DRIVE)
+                    calendar_service = build('calendar', 'v3', credentials=creds_cd)
+                    drive_del_service = build('drive', 'v3', credentials=creds_cd)
                     target_cal_id = get_or_create_calendar(calendar_service, found_key)
-
                 except Exception as e:
-                    st.error(f"登録実行エラー: {e}")
+                    st.error(f"登録後処理エラー: {e}")
+                    drive_del_service = None
 
                 st.success("🎉 カレンダー登録が終了しました。")
                 
-                if 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
+                if drive_del_service and 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
                     try:
                         drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
                         st.success("🗑 Googleドライブ上の元のPDFファイルを削除しました。")
