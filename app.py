@@ -25,56 +25,6 @@ def display_pdf_as_images(file_bytes):
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
-# --- 0行目最終列(28〜31)と1行目曜日を抽出する補助関数 ---
-def extract_max_date_and_day(df):
-    if df is None or df.empty or df.shape[0] < 2:
-        return None, None
-
-    weekdays = set("月火水木金土日")
-    target_end_days = [31, 30, 29, 28]
-
-    end_day_cols = []
-    for col in range(df.shape[1]):
-        raw_up = unicodedata.normalize("NFKC", str(df.iloc[0, col] or "")).strip()
-        if not raw_up or raw_up.lower() == "nan" or raw_up == "None":
-            continue
-        nums = [int(m) for m in re.findall(r'(?<!\d)(28|29|30|31)(?!\d)', raw_up)]
-        for n in nums:
-            end_day_cols.append((col, n))
-
-    if not end_day_cols:
-        return None, None
-
-    chosen_col = None
-    chosen_date = None
-    for target_d in target_end_days:
-        matches = [(c, d) for c, d in end_day_cols if d == target_d]
-        if matches:
-            chosen_col, chosen_date = max(matches, key=lambda x: x[0])
-            break
-
-    if chosen_col is None:
-        return None, None
-
-    def get_days_at_col(c_idx):
-        if c_idx < 0 or c_idx >= df.shape[1]:
-            return []
-        raw_down = unicodedata.normalize("NFKC", str(df.iloc[1, c_idx] or "")).strip()
-        if not raw_down or raw_down.lower() == "nan" or raw_down == "None":
-            return []
-        return [ch for ch in raw_down if ch in weekdays]
-
-    days_here = get_days_at_col(chosen_col)
-    if days_here:
-        return chosen_date, days_here[-1]
-
-    for offset in (-1, 1, -2, 2):
-        adj_days = get_days_at_col(chosen_col + offset)
-        if adj_days:
-            return chosen_date, adj_days[-1] if offset < 0 else adj_days[0]
-
-    return chosen_date, None
-
 # --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
 def get_recent_pdfs_from_drive(service):
     thirty_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
@@ -371,9 +321,15 @@ if not found_key:
     display_pdf_as_images(file_bytes)
     st.stop()
 
-A_date, A_day = extract_max_date_and_day(df_pdf)
+A_date, A_day = None, None
+for row in range(df_pdf.shape[0] - 1):
+    for col in range(df_pdf.shape[1]):
+        val_up = str(df_pdf.iloc[row, col])
+        val_down = str(df_pdf.iloc[row+1, col])
+        if re.match(r'^(0?[1-9]|[12][0-9]|3[01])$', val_up) and val_down in "月火水木金土日":
+            A_date, A_day = int(val_up), val_down
 
-if not A_date or not A_day:
+if not A_date:
     st.error("日付と曜日が抽出できませんでした。")
     display_pdf_as_images(file_bytes)
     st.stop()
@@ -442,10 +398,12 @@ for idx in range(0, df_pdf.shape[0], 2):
     staff_data.append((idx, clean_name))
 
 # --- スタッフ選択・通知設定・生成ボタンをすべてひとつのフォームに統合 ---
+# フォーム内であれば、セレクトボックスを変更しても送信ボタンを押すまで処理は走らなくなります。
 time_schedule_df_init = st.session_state.data_dict[found_key]
 time_shift_check_init = time_schedule_df_init.fillna("").astype(str)
 time_shift_bases_set = set(time_shift_check_init.iloc[:, 1].apply(get_base_value)) if not time_shift_check_init.empty else set()
 
+# ターゲットスタッフの仮取得（フォーム内で選択させるため一旦初期インデックスを使用）
 staff_names_list = [s[1] for s in staff_data]
 
 start_options = get_start_reminder_options()
@@ -454,6 +412,7 @@ resume_options = get_resume_reminder_options()
 with st.form("settings_and_generation_form"):
     target_name = st.selectbox("スタッフを選択してください", staff_names_list)
     
+    # 選択されたスタッフのシフトコードを抽出
     target_idx = [s[0] for s in staff_data if s[1] == target_name][0]
     temp_my_df = df_pdf.iloc[target_idx : target_idx + 2, :].copy()
     
@@ -494,9 +453,12 @@ with st.form("settings_and_generation_form"):
     restart_mins_widget = resume_options[selected_restart_label]
 
     st.divider()
+    # フォームの送信ボタン（これ推すまでデータ生成・再読込は走りません）
     submitted_generation = st.form_submit_button("カレンダー登録用データを生成")
 
+# フォームが送信された、または既にsession_stateにデータがある場合の処理
 if submitted_generation:
+    # フォーム内の設定値をsession_stateに保存
     st.session_state.selected_target_name = target_name
     st.session_state.code_reminder_minutes = code_reminder_widgets
     st.session_state.restart_mins = restart_mins_widget
@@ -652,6 +614,7 @@ if submitted_generation:
     else:
         st.warning("生成対象のデータがありませんでした。")
 
+# 生成データが存在する場合の表示・登録処理
 if 'df_calendar' in st.session_state:
     st.dataframe(st.session_state.df_calendar)
     
@@ -745,6 +708,7 @@ if 'df_calendar' in st.session_state:
 
                 raw_rows_to_process = st.session_state.get('raw_final_rows', [])
 
+                # --- モード1：パッチ処理 ---
                 if "1. パッチ処理" in conflict_action:
                     existing_items = []
                     page_token = None
@@ -803,6 +767,7 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【パッチ処理完了】(所要時間: 約 {elapsed_sec}秒)\nカレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
 
+                # --- モード2：差分処理 ---
                 elif "2. 差分処理" in conflict_action:
                     existing_events = []
                     page_token = None
@@ -870,6 +835,7 @@ if 'df_calendar' in st.session_state:
                     elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
                     st.success(f"【差分更新完了】(所要時間: 約 {elapsed_sec}秒)\n同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
 
+                # --- モード3：重複処理 ---
                 else:
                     total_steps = len(raw_rows_to_process)
                     current_step = 0
