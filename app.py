@@ -311,6 +311,57 @@ if st.session_state.loaded_pdf_bytes is None:
         except Exception as e:
             st.error(f"Google Driveからのファイル取得に失敗しました: {e}")
             
+def inspect_shift_dates_and_weekdays(df, year, month):
+  weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+  weekdays_set = set(weekdays_jp)
+  day_pattern = re.compile(r"(?<!\d)([1-9]|[12][0-9]|3[01])(?!\d)")
+
+  # 1. カレンダー上の初日曜日・末日・末日曜日
+  first_weekday = weekdays_jp[calendar.weekday(year, month, 1)]
+  _, cal_last_day = calendar.monthrange(year, month)
+  cal_last_weekday = weekdays_jp[calendar.weekday(year, month, cal_last_day)]
+
+  # 2. ヘッダ付近（0〜2行目）から曜日文字を順番に収集
+  found_weekdays = []
+  max_day_candidate = None
+  max_rows = min(df.shape[0], 3) if df is not None and not df.empty else 0
+
+  for r in range(max_rows):
+    for c in range(df.shape[1]):
+      raw = df.iloc[r, c]
+      if raw is None:
+        continue
+      s = unicodedata.normalize("NFKC", str(raw)).strip()
+      if not s or s.lower() in ("nan", "none"):
+        continue
+
+      for ch in s:
+        if ch in weekdays_set:
+          found_weekdays.append(ch)
+
+      s_clean = re.sub(r"\s+", " ", s)
+      for m in day_pattern.finditer(s_clean):
+        val = int(m.group(1))
+        if max_day_candidate is None or val > max_day_candidate:
+          max_day_candidate = val
+
+  first_match_in_pdf = first_weekday in found_weekdays[:5]
+  calc_weekday_from_max = (
+      weekdays_jp[calendar.weekday(year, month, max_day_candidate)]
+      if max_day_candidate
+      else None
+  )
+
+  return {
+      "cal_first_weekday": first_weekday,
+      "first_in_head_weekdays": first_match_in_pdf,
+      "weekday_char_count": len(found_weekdays),
+      "weekday_chars_seq": "".join(found_weekdays),
+      "max_day_candidate": max_day_candidate,
+      "calc_weekday_from_max": calc_weekday_from_max,
+      "cal_last_day": cal_last_day,
+      "cal_last_weekday": cal_last_weekday,
+  }            
     st.stop()
 
 uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
