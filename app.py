@@ -362,7 +362,6 @@ def inspect_shift_dates_and_weekdays(df, year, month):
       "cal_last_day": cal_last_day,
       "cal_last_weekday": cal_last_weekday,
   }            
-st.stop()
 
 uploaded_pdf = io.BytesIO(st.session_state.loaded_pdf_bytes)
 uploaded_pdf.name = st.session_state.loaded_pdf_name
@@ -399,12 +398,20 @@ with pdfplumber.open(uploaded_pdf) as pdf:
     df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
 
 if not found_key:
-    st.error("勤務地(Key)がPDFから特定できませんでした。")
-    display_pdf_as_images(file_bytes)
-    st.stop()
+  st.error("勤務地(Key)がPDFから特定できませんでした。")
+  display_pdf_as_images(file_bytes)
+  st.stop()
 
-# --- 0行目の最後の文字とその下段(1行目)の文字を抽出・表示して終了 ---
-last_char_row1, char_above_row0 = extract_last_char_row1_and_above(df_pdf)
-st.write(f"1行目の最後の文字: {last_char_row1}")
-st.write(f"その1行上(0行目)の文字: {char_above_row0}")
+year_match = re.search(r"(\d{4})\s*年", pdf_full_text) or re.search(
+    r"(\d{4})", uploaded_pdf.name
+)
+month_match = re.search(r"(\d{1,2})\s*月", pdf_full_text) or re.search(
+    r"(\d{1,2})月", uploaded_pdf.name
+)
+
+y = int(year_match.group(1)) if year_match else 2026
+m = int(month_match.group(1)) if month_match else 12
+
+info = inspect_shift_dates_and_weekdays(df_pdf, y, m)
+st.write(info)
 st.stop()
