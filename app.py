@@ -695,4 +695,240 @@ if 'df_calendar' in st.session_state:
     if st.session_state.get('show_conflict_options', False):
         existing_count = st.session_state.get('existing_count', 0)
         
-        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ
+        st.warning(f"⚠️ Googleカレンダー側には現在 **{existing_count}件** 登録されています。（今回登録予定のデータ：**{target_total_count}件**）")
+        
+        with st.form(key="calendar_execution_form"):
+            conflict_action = st.radio(
+                "処理方法の選択",
+                [
+                    "1. パッチ処理（全データ削除して新たに登録し直す）",
+                    "2. 差分処理 / スマート更新（変更のない日はそのまま維持し、必要な分だけ追加・削除する）",
+                    "3. 重複処理（既存データを消さずに、そのまま新しく上乗せして登録する）"
+                ],
+                key="conflict_action_radio"
+            )
+            
+            submitted = st.form_submit_button("実行する")
+        
+        if submitted:
+            try:
+                SCOPES = ['https://www.googleapis.com/auth/calendar']
+                creds = get_google_creds(scopes=SCOPES)
+                service = build('calendar', 'v3', credentials=creds)
+                target_cal_id = get_or_create_calendar(service, found_key)
+                
+                _, last_day = calendar.monthrange(y, m)
+                min_date = f"{y}-{m:02d}-01T00:00:00+09:00"
+                max_date = f"{y}-{m:02d}-{last_day}T23:59:59+09:00"
+                deleted_count = 0
+                added_count = 0
+                skipped_count = 0
+
+                time_schedule_df_mode = st.session_state.data_dict.get(found_key, pd.DataFrame())
+                time_shift_check = time_schedule_df_mode.fillna("").astype(str)
+
+                progress_text = "Googleカレンダーと通信中です。しばらくお待ちください..."
+                my_bar = st.progress(0, text=progress_text)
+                start_time_exec = datetime.datetime.now()
+
+                default_reminder_body = {'useDefault': True}
+
+                code_reminder_minutes = st.session_state.get('code_reminder_minutes', {})
+                restart_mins = st.session_state.get('restart_mins', None)
+
+                def get_reminder_by_type(ev_type, shift_code):
+                    if ev_type in ["START", "ALL_DAY"]:
+                        if shift_code in code_reminder_minutes:
+                            mins = code_reminder_minutes.get(shift_code, None)
+                            return make_reminder_body(mins)
+                    elif ev_type == "RESUME":
+                        return make_reminder_body(restart_mins)
+                    return default_reminder_body
+
+                raw_rows_to_process = st.session_state.get('raw_final_rows', [])
+
+                if "1. パッチ処理" in conflict_action:
+                    existing_items = []
+                    page_token = None
+                    while True:
+                        events_result = service.events().list(
+                            calendarId=target_cal_id, 
+                            timeMin=min_date, 
+                            timeMax=max_date, 
+                            singleEvents=True,
+                            pageToken=page_token,
+                            maxResults=250
+                        ).execute()
+                        
+                        for ev in events_result.get('items', []):
+                            start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
+                            if start_val.startswith(f"{y}-{m:02d}"):
+                                existing_items.append(ev)
+                                
+                        page_token = events_result.get('nextPageToken')
+                        if not page_token:
+                            break
+
+                    total_steps = len(existing_items) + len(raw_rows_to_process)
+                    current_step = 0
+
+                    for event in existing_items:
+                        service.events().delete(calendarId=target_cal_id, eventId=event['id']).execute()
+                        deleted_count += 1
+                        current_step += 1
+                        if total_steps > 0:
+                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"既存データ削除中... ({deleted_count}/{len(existing_items)})")
+
+                    for row in raw_rows_to_process:
+                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type, shift_code = row
+                        is_all_day = (str(all_day_str) == "True")
+                        start_date = str(start_date_str).replace('/', '-')
+                        end_date = str(end_date_str).replace('/', '-')
+                        c_id = get_color_id(subject, time_shift_check, found_key)
+                        
+                        current_reminder = get_reminder_by_type(ev_type, shift_code)
+                        
+                        if is_all_day:
+                            event_body = {'summary': subject, 'location': loc, 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
+                        else:
+                            st_time = str(start_time_str).zfill(5) if ':' in str(start_time_str) else str(start_time_str)
+                            ed_time = str(end_time_str).zfill(5) if ':' in str(end_time_str) else str(end_time_str)
+                            event_body = {'summary': subject, 'location': loc, 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': current_reminder}
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        added_count += 1
+                        current_step += 1
+                        if total_steps > 0:
+                            my_bar.progress(min(current_step / total_steps, 1.0), text=f"新規登録中... ({added_count}/{len(raw_rows_to_process)})")
+
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【パッチ処理完了】(所要時間: 約 {elapsed_sec}秒)\nカレンダーを刷新しました（削除: {deleted_count}件 / 新規登録: {added_count}件）")
+
+                elif "2. 差分処理" in conflict_action:
+                    existing_events = []
+                    page_token = None
+                    while True:
+                        events_result = service.events().list(
+                            calendarId=target_cal_id, 
+                            timeMin=min_date, 
+                            timeMax=max_date, 
+                            singleEvents=True, 
+                            pageToken=page_token,
+                            maxResults=250
+                        ).execute()
+                        
+                        for ev in events_result.get('items', []):
+                            start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
+                            if start_val.startswith(f"{y}-{m:02d}"):
+                                existing_events.append(ev)
+                                
+                        page_token = events_result.get('nextPageToken')
+                        if not page_token:
+                            break
+                    
+                    existing_dict = {}
+                    for ev in existing_events:
+                        start_val = ev['start'].get('date') or ev['start'].get('dateTime', '')[:10]
+                        key_signature = (ev.get('summary', ''), start_val)
+                        existing_dict[key_signature] = ev['id']
+
+                    total_steps = len(raw_rows_to_process)
+                    current_step = 0
+
+                    for row in raw_rows_to_process:
+                        current_step += 1
+                        my_bar.progress(min(current_step / total_steps, 1.0), text=f"差分チェック中... ({current_step}/{total_steps})")
+
+                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type, shift_code = row
+                        is_all_day = (str(all_day_str) == "True")
+                        start_date = str(start_date_str).replace('/', '-')
+                        end_date = str(end_date_str).replace('/', '-')
+                        
+                        signature = (subject, start_date)
+                        if signature in existing_dict:
+                            del existing_dict[signature]
+                            skipped_count += 1
+                            continue
+
+                        c_id = get_color_id(subject, time_shift_check, found_key)
+                        current_reminder = get_reminder_by_type(ev_type, shift_code)
+                        
+                        if is_all_day:
+                            event_body = {'summary': subject, 'location': loc, 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
+                        else:
+                            st_time = str(start_time_str).zfill(5) if ':' in str(start_time_str) else str(start_time_str)
+                            ed_time = str(end_time_str).zfill(5) if ':' in str(end_time_str) else str(end_time_str)
+                            event_body = {'summary': subject, 'location': loc, 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': current_reminder}
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        added_count += 1
+                    
+                    for signature, ev_id in existing_dict.items():
+                        service.events().delete(calendarId=target_cal_id, eventId=ev_id).execute()
+                        deleted_count += 1
+
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【差分更新完了】(所要時間: 約 {elapsed_sec}秒)\n同期しました（新規追加: {added_count}件 / 変更なし維持: {skipped_count}件 / 不要分削除: {deleted_count}件）")
+
+                else:
+                    total_steps = len(raw_rows_to_process)
+                    current_step = 0
+
+                    for row in raw_rows_to_process:
+                        current_step += 1
+                        my_bar.progress(min(current_step / total_steps, 1.0), text=f"重複登録中... ({current_step}/{total_steps})")
+
+                        subject, start_date_str, start_time_str, end_date_str, end_time_str, all_day_str, desc, loc, ev_type, shift_code = row
+                        is_all_day = (str(all_day_str) == "True")
+                        start_date = str(start_date_str).replace('/', '-')
+                        end_date = str(end_date_str).replace('/', '-')
+                        c_id = get_color_id(subject, time_shift_check, found_key)
+                        current_reminder = get_reminder_by_type(ev_type, shift_code)
+                        
+                        if is_all_day:
+                            event_body = {'summary': subject, 'location': loc, 'start': {'date': start_date}, 'end': {'date': end_date}, 'colorId': c_id, 'reminders': current_reminder}
+                        else:
+                            st_time = str(start_time_str).zfill(5) if ':' in str(start_time_str) else str(start_time_str)
+                            ed_time = str(end_time_str).zfill(5) if ':' in str(end_time_str) else str(end_time_str)
+                            event_body = {'summary': subject, 'location': loc, 'start': {'dateTime': f"{start_date}T{st_time}:00", 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': f"{end_date}T{ed_time}:00", 'timeZone': 'Asia/Tokyo'}, 'colorId': c_id, 'reminders': current_reminder}
+                        
+                        service.events().insert(calendarId=target_cal_id, body=event_body).execute()
+                        added_count += 1
+
+                    my_bar.empty()
+                    elapsed_sec = (datetime.datetime.now() - start_time_exec).seconds
+                    st.success(f"【重複登録完了】(所要時間: 約 {elapsed_sec}秒)\n既存データを残したまま、新規に {added_count}件 のデータを追加しました。")
+
+                try:
+                    SCOPES_CAL_DRIVE = [
+                        'https://www.googleapis.com/auth/calendar',
+                        'https://www.googleapis.com/auth/drive'
+                    ]
+                    creds_cd = get_google_creds(scopes=SCOPES_CAL_DRIVE)
+                    calendar_service = build('calendar', 'v3', credentials=creds_cd)
+                    drive_del_service = build('drive', 'v3', credentials=creds_cd)
+                    target_cal_id = get_or_create_calendar(calendar_service, found_key)
+                except Exception as e:
+                    st.error(f"登録後処理エラー: {e}")
+                    drive_del_service = None
+
+                st.success("🎉 カレンダー登録が終了しました。")
+                
+                if drive_del_service and 'selected_file_id' in st.session_state and st.session_state.selected_file_id:
+                    try:
+                        drive_del_service.files().delete(fileId=st.session_state.selected_file_id).execute()
+                        st.success("🗑 Googleドライブ上の元のPDFファイルを削除しました。")
+                    except Exception as e:
+                        st.warning(f"元ファイルの削除に失敗しました: {e}")
+
+                st.balloons()
+                time.sleep(10)
+                
+                reset_to_initial_state()
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"登録実行エラー: {e}")
+```[cite: 1]
