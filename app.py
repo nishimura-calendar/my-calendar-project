@@ -931,4 +931,3 @@ if 'df_calendar' in st.session_state:
                 
             except Exception as e:
                 st.error(f"登録実行エラー: {e}")
-```[cite: 1]
