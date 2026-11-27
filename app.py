@@ -362,53 +362,20 @@ if not A_date:
     display_pdf_as_images(file_bytes)
     st.stop()
 
-# 1. ファイル名とPDF本文それぞれから年月を抽出
 filename = unicodedata.normalize('NFKC', uploaded_pdf.name or "")
-fn_y_match = re.search(r'(20\d{2})', filename)
-fn_m_match = re.search(r'(\d{1,2})\s*月', filename)
+year_match = re.search(r'(20\d{2})', filename) or re.search(r'(20\d{2})\s*年', pdf_full_text)
+month_match = re.search(r'(\d{1,2})\s*月', filename) or re.search(r'(\d{1,2})\s*月', pdf_full_text)
 
-txt_y_match = re.search(r'(20\d{2})\s*年', pdf_full_text)
-txt_m_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
-
-fn_y = int(fn_y_match.group(1)) if fn_y_match else None
-fn_m = int(fn_m_match.group(1)) if fn_m_match else None
-txt_y = int(txt_y_match.group(1)) if txt_y_match else None
-txt_m = int(txt_m_match.group(1)) if txt_m_match else None
-
-# 使用する年月の決定（本文の年月を優先し、なければファイル名を使用）
-y = txt_y if txt_y is not None else fn_y
-m = txt_m if txt_m is not None else fn_m
-
-# 2. 一致・不一致の判定
-mismatch_reasons = []
-
-if fn_y is None or fn_m is None:
-    mismatch_reasons.append("ファイル名から年月が取得できませんでした。")
-elif (txt_y is not None and fn_y != txt_y) or (txt_m is not None and fn_m != txt_m):
-    mismatch_reasons.append(f"ファイル名の年月（{fn_y}年{fn_m}月）とPDF本文の年月（{txt_y}年{txt_m}月）が一致しません。")
-
-if y is not None and m is not None:
-    _, last_day_num = calendar.monthrange(y, m)
-    last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
-    if not (A_date == last_day_num and A_day == last_day_w):
-        mismatch_reasons.append(
-            f"抽出された最終日（{A_date}日 {A_day}曜）と、{y}年{m}月のカレンダー末日（{last_day_num}日 {last_day_w}曜）が一致しません。"
-        )
+if year_match and month_match:
+    y, m = int(year_match.group(1)), int(month_match.group(1))
 else:
-    mismatch_reasons.append("年または月を特定できませんでした。")
-
-# 3. 不一致がある場合は必ずファイルを表示して確認する
-if mismatch_reasons:
-    st.warning("⚠️ ファイル名とファイルの内容に一致しない点があります。")
-    for reason in mismatch_reasons:
-        st.write(f"・{reason}")
-    
+    st.warning("ファイル名・本文から年月が取得できませんでした。プレビューを確認してください。")
     display_pdf_as_images(file_bytes)
     
     choice = st.radio(
-        "このファイルを使用しますか？",
-        ["選択してください", "はい", "いいえ"],
-        index=0,
+        "このファイルを使用しますか？", 
+        ["選択してください", "はい", "いいえ"], 
+        index=0, 
         key="use_pdf_choice"
     )
     
@@ -416,13 +383,22 @@ if mismatch_reasons:
         st.info("👆 上記のプレビューを確認し、「はい」または「いいえ」を選択してください。")
         st.stop()
     elif choice == "いいえ":
-        reset_to_initial_state()
-        st.rerun()
+        st.warning("このファイルの利用がキャンセルされました。サイドバーのリセットボタンまたは別の操作を行ってください。")
+        st.stop()
     else:
-        if y is None:
-            y = 2026
-        if m is None:
-            m = 12
+        year_text_match = re.search(r'(20\d{2})\s*年', pdf_full_text)
+        y = int(year_text_match.group(1)) if year_text_match else 2026
+        month_text_match = re.search(r'(\d{1,2})\s*月', pdf_full_text)
+        m = int(month_text_match.group(1)) if month_text_match else 12
+
+_, last_day_num = calendar.monthrange(y, m)
+last_day_w = ["月", "火", "水", "木", "金", "土", "日"][calendar.weekday(y, m, last_day_num)]
+
+if not (A_date == last_day_num and A_day == last_day_w):
+    st.warning(
+        f"最終日表記の差異を検知しました（抽出: {A_date}日 {A_day}曜 / カレンダー末日: {last_day_num}日 {last_day_w}曜）。"
+        f"{y}年{m}月分として処理を続行します。"
+    )
 
 try:
     creds_drive = get_google_creds(scopes=['https://www.googleapis.com/auth/drive'])
