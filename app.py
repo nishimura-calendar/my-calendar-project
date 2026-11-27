@@ -25,12 +25,19 @@ def display_pdf_as_images(file_bytes):
     except Exception as e:
         st.error(f"PDFのプレビュー表示に失敗しました: {e}")
 
-# --- 曜日文字カウントとカレンダー照合による最終日・最終曜日判定 ---
-def evaluate_month_end_consistency(df, year, month):
+# --- ファイル名の年月とPDF内容の整合性判定（パターンA） ---
+def extract_year_month_from_filename(filename, fallback_year=2026):
+    name_norm = unicodedata.normalize("NFKC", filename or "")
+    y_match = re.search(r"(\d{4})\s*年", name_norm) or re.search(r"(\d{4})", name_norm)
+    m_match = re.search(r"(\d{1,2})\s*月", name_norm)
+    year = int(y_match.group(1)) if y_match else fallback_year
+    month = int(m_match.group(1)) if m_match else None
+    return year, month
+
+def evaluate_month_end_consistency(df, year, month, pdf_full_text=""):
     weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
     weekdays_set = set(weekdays_jp)
 
-    cal_first_weekday = weekdays_jp[calendar.weekday(year, month, 1)]
     _, cal_last_day = calendar.monthrange(year, month)
     cal_last_weekday = weekdays_jp[calendar.weekday(year, month, cal_last_day)]
 
@@ -51,24 +58,38 @@ def evaluate_month_end_consistency(df, year, month):
 
     pdf_day_count = len(found_weekdays) if len(found_weekdays) > 0 else None
     pdf_last_weekday = found_weekdays[-1] if len(found_weekdays) > 0 else None
-    pdf_first_weekday = found_weekdays[0] if len(found_weekdays) > 0 else None
+
+    pdf_ym_match = re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月", pdf_full_text or "")
+    pdf_ym_label = (
+        f"{int(pdf_ym_match.group(1))}年{int(pdf_ym_match.group(2))}月"
+        if pdf_ym_match
+        else "不明"
+    )
 
     is_consistent = (
         pdf_day_count == cal_last_day
         and pdf_last_weekday == cal_last_weekday
     )
 
+    reason_parts = [
+        f"ファイル名からは {year}年{month}月（暦の末日：{cal_last_day}日・{cal_last_weekday}曜日）と判定されましたが、"
+        f"PDF抽出結果は {pdf_day_count if pdf_day_count is not None else '不明'}日・"
+        f"{pdf_last_weekday if pdf_last_weekday is not None else '不明'}曜日でした。"
+    ]
+    if pdf_ym_match and (int(pdf_ym_match.group(1)) != year or int(pdf_ym_match.group(2)) != month):
+        reason_parts.append(f"（PDF本文内の年月表記：{pdf_ym_label}）")
+
+    reason = "".join(reason_parts) + "ファイルを確認して下さい。"
+
     return {
         "is_consistent": is_consistent,
         "year": year,
         "month": month,
-        "cal_first_weekday": cal_first_weekday,
-        "pdf_first_weekday": pdf_first_weekday,
-        "pdf_day_count": pdf_day_count,
-        "pdf_last_weekday": pdf_last_weekday,
         "cal_last_day": cal_last_day,
         "cal_last_weekday": cal_last_weekday,
-        "weekday_chars_seq": "".join(found_weekdays),
+        "pdf_day_count": pdf_day_count,
+        "pdf_last_weekday": pdf_last_weekday,
+        "reason": reason,
     }
 
 # --- Google Driveから過去30日のPDFをリスト化する補助関数 ---
@@ -333,22 +354,14 @@ file_bytes = st.session_state.loaded_pdf_bytes
 file_name = st.session_state.loaded_pdf_name or ""
 
 if not isinstance(file_bytes, (bytes, bytearray)) or not bytes(file_bytes).startswith(b"%PDF-"):
-    st.error("読み込まれたデータが有効なPDFではありません。「最初からやり直す（リセット）」を押してPDFを再読み込みしてください。")
-    if st.button("状態をクリアして再選択"):
-        reset_to_initial_state()
-        st.rerun()
-    st.stop()
+    st.error("読み込まれたデータが有効なPDFではありません。ファイルを確認して下さい。")
+    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
+    time.sleep(10)
+    reset_to_initial_state()
+    st.rerun()
 
 uploaded_pdf = io.BytesIO(file_bytes)
 uploaded_pdf.name = file_name
-
-if 'last_file_bytes' not in st.session_state or st.session_state.last_file_bytes != file_bytes:
-    st.session_state.last_file_bytes = file_bytes
-    st.session_state.ym_confirmed = False
-    st.session_state.proceed_after_mismatch = False
-    for key in ['use_pdf_choice', 'df_calendar', 'show_conflict_options']:
-        if key in st.session_state:
-            del st.session_state[key]
 
 try:
     uploaded_pdf.seek(0)
@@ -373,47 +386,38 @@ try:
         tables = pdf.pages[0].extract_tables()
         df_pdf = pd.DataFrame(tables[0]) if tables else pd.DataFrame()
 except Exception as e:
-    st.error(f"PDFの解析中にエラーが発生しました: {e}")
-    st.stop()
+    st.error(f"PDFの解析中にエラーが発生しました: {e}。ファイルを確認して下さい。")
+    display_pdf_as_images(file_bytes)
+    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
+    time.sleep(10)
+    reset_to_initial_state()
+    st.rerun()
 
 if not found_key:
-    st.error("勤務地(Key)がPDFから特定できませんでした。")
+    st.error("勤務地(Key)がPDFから特定できませんでした。ファイルを確認して下さい。")
     display_pdf_as_images(file_bytes)
-    st.stop()
+    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
+    time.sleep(10)
+    reset_to_initial_state()
+    st.rerun()
 
-year_match = re.search(r"(\d{4})\s*年", pdf_full_text) or re.search(r"(\d{4})", file_name)
-month_match = re.search(r"(\d{1,2})\s*月", pdf_full_text) or re.search(r"(\d{1,2})月", file_name)
+y, m = extract_year_month_from_filename(file_name, fallback_year=2026)
+if m is None:
+    st.error(f"ファイル名「{file_name}」から対象月を特定できませんでした。ファイルを確認して下さい。")
+    display_pdf_as_images(file_bytes)
+    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
+    time.sleep(10)
+    reset_to_initial_state()
+    st.rerun()
 
-y = int(year_match.group(1)) if year_match else 2026
-m = int(month_match.group(1)) if month_match else 12
+check_res = evaluate_month_end_consistency(df_pdf, y, m, pdf_full_text=pdf_full_text)
 
-check_res = evaluate_month_end_consistency(df_pdf, y, m)
+if not check_res["is_consistent"]:
+    display_pdf_as_images(file_bytes)
+    st.error(check_res["reason"])
+    st.info("画面は自動的にリセットされます。しばらくお待ち下さい。")
+    time.sleep(10)
+    reset_to_initial_state()
+    st.rerun()
 
-if check_res["is_consistent"]:
-    st.success(
-        f"整合性OK：{y}年{m}月の暦（末日 {check_res['cal_last_day']}日 / {check_res['cal_last_weekday']}曜日）と、"
-        f"PDFの曜日文字数（{check_res['pdf_day_count']}日）および最終曜日（{check_res['pdf_last_weekday']}曜日）が一致しました。"
-    )
-else:
-    if not st.session_state.get("proceed_after_mismatch", False):
-        st.warning(
-            f"末日・曜日の整合性に不一致があります（{y}年{m}月：暦は {check_res['cal_last_day']}日・{check_res['cal_last_weekday']}曜日 / "
-            f"PDF抽出は {check_res['pdf_day_count']}日・{check_res['pdf_last_weekday']}曜日）。"
-        )
-        display_pdf_as_images(file_bytes)
-        choice = st.radio(
-            "このまま処理を続行しますか？",
-            ["選択してください", "はい", "いいえ"],
-            index=0,
-            key="mismatch_choice_radio",
-        )
-        if choice == "選択してください":
-            st.stop()
-        elif choice == "はい":
-            st.session_state.proceed_after_mismatch = True
-            st.rerun()
-        elif choice == "いいえ":
-            reset_to_initial_state()
-            st.rerun()
-
-st.info(f"勤務地Key: {found_key} / 対象年月: {y}年{m}月（次の解析・カレンダー登録処理へ進めます）")
+# --- 一致時：何も表示せずに次のステップへ進む ---
